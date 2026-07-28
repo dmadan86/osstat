@@ -16,10 +16,17 @@ ts-bindings = ["dep:ts-rs", "osstat-core/ts-bindings"]
 [dependencies]
 osstat-core = { workspace = true }
 serde = { workspace = true }
+sysinfo = { version = "0.39.6", default-features = false, features = ["system", "disk", "network", "user"] }
 ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 serde_json = { workspace = true }
+
+# The M1 gate from ROADMAP.md: a 500-process refresh under 50 ms.
+[[bench]]
+name = "process_refresh"
+harness = false
 
 [lints]
 workspace = true

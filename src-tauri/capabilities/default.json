@@ -1,7 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Baseline capability for the main window. Deliberately minimal: it grants only Tauri's core defaults. Privileged capabilities are added per feature, never pre-emptively, so the webview's reach stays auditable (ADR-001, ADR-006).",
+  "description": "Baseline capability for the main window. Deliberately minimal: core defaults, plus reading and writing this app's own sign-in entry. Privileged capabilities are added per feature, never pre-emptively, so the webview's reach stays auditable (ADR-001, ADR-006).",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "autostart:allow-is-enabled",
+    "autostart:allow-enable",
+    "autostart:allow-disable"
+  ]
 }

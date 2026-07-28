@@ -9,10 +9,7 @@ use serde::{Deserialize, Serialize};
 /// Which Cargo profile the running binary was compiled with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-bindings",
-    ts(export, export_to = "../../../ui/src/bindings/")
-)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum BuildProfile {
     /// Compiled with debug assertions on.
@@ -39,10 +36,7 @@ impl BuildProfile {
 /// reads naturally without a mapping layer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-bindings",
-    ts(export, export_to = "../../../ui/src/bindings/")
-)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct BuildInfo {
     /// Package name of the front-end binary, e.g. `osstat`.

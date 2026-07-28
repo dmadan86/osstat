@@ -6,9 +6,20 @@
 //! declared here are callable only through the allow-list built by
 //! [`tauri::generate_handler!`] in [`crate::run`].
 
-use osstat_core::BuildInfo;
+// Tauri resolves managed state by injecting `State<'_, T>` by value; a
+// reference is not part of the command signature it accepts. The guard is a
+// cheap handle, so the lint's concern does not apply here.
+#![allow(clippy::needless_pass_by_value)]
+
+use std::time::Duration;
+
+use osstat_core::{BuildInfo, GpuDevice, MetricsSample, ProcessRecord, SystemDescription};
 use osstat_platform::PlatformId;
 use serde::Serialize;
+use tauri::State;
+
+use crate::sampler::Sampler;
+use crate::window_state::{CloseBehaviour, CloseSetting};
 
 /// Identity of the running application: what it is, and what it is running on.
 ///
@@ -17,10 +28,7 @@ use serde::Serialize;
 /// could fail.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-bindings",
-    ts(export, export_to = "../../ui/src/bindings/")
-)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct AppInfo {
     /// Name, version and profile of this build.
@@ -50,6 +58,71 @@ impl AppInfo {
 #[must_use]
 pub fn app_info() -> AppInfo {
     AppInfo::current()
+}
+
+/// Returns the machine's identity: OS, CPU, disks and interfaces.
+///
+/// Read once at startup, so this is a clone of stored data rather than a fresh
+/// interrogation of the system.
+#[tauri::command]
+#[must_use]
+pub fn system_description(sampler: State<'_, Sampler>) -> SystemDescription {
+    sampler.description().clone()
+}
+
+/// Returns recent metric samples, oldest first.
+///
+/// `limit` bounds how many are returned. The history lives in Rust precisely so
+/// that a chart can paint filled on its very first render instead of growing in
+/// from an empty axis after a reload.
+#[tauri::command]
+#[must_use]
+pub fn metrics_history(sampler: State<'_, Sampler>, limit: Option<u32>) -> Vec<MetricsSample> {
+    sampler.history(limit.map(|limit| limit as usize))
+}
+
+/// Returns every process from the most recent tick, flat and unordered.
+///
+/// This is the front-end's starting snapshot; from then on it applies the
+/// `processes:tick` diffs to what it already holds.
+#[tauri::command]
+#[must_use]
+pub fn process_list(sampler: State<'_, Sampler>) -> Vec<ProcessRecord> {
+    sampler.processes()
+}
+
+/// Returns the GPUs found, or `None` while the probe is still running.
+///
+/// `None` and `Some([])` mean different things and the UI distinguishes them:
+/// "still looking" versus "there is no GPU in this machine".
+#[tauri::command]
+#[must_use]
+pub fn gpu_devices(sampler: State<'_, Sampler>) -> Option<Vec<GpuDevice>> {
+    sampler.devices()
+}
+
+/// Sets how often the sampler ticks, in milliseconds.
+///
+/// Out-of-range values are clamped rather than rejected — see
+/// [`Sampler::set_interval`].
+#[tauri::command]
+pub fn set_sample_interval(sampler: State<'_, Sampler>, millis: u32) {
+    sampler.set_interval(Duration::from_millis(u64::from(millis)));
+}
+
+/// Suspends or resumes sampling.
+#[tauri::command]
+pub fn set_sampling_paused(sampler: State<'_, Sampler>, paused: bool) {
+    sampler.set_paused(paused);
+}
+
+/// Sets what closing the window does.
+///
+/// Held in Rust because `CloseRequested` must be answered synchronously; see
+/// [`crate::window_state`].
+#[tauri::command]
+pub fn set_close_behaviour(setting: State<'_, CloseSetting>, behaviour: CloseBehaviour) {
+    setting.set(behaviour);
 }
 
 #[cfg(test)]

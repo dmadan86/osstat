@@ -1,0 +1,19 @@
+# Cargo configuration for the osstat workspace.
+
+# Where `ts-rs` writes the generated TypeScript (ADR-002).
+#
+# This must be set in one place for the whole workspace rather than per type,
+# because `export_to` paths are resolved against this base *for the crate doing
+# the exporting* — including when it exports a type it borrowed from another
+# crate. With each crate pointing at `ui/src/bindings` from its own depth, a
+# type in `src-tauri` that references one in `osstat-core` resolved the core
+# crate's deeper path against the shallower `src-tauri` base and wrote the file
+# outside the repository, leaving the generated import in `ui/src/bindings`
+# pointing at a directory that only existed on the machine that ran the
+# generator. It typechecked there and nowhere else.
+#
+# `relative = true` resolves this against the directory holding this file — the
+# workspace root — so every crate agrees on one destination and every generated
+# import is a plain `./Sibling`.
+[env]
+TS_RS_EXPORT_DIR = { value = "ui/src/bindings", relative = true }

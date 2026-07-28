@@ -13,11 +13,26 @@
 //!
 //! - [`error`] — the shared error type every capability returns.
 //! - [`meta`] — build and release metadata surfaced in the UI and bug reports.
+//! - [`provider`] — the capability traits `osstat-platform` implements.
+//! - [`metrics`] — system description, per-tick samples and the history ring.
+//! - [`process`] — process records, their identity, and tick diffing.
+//! - [`gpu`] — GPU description and measurement, including how far to trust it.
 
 #![forbid(unsafe_code)]
 
 pub mod error;
+pub mod gpu;
 pub mod meta;
+pub mod metrics;
+pub mod process;
+pub mod provider;
 
 pub use error::{Error, Result};
+pub use gpu::{GpuDevice, GpuKind, GpuSample, GpuSource};
 pub use meta::{BuildInfo, BuildProfile};
+pub use metrics::{
+    CpuDescription, DiskDescription, DiskKind, DiskSample, HISTORY_CAPACITY, InterfaceDescription,
+    InterfaceSample, MetricsHistory, MetricsSample, SystemDescription,
+};
+pub use process::{ProcessDiff, ProcessKey, ProcessRecord, ProcessStatus, diff_processes};
+pub use provider::{GpuProvider, ProcessProvider, SystemInfoProvider};

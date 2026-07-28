@@ -13,6 +13,10 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod sysinfo_source;
+
+pub use sysinfo_source::SysinfoSource;
+
 #[cfg(target_os = "windows")]
 #[path = "windows.rs"]
 mod imp;
@@ -34,10 +38,7 @@ compile_error!(
 /// The operating systems osstat ships for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-bindings",
-    ts(export, export_to = "../../../ui/src/bindings/")
-)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum PlatformId {
     /// Microsoft Windows.

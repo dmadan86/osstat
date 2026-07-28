@@ -1,0 +1,38 @@
+[package]
+name = "osstat-llm"
+description = "Hardware probe and LLM runnability advisor for osstat"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+ts-bindings = ["osstat-core/ts-bindings"]
+
+[dependencies]
+osstat-core = { workspace = true }
+serde = { workspace = true }
+# Adapter enumeration only — osstat never renders anything. ADR-008 calls wgpu
+# "a heavy dependency for what is ultimately adapter enumeration" and asks for
+# its installer cost to be measured; see docs/measurements.md.
+wgpu = { version = "27.0.1", default-features = false, features = [
+  "dx12",
+  "metal",
+  "vulkan",
+] }
+
+# NVML ships with the NVIDIA driver on Windows and Linux. Apple has not shipped
+# an NVIDIA driver since macOS 10.13, so linking it there would add weight for a
+# code path that can never run.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+nvml-wrapper = "0.11.0"
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
