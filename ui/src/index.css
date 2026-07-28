@@ -1,0 +1,43 @@
+@import 'tailwindcss';
+
+/* The desktop shell is dark by default: this is a system utility that sits
+   alongside a terminal, and the native title bar is the only chrome around it. */
+@theme {
+  --color-surface: oklch(0.19 0.02 265);
+  --color-surface-raised: oklch(0.24 0.024 265);
+  --color-edge: oklch(0.33 0.025 265);
+  --color-accent: oklch(0.72 0.15 232);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-surface);
+  color: oklch(0.93 0.01 265);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The webview should feel like an app, not a web page. */
+* {
+  user-select: none;
+  cursor: default;
+}
+
+input,
+textarea,
+[data-selectable] {
+  user-select: text;
+  cursor: auto;
+}
