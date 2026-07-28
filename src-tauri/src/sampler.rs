@@ -56,6 +56,74 @@ const MAX_INTERVAL: Duration = Duration::from_mins(1);
 /// The fastest tick the UI offers.
 const MIN_INTERVAL: Duration = Duration::from_millis(500);
 
+/// How often the sampler ticks while the window cannot be seen.
+///
+/// No faster than the slowest tick the UI offers, because the only thing it
+/// feeds is a tray tooltip. It is deliberately not configurable: a setting for
+/// it would be a knob whose only effect is how much battery osstat burns while
+/// nobody is looking.
+pub const BACKGROUND_INTERVAL: Duration = Duration::from_secs(5);
+
+/// What the sampler is currently doing, and why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Activity {
+    /// The window is visible: full rate, everything measured, events emitted.
+    Foreground,
+    /// The window cannot be seen: slow rate, metrics only, no events.
+    Background,
+    /// The user asked for sampling to stop.
+    Paused,
+}
+
+impl Activity {
+    /// Whether this state reads the process table.
+    ///
+    /// Only the foreground does. The process read is the expensive half of a
+    /// tick and nothing a hidden app displays needs it.
+    #[must_use]
+    pub const fn reads_processes(self) -> bool {
+        matches!(self, Self::Foreground)
+    }
+
+    /// Whether this state emits events to the webview.
+    ///
+    /// Only the foreground does. Delivering IPC payloads to a hidden webview is
+    /// work nobody can observe.
+    #[must_use]
+    pub const fn emits(self) -> bool {
+        matches!(self, Self::Foreground)
+    }
+
+    /// Whether this state measures anything at all.
+    #[must_use]
+    pub const fn samples(self) -> bool {
+        !matches!(self, Self::Paused)
+    }
+}
+
+/// Decides what the sampler should be doing.
+///
+/// An explicit pause always wins: someone who chose "Paused" in Settings should
+/// not find sampling quietly resumed by restoring the window.
+#[must_use]
+pub const fn activity_for(visible: bool, minimized: bool, user_paused: bool) -> Activity {
+    if user_paused {
+        Activity::Paused
+    } else if !visible || minimized {
+        Activity::Background
+    } else {
+        Activity::Foreground
+    }
+}
+
+/// The tick length a given activity actually uses.
+const fn effective_interval(activity: Activity, foreground: Duration) -> Duration {
+    match activity {
+        Activity::Background => BACKGROUND_INTERVAL,
+        _ => foreground,
+    }
+}
+
 /// What the front-end can read between ticks.
 #[derive(Default)]
 struct Snapshot {
@@ -65,10 +133,28 @@ struct Snapshot {
 }
 
 /// Knobs the UI can turn, and the signal that they have turned.
+///
+/// Four independent bools, not a combinatorial state machine: each one is set
+/// from a different source (a preference, a settings toggle, two window
+/// events) and they are only ever collapsed together by [`Control::activity`].
+#[allow(clippy::struct_excessive_bools)]
 struct Control {
+    /// The tick the user asked for, used in the foreground.
     interval: Duration,
-    paused: bool,
+    /// Whether the user has explicitly paused sampling.
+    user_paused: bool,
+    /// Whether the window is currently on screen.
+    visible: bool,
+    /// Whether the window is minimised.
+    minimized: bool,
     stopping: bool,
+}
+
+impl Control {
+    /// What the sampler should be doing given the current knobs.
+    const fn activity(&self) -> Activity {
+        activity_for(self.visible, self.minimized, self.user_paused)
+    }
 }
 
 /// State shared between the sampler thread and the command handlers.
@@ -103,7 +189,9 @@ impl Sampler {
             snapshot: RwLock::new(Snapshot::default()),
             control: Mutex::new(Control {
                 interval: clamp_interval(interval),
-                paused: false,
+                user_paused: false,
+                visible: true,
+                minimized: false,
                 stopping: false,
             }),
             changed: Condvar::new(),
@@ -153,7 +241,7 @@ impl Sampler {
         read(&self.shared.snapshot).devices.clone()
     }
 
-    /// Changes the tick interval, taking effect immediately.
+    /// Changes the foreground tick interval, taking effect immediately.
     ///
     /// Out-of-range values are clamped rather than rejected: this arrives from
     /// a preference that a stale or hand-edited client could get wrong, and a
@@ -161,20 +249,34 @@ impl Sampler {
     pub fn set_interval(&self, interval: Duration) {
         let mut control = lock(&self.shared.control);
         control.interval = clamp_interval(interval);
-        control.paused = false;
+        control.user_paused = false;
         self.shared.changed.notify_all();
     }
 
-    /// Suspends or resumes sampling.
+    /// Suspends or resumes sampling at the user's explicit request.
     pub fn set_paused(&self, paused: bool) {
-        lock(&self.shared.control).paused = paused;
+        lock(&self.shared.control).user_paused = paused;
         self.shared.changed.notify_all();
     }
 
-    /// Whether sampling is currently suspended.
+    /// Whether sampling is suspended at the user's explicit request.
     #[must_use]
     pub fn is_paused(&self) -> bool {
-        lock(&self.shared.control).paused
+        lock(&self.shared.control).user_paused
+    }
+
+    /// Records where the window is, which decides foreground versus background.
+    pub fn set_window_state(&self, visible: bool, minimized: bool) {
+        let mut control = lock(&self.shared.control);
+        control.visible = visible;
+        control.minimized = minimized;
+        self.shared.changed.notify_all();
+    }
+
+    /// What the sampler is currently doing.
+    #[must_use]
+    pub fn activity(&self) -> Activity {
+        lock(&self.shared.control).activity()
     }
 }
 
@@ -196,60 +298,71 @@ fn run(app: &AppHandle, shared: &Arc<Shared>, mut source: SysinfoSource, mut gpu
     let mut previous: Vec<ProcessRecord> = Vec::new();
 
     loop {
-        if !wait_for_tick(shared) {
+        let Some(activity) = wait_for_tick(shared) else {
             return;
-        }
+        };
 
         let Ok(mut sample) = source.sample() else {
             continue;
         };
         sample.gpus = gpus.measure().unwrap_or_default();
 
-        let processes = source.processes().unwrap_or_default();
-        let diff = diff_processes(&previous, &processes);
+        // The process table is read only in the foreground. It is the expensive
+        // half of a tick, and nothing a hidden window shows depends on it.
+        if activity.reads_processes() {
+            let processes = source.processes().unwrap_or_default();
+            let diff = diff_processes(&previous, &processes);
 
-        {
-            let mut snapshot = write(&shared.snapshot);
-            snapshot.history.push(sample.clone());
-            snapshot.processes.clone_from(&processes);
+            write(&shared.snapshot).processes.clone_from(&processes);
+            previous = processes;
+
+            if activity.emits() && !diff.is_empty() {
+                let _ = app.emit(PROCESSES_EVENT, &diff);
+            }
         }
-        previous = processes;
 
-        let _ = app.emit(METRICS_EVENT, &sample);
-        if !diff.is_empty() {
-            let _ = app.emit(PROCESSES_EVENT, &diff);
+        write(&shared.snapshot).history.push(sample.clone());
+
+        if activity.emits() {
+            let _ = app.emit(METRICS_EVENT, &sample);
         }
     }
 }
 
 /// Sleeps until the next tick is due.
 ///
-/// Returns `false` when the sampler should stop. While paused it waits without
-/// a timeout, so a minimised window costs nothing at all rather than costing a
-/// wakeup per interval.
-fn wait_for_tick(shared: &Arc<Shared>) -> bool {
+/// Returns the activity the tick should run as, or `None` when the sampler
+/// should stop. While paused it waits without a timeout, so a paused sampler
+/// costs nothing at all rather than costing a wakeup per interval.
+fn wait_for_tick(shared: &Arc<Shared>) -> Option<Activity> {
     let mut control = lock(&shared.control);
 
-    loop {
+    let activity = loop {
         if control.stopping {
-            return false;
+            return None;
         }
-        if !control.paused {
-            break;
+        let activity = control.activity();
+        if activity.samples() {
+            break activity;
         }
         control = shared
             .changed
             .wait(control)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-    }
+    };
 
-    let interval = control.interval;
+    let interval = effective_interval(activity, control.interval);
     let (control, _) = shared
         .changed
         .wait_timeout(control, interval)
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-    !control.stopping
+    if control.stopping {
+        None
+    } else {
+        // Re-read: the window may have moved between states during the sleep.
+        Some(control.activity())
+    }
 }
 
 /// Holds a requested interval to something the UI can actually offer.
@@ -347,5 +460,63 @@ mod tests {
             assert!(name.contains(':'), "{name} should be namespaced");
             assert!(!name.starts_with("tauri://"));
         }
+    }
+
+    #[test]
+    fn a_visible_window_samples_at_the_users_rate() {
+        assert_eq!(activity_for(true, false, false), Activity::Foreground);
+    }
+
+    #[test]
+    fn a_hidden_or_minimised_window_drops_to_the_background() {
+        assert_eq!(activity_for(false, false, false), Activity::Background);
+        assert_eq!(activity_for(true, true, false), Activity::Background);
+        assert_eq!(activity_for(false, true, false), Activity::Background);
+    }
+
+    #[test]
+    fn an_explicit_pause_beats_every_window_state() {
+        // The user chose "Paused" in Settings. Restoring the window must not
+        // quietly start sampling again.
+        for (visible, minimized) in [(true, false), (false, false), (true, true)] {
+            assert_eq!(activity_for(visible, minimized, true), Activity::Paused);
+        }
+    }
+
+    #[test]
+    fn hiding_the_window_never_samples_faster_than_the_foreground_would() {
+        // The point of the background state is to cost less, so it must be no
+        // faster than the slowest rate the UI offers, and strictly slower than
+        // the default the app ships with.
+        assert!(BACKGROUND_INTERVAL >= Duration::from_secs(5));
+        assert!(BACKGROUND_INTERVAL > Duration::from_secs(2));
+    }
+
+    #[test]
+    fn the_background_interval_replaces_the_users_rate_rather_than_scaling_it() {
+        assert_eq!(
+            effective_interval(Activity::Background, Duration::from_secs(1)),
+            BACKGROUND_INTERVAL
+        );
+        assert_eq!(
+            effective_interval(Activity::Foreground, Duration::from_secs(1)),
+            Duration::from_secs(1)
+        );
+    }
+
+    #[test]
+    fn only_the_foreground_reads_the_process_table() {
+        // The expensive half: 23.8 ms of a ~24 ms tick, and nothing in a tray
+        // tooltip needs it.
+        assert!(Activity::Foreground.reads_processes());
+        assert!(!Activity::Background.reads_processes());
+        assert!(!Activity::Paused.reads_processes());
+    }
+
+    #[test]
+    fn only_the_foreground_emits_to_a_webview_that_can_see_it() {
+        assert!(Activity::Foreground.emits());
+        assert!(!Activity::Background.emits());
+        assert!(!Activity::Paused.emits());
     }
 }

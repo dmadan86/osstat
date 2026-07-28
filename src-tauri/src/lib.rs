@@ -38,12 +38,17 @@ pub fn run() -> tauri::Result<()> {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Stop measuring while the window is minimised, and only then. See
-            // the module docs on `sampler` for why focus is the wrong signal.
-            if matches!(event, WindowEvent::Resized(_))
+            // Both signals matter now: minimising and hiding to the tray are
+            // different events, and both mean nobody can see the window. See
+            // the module docs on `sampler` for why focus is still the wrong
+            // signal to use.
+            if matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(_))
                 && let Some(sampler) = window.try_state::<Sampler>()
             {
-                sampler.set_paused(window.is_minimized().unwrap_or(false));
+                sampler.set_window_state(
+                    window.is_visible().unwrap_or(true),
+                    window.is_minimized().unwrap_or(false),
+                );
             }
         })
         .invoke_handler(tauri::generate_handler![
