@@ -31,8 +31,29 @@ export interface TimePoint {
   value: number;
 }
 
-/** Shared axis, grid and tooltip chrome. */
-function base(): EChartsOption {
+/** One row of an axis-triggered tooltip, as ECharts hands it to a formatter. */
+interface TooltipRow {
+  /** The x value under the pointer. On a time axis, epoch milliseconds. */
+  axisValue: number;
+  /** The series this row describes. */
+  seriesName: string;
+  /** The datum, as the `[time, value]` pair the series was given. */
+  value: [number, number];
+  /** The coloured swatch ECharts pre-renders for this series. */
+  marker: string;
+}
+
+/**
+ * Shared axis, grid and tooltip chrome.
+ *
+ * The tooltip is formatted here rather than per series because a `time` axis
+ * heads each tooltip with the axis value, and ECharts' default rendering of
+ * that is a full ISO-style timestamp. Passing the value formatter in keeps one
+ * tooltip shape across the charts while each still reads in its own unit.
+ *
+ * @param formatValue Renders a y value in the chart's unit.
+ */
+function base(formatValue: (value: number) => string): EChartsOption {
   return {
     animation: false,
     grid: { left: 48, right: 12, top: 12, bottom: 22, containLabel: false },
@@ -42,19 +63,40 @@ function base(): EChartsOption {
       borderColor: INK.axis,
       textStyle: { color: INK.primary, fontSize: 11 },
       axisPointer: { type: 'line', lineStyle: { color: INK.muted, width: 1 } },
+      formatter: (params: unknown) => {
+        const rows = (Array.isArray(params) ? params : [params]) as TooltipRow[];
+        const first = rows[0];
+        if (first === undefined) return '';
+
+        const body = rows
+          .map((row) => `${row.marker}${row.seriesName} ${formatValue(Number(row.value[1]))}`)
+          .join('<br/>');
+
+        return `${formatClock(Number(first.axisValue))}<br/>${body}`;
+      },
     },
   };
 }
 
-/** A time axis rendered as local clock times. */
-function timeAxis(points: readonly TimePoint[]): NonNullable<EChartsOption['xAxis']> {
+/**
+ * An axis of real time, labelled with local clock times.
+ *
+ * `type: 'time'` rather than `'category'`: samples are not evenly spaced. The
+ * sampler slows to 5 s while the window is hidden and stops entirely while it
+ * is paused, and a category axis would draw both of those as though no time had
+ * passed.
+ */
+function timeAxis(): NonNullable<EChartsOption['xAxis']> {
   return {
-    type: 'category',
-    data: points.map((point) => formatClock(point.at)),
-    boundaryGap: false,
+    type: 'time',
     axisLine: { lineStyle: { color: INK.axis } },
     axisTick: { show: false },
-    axisLabel: { color: INK.muted, fontSize: 10, showMaxLabel: true, hideOverlap: true },
+    axisLabel: {
+      color: INK.muted,
+      fontSize: 10,
+      hideOverlap: true,
+      formatter: (value: number) => formatClock(value),
+    },
   };
 }
 
@@ -70,8 +112,8 @@ function timeAxis(points: readonly TimePoint[]): NonNullable<EChartsOption['xAxi
  */
 export function percentAreaOption(points: readonly TimePoint[], name: string): EChartsOption {
   return {
-    ...base(),
-    xAxis: timeAxis(points),
+    ...base(formatPercent),
+    xAxis: timeAxis(),
     yAxis: {
       type: 'value',
       min: 0,
@@ -87,8 +129,7 @@ export function percentAreaOption(points: readonly TimePoint[], name: string): E
         smooth: false,
         lineStyle: { width: 2, color: SERIES[0] },
         areaStyle: { color: SERIES[0], opacity: AREA_OPACITY },
-        data: points.map((point) => point.value),
-        tooltip: { valueFormatter: (value) => formatPercent(Number(value)) },
+        data: points.map((point) => [point.at, point.value]),
       },
     ],
   };
@@ -102,8 +143,8 @@ export function percentAreaOption(points: readonly TimePoint[], name: string): E
  */
 export function memoryAreaOption(used: readonly TimePoint[], total: number): EChartsOption {
   return {
-    ...base(),
-    xAxis: timeAxis(used),
+    ...base(formatBytes),
+    xAxis: timeAxis(),
     yAxis: {
       type: 'value',
       min: 0,
@@ -125,8 +166,7 @@ export function memoryAreaOption(used: readonly TimePoint[], total: number): ECh
         showSymbol: false,
         lineStyle: { width: 2, color: SERIES[0] },
         areaStyle: { color: SERIES[0], opacity: AREA_OPACITY },
-        data: used.map((point) => point.value),
-        tooltip: { valueFormatter: (value) => formatBytes(Number(value)) },
+        data: used.map((point) => [point.at, point.value]),
       },
     ],
   };
@@ -143,8 +183,8 @@ export function throughputOption(
   up: readonly TimePoint[]
 ): EChartsOption {
   return {
-    ...base(),
-    xAxis: timeAxis(down),
+    ...base(formatRate),
+    xAxis: timeAxis(),
     yAxis: {
       type: 'value',
       min: 0,
@@ -162,8 +202,7 @@ export function throughputOption(
         showSymbol: false,
         lineStyle: { width: 2, color: SERIES[0] },
         areaStyle: { color: SERIES[0], opacity: AREA_OPACITY },
-        data: down.map((point) => point.value),
-        tooltip: { valueFormatter: (value) => formatRate(Number(value)) },
+        data: down.map((point) => [point.at, point.value]),
       },
       {
         name: 'Up',
@@ -171,8 +210,7 @@ export function throughputOption(
         showSymbol: false,
         lineStyle: { width: 2, color: SERIES[1] },
         areaStyle: { color: SERIES[1], opacity: AREA_OPACITY },
-        data: up.map((point) => point.value),
-        tooltip: { valueFormatter: (value) => formatRate(Number(value)) },
+        data: up.map((point) => [point.at, point.value]),
       },
     ],
   };

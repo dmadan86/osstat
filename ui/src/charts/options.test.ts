@@ -28,9 +28,10 @@ describe('percentAreaOption', () => {
   });
 
   it('plots one point per sample', () => {
-    const option = percentAreaOption(points([1, 2, 3, 4]), 'CPU');
+    const series = points([1, 2, 3, 4]);
+    const option = percentAreaOption(series, 'CPU');
 
-    expect(seriesOf(option)[0]?.data).toEqual([1, 2, 3, 4]);
+    expect(seriesOf(option)[0]?.data).toEqual(series.map((point) => [point.at, point.value]));
   });
 
   it('uses the first categorical slot, not the UI accent', () => {
@@ -141,6 +142,69 @@ describe('perCoreHeatmapOption', () => {
 
   it('produces a valid option for a machine reporting no cores', () => {
     expect(() => perCoreHeatmapOption([])).not.toThrow();
+  });
+});
+
+describe('time axes', () => {
+  const points: TimePoint[] = [
+    { at: 1_700_000_000_000, value: 10 },
+    { at: 1_700_000_002_000, value: 20 },
+    // A five-second gap: this is what a stretch sampled in the background looks
+    // like, and a category axis would draw it the same width as the two-second
+    // step above it.
+    { at: 1_700_000_007_000, value: 30 },
+  ];
+
+  it('plots against real time rather than evenly spaced slots', () => {
+    const option = percentAreaOption(points, 'CPU');
+    expect(option.xAxis).toMatchObject({ type: 'time' });
+  });
+
+  it('carries the timestamp in every datum, so spacing survives into the chart', () => {
+    const option = percentAreaOption(points, 'CPU');
+    const series = Array.isArray(option.series) ? option.series[0] : undefined;
+    expect(series?.data).toEqual([
+      [1_700_000_000_000, 10],
+      [1_700_000_002_000, 20],
+      [1_700_000_007_000, 30],
+    ]);
+  });
+
+  it('uses real time on the memory and throughput charts too', () => {
+    expect(memoryAreaOption(points, 1_000).xAxis).toMatchObject({ type: 'time' });
+    expect(throughputOption(points, points).xAxis).toMatchObject({ type: 'time' });
+  });
+
+  it('heads the tooltip with a clock time, not an ISO timestamp', () => {
+    const option = percentAreaOption(points, 'CPU');
+    const formatter = (option.tooltip as { formatter?: unknown }).formatter;
+    expect(typeof formatter).toBe('function');
+
+    const rendered = (formatter as (params: unknown) => string)([
+      {
+        axisValue: 1_700_000_000_000,
+        seriesName: 'CPU',
+        value: [1_700_000_000_000, 42],
+        marker: '<i></i>',
+      },
+    ]);
+
+    expect(rendered).toContain('42.0%');
+    expect(rendered).not.toContain('1700000000000');
+  });
+
+  it('formats each chart in its own unit', () => {
+    const bytes = memoryAreaOption(points, 1_000);
+    const formatter = (bytes.tooltip as { formatter: (params: unknown) => string }).formatter;
+    const rendered = formatter([
+      {
+        axisValue: 1_700_000_000_000,
+        seriesName: 'Used',
+        value: [1_700_000_000_000, 1_048_576],
+        marker: '<i></i>',
+      },
+    ]);
+    expect(rendered).toContain('MB');
   });
 });
 
