@@ -8,6 +8,8 @@
  */
 
 import { CHOICES, type Preferences } from '../lib/preferences';
+import { reconcileLayout, updatePanel } from '../lib/panelLayout';
+import { OVERVIEW_PANELS, OVERVIEW_PANEL_IDS } from './overviewPanels';
 
 /** What the Settings page needs. */
 export interface SettingsProps {
@@ -65,6 +67,57 @@ function Choice<K extends keyof typeof CHOICES>({
   );
 }
 
+/** The list of Overview panels, and the way back from hiding one. */
+function Panels({ preferences, onChange }: SettingsProps): React.JSX.Element {
+  const panels = reconcileLayout(preferences.overviewPanels, OVERVIEW_PANEL_IDS);
+
+  return (
+    <div className="flex flex-col gap-2 border-b border-edge px-4 py-3 last:border-b-0">
+      <div>
+        <p className="text-sm">Panels</p>
+        <p className="text-xs text-neutral-500">
+          Which sections the Overview shows. Order and size are set from each panel&rsquo;s own
+          menu.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        {OVERVIEW_PANELS.map((panel) => {
+          const hidden = panels.find((entry) => entry.id === panel.id)?.hidden ?? false;
+          return (
+            <label key={panel.id} className="flex items-center gap-2 text-xs text-neutral-300">
+              <input
+                type="checkbox"
+                checked={!hidden}
+                aria-label={panel.title}
+                onChange={() => {
+                  onChange({ overviewPanels: updatePanel(panels, panel.id, { hidden: !hidden }) });
+                }}
+                className="accent-accent"
+              />
+              {panel.title}
+            </label>
+          );
+        })}
+      </div>
+
+      <div>
+        <button
+          type="button"
+          onClick={() => {
+            // Empty rather than a rebuilt default list: reconciliation fills it
+            // from the sections that exist, which is the one place that knows.
+            onChange({ overviewPanels: [] });
+          }}
+          className="rounded-md border border-edge px-3 py-1 text-xs text-neutral-400 hover:bg-white/[0.04] hover:text-neutral-200"
+        >
+          Reset Overview layout
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Renders the settings page.
  *
@@ -99,6 +152,7 @@ export function Settings({ preferences, onChange }: SettingsProps): React.JSX.El
             onChange({ pageLayout });
           }}
         />
+        <Panels preferences={preferences} onChange={onChange} />
         <Choice
           label="Refresh interval"
           description="How often the machine is measured. Sampling pauses on its own while the window is minimised."
