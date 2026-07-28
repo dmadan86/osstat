@@ -26,7 +26,3 @@ Thumbs.db
 .env
 .env.local
 *.pem
-
-# Local agent/tooling state
-.claude/
-.claude-flow/
