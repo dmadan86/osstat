@@ -6,69 +6,11 @@
  * renders the same components either way.
  */
 
-import { useId, useState, type ReactNode } from 'react';
+import { useState } from 'react';
 
-/** One section of a page. */
-export interface SectionSpec {
-  /** Stable identifier, used for the sub-tab selection. */
-  id: string;
-  /** Heading shown on the section and on its tab. */
-  title: string;
-  /** The current headline figure, shown on the collapsed header. */
-  summary?: ReactNode;
-  /** The section body. */
-  content: ReactNode;
-}
+import { Collapsible, type SectionSpec } from './Panel';
 
-/** A collapsible section. */
-interface CollapsibleProps {
-  /** The section to render. */
-  section: SectionSpec;
-  /** Whether it starts open. */
-  defaultOpen: boolean;
-}
-
-/**
- * Renders one collapsible section.
- *
- * The summary stays visible when collapsed. A section that hid its headline
- * figure when shut would make collapsing cost information rather than space,
- * which is the opposite of the point.
- */
-function Collapsible({ section, defaultOpen }: CollapsibleProps): React.JSX.Element {
-  const [open, setOpen] = useState(defaultOpen);
-  const contentId = useId();
-
-  return (
-    <section className="overflow-hidden rounded-xl border border-edge bg-surface-raised">
-      <h3>
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-controls={contentId}
-          onClick={() => {
-            setOpen((current) => !current);
-          }}
-          className="flex w-full items-center gap-2 px-4 py-2.5 text-left hover:bg-white/[0.03]"
-        >
-          <span aria-hidden="true" className="text-xs text-accent">
-            {open ? '▾' : '▸'}
-          </span>
-          <span className="text-sm font-semibold">{section.title}</span>
-          {section.summary !== undefined && (
-            <span className="ml-auto font-mono text-sm text-neutral-300">{section.summary}</span>
-          )}
-        </button>
-      </h3>
-
-      {open && (
-        <div id={contentId} className="border-t border-edge/70 px-4 py-3">
-          {section.content}
-        </div>
-      )}
-    </section>
-  );
-}
+export type { SectionSpec } from './Panel';
 
 /** How a page presents its sections. */
 export interface SectionContainerProps {
