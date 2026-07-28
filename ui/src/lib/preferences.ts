@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import type { CloseBehaviour } from '../bindings/CloseBehaviour';
 import { coercePanelLayout, type PanelLayout } from './panelLayout';
 
 /** Where the primary navigation lives. */
@@ -33,6 +34,8 @@ export interface Preferences {
   refreshMs: number;
   /** Seconds of history the charts show. */
   historySeconds: number;
+  /** What closing the window does. */
+  closeBehaviour: CloseBehaviour;
   /**
    * How the Overview panels are arranged.
    *
@@ -64,6 +67,10 @@ export const CHOICES = {
     { value: 300, label: '5 minutes' },
     { value: 600, label: '10 minutes' },
   ],
+  closeBehaviour: [
+    { value: 'hide', label: 'Hide to the notification area' },
+    { value: 'quit', label: 'Quit osstat' },
+  ],
 } as const;
 
 /** What a fresh install uses. */
@@ -72,6 +79,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   pageLayout: 'onePage',
   refreshMs: 2000,
   historySeconds: 300,
+  closeBehaviour: 'hide',
   overviewPanels: [],
 };
 
@@ -114,6 +122,9 @@ export function coercePreferences(raw: unknown): Preferences {
     historySeconds: isAllowed('historySeconds', candidate.historySeconds)
       ? candidate.historySeconds
       : DEFAULT_PREFERENCES.historySeconds,
+    closeBehaviour: isAllowed('closeBehaviour', candidate.closeBehaviour)
+      ? candidate.closeBehaviour
+      : DEFAULT_PREFERENCES.closeBehaviour,
     // Not an `isAllowed` check: this is a list, not one of a fixed set of
     // choices, so it has its own coercion that repairs entries individually.
     overviewPanels: coercePanelLayout(candidate.overviewPanels),

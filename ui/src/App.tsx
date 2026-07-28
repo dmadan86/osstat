@@ -11,7 +11,7 @@ import type { GpuDevice } from './bindings/GpuDevice';
 import type { MetricsSample } from './bindings/MetricsSample';
 import type { SystemDescription } from './bindings/SystemDescription';
 import { Navigation } from './components/Navigation';
-import { setSampleInterval } from './lib/ipc';
+import { setCloseBehaviour, setSampleInterval } from './lib/ipc';
 import { samplesInWindow, usePreferences, type Preferences } from './lib/preferences';
 import type { ProcessTree } from './lib/processTree';
 import { useGpuDevices, useMetrics, useProcesses, useSystemDescription } from './lib/useLiveData';
@@ -41,6 +41,12 @@ export function App(): React.JSX.Element {
     // noise in the console.
     setSampleInterval(preferences.refreshMs).catch(() => {});
   }, [preferences.refreshMs]);
+
+  useEffect(() => {
+    // Replayed for the same reason as the interval: Rust holds the value it
+    // needs at close time, and the front-end is where the preference lives.
+    setCloseBehaviour(preferences.closeBehaviour).catch(() => {});
+  }, [preferences.closeBehaviour]);
 
   const stacked = preferences.navigation === 'tabs';
 

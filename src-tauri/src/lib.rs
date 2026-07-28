@@ -10,12 +10,14 @@
 
 pub mod commands;
 pub mod sampler;
+pub mod window_state;
 
 use std::time::Duration;
 
 use tauri::{Manager, WindowEvent};
 
 use crate::sampler::Sampler;
+use crate::window_state::CloseSetting;
 
 /// How often the sampler ticks until the front-end says otherwise.
 ///
@@ -35,6 +37,7 @@ pub fn run() -> tauri::Result<()> {
         .setup(|app| {
             let sampler = Sampler::start(app.handle().clone(), DEFAULT_INTERVAL)?;
             app.manage(sampler);
+            app.manage(CloseSetting::default());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -50,6 +53,18 @@ pub fn run() -> tauri::Result<()> {
                     window.is_minimized().unwrap_or(false),
                 );
             }
+
+            if let WindowEvent::CloseRequested { api, .. } = event
+                && window
+                    .try_state::<CloseSetting>()
+                    .is_some_and(|setting| setting.get().hides())
+            {
+                api.prevent_close();
+                let _ = window.hide();
+                if let Some(sampler) = window.try_state::<Sampler>() {
+                    sampler.set_window_state(false, false);
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
@@ -59,6 +74,7 @@ pub fn run() -> tauri::Result<()> {
             commands::gpu_devices,
             commands::set_sample_interval,
             commands::set_sampling_paused,
+            commands::set_close_behaviour,
         ])
         .run(tauri::generate_context!())
 }

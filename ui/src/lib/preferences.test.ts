@@ -16,6 +16,7 @@ describe('coercePreferences', () => {
       pageLayout: 'subTabs',
       refreshMs: 5000,
       historySeconds: 60,
+      closeBehaviour: 'quit',
       overviewPanels: [],
     };
 
@@ -68,6 +69,7 @@ describe('loadPreferences', () => {
       pageLayout: 'subTabs',
       refreshMs: 1000,
       historySeconds: 600,
+      closeBehaviour: 'quit',
       overviewPanels: [],
     };
 

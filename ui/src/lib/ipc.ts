@@ -16,6 +16,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import type { AppInfo } from '../bindings/AppInfo';
+import type { CloseBehaviour } from '../bindings/CloseBehaviour';
 import type { GpuDevice } from '../bindings/GpuDevice';
 import type { MetricsSample } from '../bindings/MetricsSample';
 import type { ProcessDiff } from '../bindings/ProcessDiff';
@@ -31,6 +32,7 @@ export const COMMANDS = {
   gpuDevices: 'gpu_devices',
   setSampleInterval: 'set_sample_interval',
   setSamplingPaused: 'set_sampling_paused',
+  setCloseBehaviour: 'set_close_behaviour',
 } as const;
 
 /** Names of every event the Rust side emits. */
@@ -88,6 +90,18 @@ export async function setSampleInterval(millis: number): Promise<void> {
     return;
   }
   await invoke(COMMANDS.setSampleInterval, { millis });
+}
+
+/**
+ * Tells the backend what closing the window should do.
+ *
+ * The decision has to be made synchronously inside Rust's close handler, so it
+ * is pushed ahead of time rather than asked for at close time.
+ *
+ * @param behaviour Whether closing hides the window or exits.
+ */
+export async function setCloseBehaviour(behaviour: CloseBehaviour): Promise<void> {
+  await invoke(COMMANDS.setCloseBehaviour, { behaviour });
 }
 
 /** Subscribes to per-tick metric samples. */

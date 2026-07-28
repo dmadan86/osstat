@@ -117,6 +117,15 @@ export function Settings({ preferences, onChange }: SettingsProps): React.JSX.El
             onChange({ historySeconds });
           }}
         />
+        <Choice
+          label="When I close the window"
+          description="osstat can keep running in the notification area, where its icon brings it back."
+          setting="closeBehaviour"
+          value={preferences.closeBehaviour}
+          onSelect={(closeBehaviour) => {
+            onChange({ closeBehaviour });
+          }}
+        />
       </div>
     </div>
   );

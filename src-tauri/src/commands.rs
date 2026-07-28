@@ -19,6 +19,7 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::sampler::Sampler;
+use crate::window_state::{CloseBehaviour, CloseSetting};
 
 /// Identity of the running application: what it is, and what it is running on.
 ///
@@ -113,6 +114,15 @@ pub fn set_sample_interval(sampler: State<'_, Sampler>, millis: u32) {
 #[tauri::command]
 pub fn set_sampling_paused(sampler: State<'_, Sampler>, paused: bool) {
     sampler.set_paused(paused);
+}
+
+/// Sets what closing the window does.
+///
+/// Held in Rust because `CloseRequested` must be answered synchronously; see
+/// [`crate::window_state`].
+#[tauri::command]
+pub fn set_close_behaviour(setting: State<'_, CloseSetting>, behaviour: CloseBehaviour) {
+    setting.set(behaviour);
 }
 
 #[cfg(test)]
