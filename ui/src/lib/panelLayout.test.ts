@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  applyVisibleOrder,
   coercePanelLayout,
   defaultPanelLayout,
   moveById,
+  moveVisibleById,
   reconcileLayout,
   reorder,
   updatePanel,
@@ -127,6 +129,48 @@ describe('moveById', () => {
   it('ignores an id that is not in the list', () => {
     const list = stored({ id: 'a' });
     expect(moveById(list, 'nope', 1)).toEqual(list);
+  });
+});
+
+describe('applyVisibleOrder', () => {
+  it('leaves hidden entries untouched when the visible order is permuted', () => {
+    const list = stored({ id: 'a' }, { id: 'b', hidden: true }, { id: 'c' });
+
+    const result = applyVisibleOrder(list, ['c', 'a']);
+
+    expect(result.map((panel) => panel.id)).toEqual(['c', 'b', 'a']);
+    expect(result[1]).toEqual(list[1]);
+  });
+});
+
+describe('moveVisibleById', () => {
+  it('swaps a visible panel with its visible neighbour in one move, skipping a hidden panel between them', () => {
+    // moveById would count the hidden panel as a position and swap with it
+    // instead, leaving the visible order -- and the click -- looking like it
+    // did nothing.
+    const list = stored({ id: 'a' }, { id: 'b', hidden: true }, { id: 'c' });
+
+    const result = moveVisibleById(list, 'c', -1);
+
+    expect(result.map((panel) => panel.id)).toEqual(['c', 'b', 'a']);
+    expect(result.filter((panel) => !panel.hidden).map((panel) => panel.id)).toEqual(['c', 'a']);
+    // The hidden panel keeps its own slot rather than being carried along.
+    expect(result[1]).toEqual(list[1]);
+  });
+
+  it('is a no-op moving the first visible panel up, even with hidden panels preceding it', () => {
+    const list = stored({ id: 'a', hidden: true }, { id: 'b' }, { id: 'c' });
+    expect(moveVisibleById(list, 'b', -1)).toEqual(list);
+  });
+
+  it('is a no-op moving the last visible panel down, even with hidden panels following it', () => {
+    const list = stored({ id: 'a' }, { id: 'b' }, { id: 'c', hidden: true });
+    expect(moveVisibleById(list, 'b', 1)).toEqual(list);
+  });
+
+  it('ignores an id that is not in the list', () => {
+    const list = stored({ id: 'a' }, { id: 'b' });
+    expect(moveVisibleById(list, 'nope', 1)).toEqual(list);
   });
 });
 

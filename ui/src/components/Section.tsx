@@ -11,7 +11,7 @@ import { useState } from 'react';
 import { Collapsible, type SectionSpec } from './Panel';
 import { PanelGrid } from './PanelGrid';
 import { PanelMenu } from './PanelMenu';
-import { moveById, updatePanel, type PanelLayout } from '../lib/panelLayout';
+import { moveVisibleById, updatePanel, type PanelLayout } from '../lib/panelLayout';
 
 export type { SectionSpec } from './Panel';
 
@@ -99,7 +99,7 @@ export function SectionContainer({
                 onSpan={() => {}}
                 onHeight={() => {}}
                 onMove={(delta) => {
-                  onPanelsChange(moveById(panels, current.id, delta));
+                  onPanelsChange(moveVisibleById(panels, current.id, delta));
                 }}
                 onHide={() => {
                   const remaining = arranged.filter((section) => section.id !== current.id);

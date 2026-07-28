@@ -184,6 +184,12 @@ export function reorder<T>(list: readonly T[], from: number, to: number): T[] {
  * Deliberately does not wrap: "move up" on the first panel sending it to the
  * bottom would be a surprise, not a convenience.
  *
+ * This counts hidden panels as positions, same as everything else in the
+ * list: it is the honest primitive for "move within the whole array." Menus
+ * that only offer moves among the *visible* panels want
+ * {@link moveVisibleById} instead — otherwise a hidden panel sitting between
+ * two visible ones silently absorbs the move.
+ *
  * @param list The current layout.
  * @param id The panel to move.
  * @param delta `-1` for up, `1` for down.
@@ -196,6 +202,66 @@ export function moveById(list: readonly PanelLayout[], id: string, delta: number
   if (to < 0 || to >= list.length) return [...list];
 
   return reorder(list, from, to);
+}
+
+/**
+ * Reorders the visible panels, leaving hidden ones where they sit.
+ *
+ * Hidden panels keep their slots in the stored array, so an arrangement made
+ * while something was hidden still means what the user intended when it comes
+ * back. Only the visible slots are rewritten, in the order given.
+ *
+ * @param layout The full stored layout.
+ * @param visibleIds The ids of the visible panels, in their new order.
+ */
+export function applyVisibleOrder(
+  layout: readonly PanelLayout[],
+  visibleIds: readonly string[]
+): PanelLayout[] {
+  const byId = new Map(layout.map((panel) => [panel.id, panel]));
+  const next = [...layout];
+  let cursor = 0;
+
+  for (let index = 0; index < next.length; index += 1) {
+    const panel = next[index];
+    if (panel === undefined || panel.hidden) continue;
+
+    const nextId = visibleIds[cursor];
+    cursor += 1;
+    if (nextId === undefined) continue;
+
+    const replacement = byId.get(nextId);
+    if (replacement !== undefined) next[index] = replacement;
+  }
+
+  return next;
+}
+
+/**
+ * Moves a visible panel one place among the other visible panels.
+ *
+ * Distinct from {@link moveById}, which counts hidden panels as positions: a
+ * hidden panel between two visible ones would otherwise absorb the move and
+ * the click would look like it did nothing.
+ *
+ * @param layout The full stored layout.
+ * @param id The panel to move.
+ * @param delta `-1` for up, `1` for down.
+ */
+export function moveVisibleById(
+  layout: readonly PanelLayout[],
+  id: string,
+  delta: number
+): PanelLayout[] {
+  const visibleIds = layout.filter((panel) => !panel.hidden).map((panel) => panel.id);
+
+  const from = visibleIds.indexOf(id);
+  if (from === -1) return [...layout];
+
+  const to = from + delta;
+  if (to < 0 || to >= visibleIds.length) return [...layout];
+
+  return applyVisibleOrder(layout, reorder(visibleIds, from, to));
 }
 
 /**

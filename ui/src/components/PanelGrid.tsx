@@ -11,7 +11,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Collapsible, type SectionSpec } from './Panel';
 import type { PanelControls } from './PanelMenu';
 import {
-  moveById,
+  moveVisibleById,
   NARROW_WIDTH,
   PANEL_HEIGHTS,
   updatePanel,
@@ -98,7 +98,7 @@ export function PanelGrid({ sections, layout, onLayoutChange }: PanelGridProps):
             onLayoutChange(updatePanel(layout, panel.id, { height }));
           },
           onMove: (delta) => {
-            onLayoutChange(moveById(layout, panel.id, delta));
+            onLayoutChange(moveVisibleById(layout, panel.id, delta));
           },
           onHide: () => {
             onLayoutChange(updatePanel(layout, panel.id, { hidden: true }));
