@@ -1,0 +1,28 @@
+[package]
+name = "osstat-core"
+description = "Platform-agnostic domain types, traits and engines for osstat"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+# Derives `ts_rs::TS` on the IPC domain types so `cargo test --features
+# ts-bindings` regenerates ui/src/bindings/ (ADR-002). Off by default so the
+# shipped binary carries no codegen dependency.
+ts-bindings = ["dep:ts-rs"]
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

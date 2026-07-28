@@ -1,0 +1,3 @@
+# Default rustfmt style (ADR-011: rustfmt owns Rust formatting, no debates).
+# Only the edition is pinned so `cargo fmt` behaves identically everywhere.
+edition = "2024"

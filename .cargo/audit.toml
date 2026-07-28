@@ -1,0 +1,26 @@
+# cargo-audit configuration.
+#
+# Every entry here must be a transitive advisory we cannot fix from this
+# repository, with a stated reason and a condition for removing it. An ignore
+# without a route back out is technical debt pretending to be a decision.
+#
+# Advisories that are merely "unmaintained" are not listed: cargo-audit reports
+# them as allowed warnings and they do not fail the build, so they stay visible.
+
+[advisories]
+ignore = [
+  # quick-xml < 0.41 has two denial-of-service advisories: quadratic time on
+  # duplicate attribute names, and unbounded namespace allocation in NsReader.
+  #
+  # It reaches us only through tauri-utils -> plist, and plist 1.8 pins
+  # quick-xml ^0.38, so it cannot be upgraded from here. The exposure is
+  # limited to parsing Apple property lists, which osstat only does for its own
+  # bundle metadata at build time — never with attacker-supplied input.
+  #
+  # Remove both entries once plist releases a version on quick-xml >= 0.41.
+  # If osstat ever parses a plist it did not produce (for example, reading
+  # LaunchAgents for the startup manager in a later milestone), re-evaluate
+  # this before shipping that feature.
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+]

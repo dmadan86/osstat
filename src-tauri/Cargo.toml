@@ -1,0 +1,43 @@
+[package]
+name = "osstat"
+description = "Cross-platform system cleaner, inspector and LLM runnability advisor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+default-run = "osstat"
+
+[lib]
+# The app is a library so `main.rs` stays a thin wrapper and the command layer
+# is unit-testable. Only `lib` is needed: mobile targets are an explicit
+# non-goal, so the staticlib/cdylib artifacts Tauri's mobile template adds
+# would be dead build time.
+name = "osstat_lib"
+crate-type = ["lib"]
+
+[features]
+default = []
+# Regenerates ui/src/bindings/ under `cargo test --features ts-bindings`
+# (ADR-002). Never enabled for a shipped build.
+ts-bindings = [
+  "dep:ts-rs",
+  "osstat-core/ts-bindings",
+  "osstat-platform/ts-bindings",
+]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+osstat-core = { workspace = true }
+osstat-platform = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tauri = { version = "2.11.5", features = [] }
+ts-rs = { workspace = true, optional = true }
+
+[lints]
+workspace = true

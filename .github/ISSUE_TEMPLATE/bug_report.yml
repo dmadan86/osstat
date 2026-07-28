@@ -1,0 +1,50 @@
+name: Bug report
+description: Something behaves incorrectly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If this is a security vulnerability, or if osstat deleted something it
+        should not have, please report it privately instead:
+        https://github.com/dmadan86/osstat/security/advisories/new
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you observe, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the Processes page
+        2. Filter for "node"
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: system-info
+    attributes:
+      label: System information
+      description: |
+        Paste the output of the "Copy system info" button (System Info page).
+        If the app will not start, tell us your OS version, CPU and how you
+        installed it.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or errors
+      description: Any error message shown, or console output if you built from source.
+      render: shell
+    validations:
+      required: false

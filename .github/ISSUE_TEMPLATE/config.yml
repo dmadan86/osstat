@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/dmadan86/osstat/security/advisories/new
+    about: Report privately. Please do not open a public issue for security problems.
+  - name: Question or idea
+    url: https://github.com/dmadan86/osstat/discussions
+    about: For open-ended questions and proposals that are not yet a concrete request.

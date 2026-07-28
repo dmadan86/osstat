@@ -1,0 +1,58 @@
+name: Cleaning rule request
+description: Ask for support for an application osstat does not clean yet
+labels: [rules]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Rules are TOML manifests and need no Rust knowledge to write — consider
+        opening a pull request instead. See the rule-authoring guide in
+        [CONTRIBUTING.md](https://github.com/dmadan86/osstat/blob/main/CONTRIBUTING.md#authoring-cleaning-rules).
+
+  - type: input
+    id: application
+    attributes:
+      label: Application
+      placeholder: Visual Studio Code, Slack, Steam...
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: platforms
+    attributes:
+      label: Platforms
+      options:
+        - label: Windows
+        - label: Linux
+        - label: macOS
+
+  - type: textarea
+    id: paths
+    attributes:
+      label: Paths that should be cleaned
+      description: |
+        One per line, with environment variables where appropriate, for example
+        `%LOCALAPPDATA%/Slack/Cache/**`.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: safety
+    attributes:
+      label: Why is it safe to delete these
+      description: |
+        This is the important part. What does the application store here, and
+        what does the user lose if it is removed? "It is a cache" is only
+        sufficient if you know the application treats it as one.
+    validations:
+      required: true
+
+  - type: input
+    id: guard
+    attributes:
+      label: Process that must not be running
+      description: The executable name to guard against, if the files are locked or in use while the app runs.
+      placeholder: Code.exe
+    validations:
+      required: false

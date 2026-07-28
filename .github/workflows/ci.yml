@@ -1,0 +1,220 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to a pull request cancels the run still going for the old commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            libxdo-dev libssl-dev patchelf build-essential
+
+      # The toolchain, including rustfmt and clippy, comes from
+      # rust-toolchain.toml so CI and contributors use the same compiler.
+      - name: Install Rust
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: ESLint
+        run: npm run lint --workspace @osstat/ui
+
+      - name: TypeScript
+        run: npm run typecheck --workspace @osstat/ui
+
+      - name: Prettier
+        run: npm run format:check
+
+      # ADR-002: ui/src/bindings/ is generated from the Rust IPC types. If a
+      # contributor changed a type without running `just bindings`, the
+      # regenerated output differs from what was committed and this fails.
+      - name: TypeScript bindings are up to date
+        run: |
+          cargo test --workspace --features ts-bindings
+          if ! git diff --exit-code -- ui/src/bindings; then
+            echo "::error::ui/src/bindings is stale. Run 'just bindings' and commit the result."
+            exit 1
+          fi
+
+  test:
+    name: Test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            libxdo-dev libssl-dev patchelf build-essential
+
+      - name: Install Rust
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The matrix is the point: only one per-OS module in osstat-platform is
+      # compiled on a given host (ADR-003), so a single runner proves nothing
+      # about the other two.
+      - name: Rust tests
+        run: cargo test --workspace --all-features
+
+      - name: Frontend tests
+        run: npm run test --workspace @osstat/ui
+
+  build:
+    name: Build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            libxdo-dev libssl-dev patchelf build-essential
+
+      - name: Install Rust
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: build-${{ matrix.os }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Verifies the app actually links and bundles on every platform. Installer
+      # artifacts are produced by release.yml, not here.
+      - name: Build application
+        run: npm run tauri build -- --no-bundle
+
+  audit:
+    name: Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: cargo audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: npm audit
+        run: npm audit --audit-level=high
+
+  dco:
+    name: DCO
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      # Every commit must carry a Signed-off-by line (ADR-010). No CLA; this is
+      # the whole requirement.
+      - name: Check sign-off on every commit
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          status=0
+          for commit in $(git rev-list "$BASE".."$HEAD"); do
+            author="$(git show -s --format='%an <%ae>' "$commit")"
+            if ! git show -s --format='%B' "$commit" | grep -qiF "Signed-off-by: $author"; then
+              echo "::error::Commit $commit is missing 'Signed-off-by: $author'. Amend with 'git commit -s --amend' or rebase with 'git rebase --signoff'."
+              status=1
+            fi
+          done
+          exit $status
+
+  pr-title:
+    name: PR title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Squash-merge means the PR title becomes the commit on main, so a bad
+      # title silently corrupts the generated changelog (ADR-010).
+      - name: Lint pull request title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: echo "$TITLE" | npx --no -- commitlint
