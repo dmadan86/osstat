@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 
-use osstat_core::{BuildInfo, GpuDevice, MetricsSample, ProcessTree, SystemDescription};
+use osstat_core::{BuildInfo, GpuDevice, MetricsSample, ProcessRecord, SystemDescription};
 use osstat_platform::PlatformId;
 use serde::Serialize;
 use tauri::State;
@@ -80,11 +80,14 @@ pub fn metrics_history(sampler: State<'_, Sampler>, limit: Option<u32>) -> Vec<M
     sampler.history(limit.map(|limit| limit as usize))
 }
 
-/// Returns the current process tree with roll-ups computed.
+/// Returns every process from the most recent tick, flat and unordered.
+///
+/// This is the front-end's starting snapshot; from then on it applies the
+/// `processes:tick` diffs to what it already holds.
 #[tauri::command]
 #[must_use]
-pub fn process_tree(sampler: State<'_, Sampler>) -> ProcessTree {
-    sampler.process_tree()
+pub fn process_list(sampler: State<'_, Sampler>) -> Vec<ProcessRecord> {
+    sampler.processes()
 }
 
 /// Returns the GPUs found, or `None` while the probe is still running.

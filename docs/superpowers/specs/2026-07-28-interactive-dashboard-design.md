@@ -97,22 +97,24 @@ what crosses IPC every tick, so it stays scalars only: no strings, no paths.
 
 ### 1.4 Pure logic in core (the part worth testing hardest)
 
-Two pieces live in `osstat-core` as pure functions over plain data, so they are
-exhaustively testable on any CI runner with no real processes and no real OS:
+**Tree building lives in the front-end, not here.** _(Changed during
+implementation — this section originally placed it in `osstat-core`.)_
 
-**Tree building.** `Vec<ProcessRecord>` → `ProcessTree`. It must handle:
+The reason is the diff. Because the sampler sends changes rather than
+snapshots, whatever renders the tree has to maintain its own structure to apply
+them to — so a tree assembled in Rust would be rebuilt on arrival and never
+used. Keeping both would mean two implementations of the same delicate
+orphan-and-cycle handling, drifting apart. It now lives once, in
+`ui/src/lib/processTree.ts`, with the same cases covered:
 
-- orphans (a parent PID that is not in the set) → reparented to a synthetic root
-- cycles (A's parent is B, B's parent is A) → broken deterministically, both
-  nodes attached to the root rather than recursing forever
-- PID 0 / self-parenting roots, which differ per OS
-- PID reuse between ticks — a record whose `start_time` changed is a _different_
-  process, not the same one updated
+- orphans (a parent PID not in the set) → promoted to roots rather than dropped
+- cycles → broken deterministically, every process still present
+- PID 0 and self-parenting roots, which differ per OS
+- roll-ups, tested as an invariant: for any tree, the total equals the sum over
+  every record, so collapsing a node can never hide load
 
-**Roll-ups.** A collapsed parent shows the sum of itself and all descendants for
-CPU, memory and IO. This is the property that makes the tree honest: collapsing a
-node must never hide load. Tested as an invariant — for any tree, the root's
-roll-up equals the sum over all records.
+What stays in `osstat-core` is identity ([`ProcessKey`]) and change detection
+(`diff_processes`) — the parts the _sampler_ needs, tested with no OS involved.
 
 **`MetricsHistory`** — a fixed-capacity ring buffer of `MetricsSample`, **600
 slots**. The capacity is set by the longest history window at the _fastest_ tick
@@ -303,9 +305,13 @@ Validator results on `#1a1f2b`:
 color. It remains the UI accent — selection, focus rings, active nav — where the
 band does not apply. Charts use slot 1 `#3987e5` as their primary hue instead.
 
-**Sequential ramp** (per-core heatmap, meters): the blue ramp, light→dark. On a
-dark surface an ordinal ramp must go no darker than step 600 `#184f95` to hold
-2:1 against the surface.
+**Sequential ramp** (per-core heatmap, meters): the blue ramp. _(Corrected
+during implementation.)_ It is used **dark→bright**, not light→dark. A
+sequential ramp's low end should recede toward the surface it is drawn on, and
+this surface is dark; run the other way, an idle CPU core glared almost white
+while a saturated one sank into the background — the encoding inverted, with the
+brightest thing on screen being the part doing nothing. Same six validated
+steps, reversed, as `SEQUENTIAL_ON_DARK`.
 
 **Status colors** (`good #0ca30c`, `warning #fab219`, `serious #ec835a`,
 `critical #d03b3b`) are reserved for state and never reused as a series. They
@@ -353,7 +359,67 @@ existing ink colors; a colored mark beside them carries identity.
 | `osstat-llm`      | The **no-GPU path** is the one CI exercises and must degrade to an empty list, never an error. `source` discriminant is set correctly per branch.                                                                    |
 | `src-tauri`       | Diff correctness: a synthetic two-tick sequence produces exactly the expected added/removed/changed sets, including the PID-reuse case.                                                                              |
 | UI (vitest)       | Preference persistence and corrupt-value fallback; all three navigation modes render the same route set; section collapse; tree expand/collapse and search auto-expand; **chart option builders** as pure functions. |
-| Benchmark         | Criterion: a 500-process refresh **under 50 ms** — M1's committed gate.                                                                                                                                              |
+| Benchmark         | A 500-process refresh **under 50 ms** — M1's committed gate, split across both languages because the work is (see below).                                                                                            |
+
+### 5.1 Measured results
+
+The M1 gate covers the whole refresh, and the refresh is now half Rust and half
+TypeScript, so both are benchmarked — `just bench` runs them together. Measuring
+only the Rust half would report a number nobody experiences.
+
+| Step                                                     | Measured     | Where                                               |
+| -------------------------------------------------------- | ------------ | --------------------------------------------------- |
+| `sysinfo` read of the real process table (474 processes) | **23.8 ms**  | `crates/osstat-platform/benches/process_refresh.rs` |
+| `diff_processes` over 500 records                        | **0.056 ms** | same                                                |
+| `buildTree` + `flattenTree`, 500 processes               | **0.23 ms**  | `ui/src/lib/processTree.bench.ts`                   |
+| **Total tick**                                           | **≈ 24 ms**  | against a 50 ms gate                                |
+
+The `sysinfo` read dominates by two orders of magnitude, which is worth knowing:
+osstat's own logic is not where this budget will be lost.
+
+Bundle and binary measurements, owed to ADR-008 and the ~20 MB installer goal:
+
+| Measurement                             | Result                         |
+| --------------------------------------- | ------------------------------ |
+| Front-end bundle, modular ECharts       | 754 KB raw, **251 KB gzipped** |
+| Release binary, `wgpu` + NVML linked in | **4.57 MB**                    |
+
+Against a ~20 MB installer goal, both are comfortable. ADR-008 worried that
+`wgpu` would be "a heavy dependency for what is ultimately adapter enumeration";
+at 4.57 MB total for the whole binary, that worry does not materialise on
+Windows. The `wgpu`-only delta was **not isolated** — that needs a second
+release build with the probe removed — and the figure should be re-taken on
+Linux and macOS before v0.1.0, since the backends differ.
+
+### 5.2 A security setting ECharts forced off
+
+`app.security.freezePrototype` was `true`. It is now **`false`**, and that is a
+real reduction in hardening, not a tidy-up.
+
+ECharts (through zrender) assigns to `constructor` while setting up its class
+hierarchy. With `Object.prototype` frozen, that assignment throws, the whole
+bundle dies before React mounts, and the window renders blank white with no
+message. It is not a configuration that can be worked around from this side:
+the freeze is applied to the webview before any application script runs, and
+there is no way to exempt one library.
+
+So the options were ECharts or the prototype freeze, and this spec chose
+ECharts. What is lost is one layer of defence against prototype-pollution, on a
+webview that loads no third-party script, makes no network requests, and renders
+no remote content — which is what makes the trade acceptable rather than merely
+necessary. If that changes, this decision has to be revisited.
+
+Two related changes came out of the same investigation:
+
+- **`devCsp`** was added so the strict production CSP survives. Vite's React
+  Refresh preamble is an inline `<script>`, which `script-src 'self'` blocks —
+  meaning `tauri dev` had _never_ rendered this app. Production keeps its
+  `script-src 'self'`; only development relaxes.
+- **A startup error is now displayed instead of a blank page.** A webview that
+  throws before React mounts paints nothing, which tells a user nothing and
+  gives them nothing to paste into an issue. `ui/src/main.tsx` now writes the
+  error where the UI would have been. This is how the ECharts failure was
+  eventually diagnosed.
 
 Measurements to record (both are pre-existing obligations coming due):
 

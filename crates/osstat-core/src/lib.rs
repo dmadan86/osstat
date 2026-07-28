@@ -15,7 +15,7 @@
 //! - [`meta`] — build and release metadata surfaced in the UI and bug reports.
 //! - [`provider`] — the capability traits `osstat-platform` implements.
 //! - [`metrics`] — system description, per-tick samples and the history ring.
-//! - [`process`] — process records, the tree built from them, and tick diffing.
+//! - [`process`] — process records, their identity, and tick diffing.
 //! - [`gpu`] — GPU description and measurement, including how far to trust it.
 
 #![forbid(unsafe_code)]
@@ -34,8 +34,5 @@ pub use metrics::{
     CpuDescription, DiskDescription, DiskKind, DiskSample, HISTORY_CAPACITY, InterfaceDescription,
     InterfaceSample, MetricsHistory, MetricsSample, SystemDescription,
 };
-pub use process::{
-    ProcessDiff, ProcessKey, ProcessNode, ProcessRecord, ProcessStatus, ProcessTree, Rollup,
-    diff_processes,
-};
+pub use process::{ProcessDiff, ProcessKey, ProcessRecord, ProcessStatus, diff_processes};
 pub use provider::{GpuProvider, ProcessProvider, SystemInfoProvider};

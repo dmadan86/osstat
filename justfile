@@ -33,10 +33,19 @@ test-rust:
 test-ui:
     npm run test --workspace @osstat/ui
 
-# Criterion benchmarks. Performance gates are defined per milestone in
-# ROADMAP.md; this target is a placeholder until M1 lands the first bench.
-bench:
+# Performance gates, defined per milestone in ROADMAP.md.
+#
+# M1's gate — a 500-process tree refreshing in under 50 ms — is split across
+# both languages, because the work is: Rust reads the process table and diffs
+# it, the front-end arranges the result into the tree that gets rendered.
+# Benchmarking only one half would measure a number nobody experiences.
+bench: bench-rust bench-ui
+
+bench-rust:
     cargo bench --workspace
+
+bench-ui:
+    npm run bench --workspace @osstat/ui
 
 # End-to-end suite (tauri-driver + WebdriverIO). Arrives in M5.
 e2e:

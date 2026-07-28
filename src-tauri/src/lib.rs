@@ -50,7 +50,7 @@ pub fn run() -> tauri::Result<()> {
             commands::app_info,
             commands::system_description,
             commands::metrics_history,
-            commands::process_tree,
+            commands::process_list,
             commands::gpu_devices,
             commands::set_sample_interval,
             commands::set_sampling_paused,

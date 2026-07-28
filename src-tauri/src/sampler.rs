@@ -31,7 +31,7 @@ use std::time::Duration;
 
 use osstat_core::{
     GpuDevice, GpuProvider, MetricsHistory, MetricsSample, ProcessProvider, ProcessRecord,
-    ProcessTree, SystemDescription, SystemInfoProvider, diff_processes,
+    SystemDescription, SystemInfoProvider, diff_processes,
 };
 use osstat_llm::HardwareProbe;
 use osstat_platform::SysinfoSource;
@@ -137,13 +137,14 @@ impl Sampler {
         }
     }
 
-    /// The current process tree.
+    /// Every process seen on the most recent tick, flat and unordered.
     ///
-    /// Built on demand rather than cached: the flat list is what the sampler
-    /// needs for diffing, and arranging it costs far less than the read.
+    /// Flat because the front-end arranges them: it maintains its own structure
+    /// in order to apply the per-tick diffs, so a hierarchy assembled here would
+    /// be rebuilt on arrival anyway.
     #[must_use]
-    pub fn process_tree(&self) -> ProcessTree {
-        ProcessTree::build(read(&self.shared.snapshot).processes.clone())
+    pub fn processes(&self) -> Vec<ProcessRecord> {
+        read(&self.shared.snapshot).processes.clone()
     }
 
     /// The GPUs found, or `None` while the probe is still running.
