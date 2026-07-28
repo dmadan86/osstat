@@ -36,6 +36,8 @@ export interface Preferences {
   historySeconds: number;
   /** What closing the window does. */
   closeBehaviour: CloseBehaviour;
+  /** Whether the one-time explanation of the tray has been dismissed. */
+  hasSeenTrayNotice: boolean;
   /**
    * How the Overview panels are arranged.
    *
@@ -80,6 +82,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   refreshMs: 2000,
   historySeconds: 300,
   closeBehaviour: 'hide',
+  hasSeenTrayNotice: false,
   overviewPanels: [],
 };
 
@@ -125,6 +128,9 @@ export function coercePreferences(raw: unknown): Preferences {
     closeBehaviour: isAllowed('closeBehaviour', candidate.closeBehaviour)
       ? candidate.closeBehaviour
       : DEFAULT_PREFERENCES.closeBehaviour,
+    // A plain boolean rather than a CHOICES entry: it is a record of something
+    // that happened, not a setting anyone picks.
+    hasSeenTrayNotice: candidate.hasSeenTrayNotice === true,
     // Not an `isAllowed` check: this is a list, not one of a fixed set of
     // choices, so it has its own coercion that repairs entries individually.
     overviewPanels: coercePanelLayout(candidate.overviewPanels),

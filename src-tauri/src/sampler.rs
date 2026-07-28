@@ -39,6 +39,8 @@ use osstat_llm::HardwareProbe;
 use osstat_platform::SysinfoSource;
 use tauri::{AppHandle, Emitter};
 
+use crate::tray;
+
 /// Event carrying one tick of measurement.
 pub const METRICS_EVENT: &str = "metrics:tick";
 
@@ -211,7 +213,15 @@ impl Sampler {
         let worker = Arc::clone(&shared);
         thread::Builder::new()
             .name("osstat-sampler".into())
-            .spawn(move || run(&app, &worker, source, HardwareProbe::new(system_memory)))
+            .spawn(move || {
+                run(
+                    &app,
+                    &worker,
+                    source,
+                    HardwareProbe::new(system_memory),
+                    system_memory,
+                );
+            })
             .map_err(osstat_core::Error::Io)?;
 
         Ok(Self {
@@ -299,7 +309,13 @@ impl Drop for Sampler {
 }
 
 /// The sampler thread's body.
-fn run(app: &AppHandle, shared: &Arc<Shared>, mut source: SysinfoSource, mut gpus: HardwareProbe) {
+fn run(
+    app: &AppHandle,
+    shared: &Arc<Shared>,
+    mut source: SysinfoSource,
+    mut gpus: HardwareProbe,
+    total_memory: u64,
+) {
     // Probe for GPUs first: it is the slowest thing here and it only happens
     // once, so it runs off the startup path rather than delaying the window.
     let devices = gpus.devices().unwrap_or_default();
@@ -333,6 +349,11 @@ fn run(app: &AppHandle, shared: &Arc<Shared>, mut source: SysinfoSource, mut gpu
         }
 
         write(&shared.snapshot).history.push(sample.clone());
+
+        // Refreshed in every state that samples at all, including the
+        // background: the tooltip is the only thing a hidden window still
+        // shows, so it is precisely what the background tick exists to feed.
+        tray::set_tooltip(app, &tray::tooltip(Some(&sample), total_memory));
 
         if activity.emits() {
             let _ = app.emit(METRICS_EVENT, &sample);

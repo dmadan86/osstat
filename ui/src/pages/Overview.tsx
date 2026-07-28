@@ -46,6 +46,10 @@ export interface OverviewProps {
   panels: PanelLayout[];
   /** Applies an arrangement change. */
   onPanelsChange: (next: PanelLayout[]) => void;
+  /** Whether to explain that closing the window did not quit. */
+  showTrayNotice: boolean;
+  /** Records that the explanation has been read. */
+  onTrayNoticeSeen: () => void;
 }
 
 /** A labelled figure. */
@@ -371,6 +375,27 @@ export function Overview(props: OverviewProps): React.JSX.Element {
 
   return (
     <div className="flex flex-col gap-4">
+      {props.showTrayNotice && (
+        <div
+          role="status"
+          aria-label="osstat keeps running in the notification area"
+          className="flex items-start gap-3 rounded-lg border border-edge bg-surface-raised px-4 py-2.5 text-xs text-neutral-300"
+        >
+          <span className="flex-1">
+            osstat kept running in the notification area when you closed the window. You can change
+            that in Settings.
+          </span>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={props.onTrayNoticeSeen}
+            className="text-neutral-500 hover:text-neutral-200"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h2 data-selectable className="text-lg font-semibold">
           {system.hostName ?? 'This machine'}

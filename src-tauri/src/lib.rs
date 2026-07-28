@@ -10,11 +10,13 @@
 
 pub mod commands;
 pub mod sampler;
+pub mod tray;
 pub mod window_state;
 
 use std::time::Duration;
 
 use tauri::{Manager, WindowEvent};
+use tauri_plugin_autostart::MacosLauncher;
 
 use crate::sampler::Sampler;
 use crate::window_state::CloseSetting;
@@ -26,6 +28,17 @@ use crate::window_state::CloseSetting;
 /// workload.
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(2);
 
+/// The flag the sign-in entry adds, so a login launch opens no window.
+const HIDDEN_FLAG: &str = "--hidden";
+
+/// Whether this process was started by the sign-in entry.
+///
+/// `args` is the process arguments, including the program name.
+#[must_use]
+pub fn starts_hidden(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == HIDDEN_FLAG)
+}
+
 /// Starts the application and blocks until the last window closes.
 ///
 /// # Errors
@@ -34,10 +47,37 @@ const DEFAULT_INTERVAL: Duration = Duration::from_secs(2);
 /// loop fails to initialise — most often a missing system webview runtime.
 pub fn run() -> tauri::Result<()> {
     tauri::Builder::default()
+        // Registered first, as this plugin requires. Once osstat starts at
+        // sign-in, clicking the desktop shortcut would otherwise launch a rival
+        // copy: two tray icons, two samplers, two windows with one title.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            tray::show_main_window(app);
+        }))
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec![HIDDEN_FLAG]),
+        ))
         .setup(|app| {
             let sampler = Sampler::start(app.handle().clone(), DEFAULT_INTERVAL)?;
             app.manage(sampler);
             app.manage(CloseSetting::default());
+
+            // A tray that could not be created is logged and moved past. An app
+            // without a tray icon still works; an app that refuses to start
+            // does not.
+            if let Err(error) = tray::create(app.handle()) {
+                eprintln!("osstat: could not create the tray icon: {error}");
+            }
+
+            // The window is configured invisible so a sign-in launch paints
+            // nothing. An ordinary launch has to ask for it, which also costs
+            // the old flash of unstyled window before React mounts.
+            if !starts_hidden(&std::env::args().collect::<Vec<_>>())
+                && let Some(window) = app.get_webview_window("main")
+            {
+                let _ = window.show();
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {

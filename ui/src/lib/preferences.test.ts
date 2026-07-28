@@ -17,6 +17,7 @@ describe('coercePreferences', () => {
       refreshMs: 5000,
       historySeconds: 60,
       closeBehaviour: 'quit',
+      hasSeenTrayNotice: true,
       overviewPanels: [],
     };
 
@@ -79,6 +80,7 @@ describe('loadPreferences', () => {
       refreshMs: 1000,
       historySeconds: 600,
       closeBehaviour: 'quit',
+      hasSeenTrayNotice: true,
       overviewPanels: [],
     };
 

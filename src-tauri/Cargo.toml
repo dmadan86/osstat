@@ -38,7 +38,9 @@ osstat-llm = { workspace = true }
 osstat-platform = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tauri = { version = "2.11.5", features = [] }
+tauri = { version = "2.11.5", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
 ts-rs = { workspace = true, optional = true }
 
 [lints]

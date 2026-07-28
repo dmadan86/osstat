@@ -14,6 +14,7 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart';
 
 import type { AppInfo } from '../bindings/AppInfo';
 import type { CloseBehaviour } from '../bindings/CloseBehaviour';
@@ -102,6 +103,28 @@ export async function setSampleInterval(millis: number): Promise<void> {
  */
 export async function setCloseBehaviour(behaviour: CloseBehaviour): Promise<void> {
   await invoke(COMMANDS.setCloseBehaviour, { behaviour });
+}
+
+/**
+ * Whether the operating system is set to start osstat at sign-in.
+ *
+ * Behind this module for the same reason every command is: a plugin's API
+ * crosses the same boundary an `invoke` does, and the webview's reach stays
+ * auditable when it is all in one file.
+ *
+ * @returns What the OS currently has registered.
+ */
+export function isAutostartEnabled(): Promise<boolean> {
+  return isEnabled();
+}
+
+/**
+ * Registers or removes the sign-in entry.
+ *
+ * @param enabled Whether osstat should start at sign-in.
+ */
+export async function setAutostart(enabled: boolean): Promise<void> {
+  await (enabled ? enable() : disable());
 }
 
 /** Subscribes to per-tick metric samples. */

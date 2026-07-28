@@ -132,6 +132,10 @@ function Page({
           onPanelsChange={(overviewPanels) => {
             onPreferenceChange({ overviewPanels });
           }}
+          showTrayNotice={!preferences.hasSeenTrayNotice && preferences.closeBehaviour === 'hide'}
+          onTrayNoticeSeen={() => {
+            onPreferenceChange({ hasSeenTrayNotice: true });
+          }}
         />
       );
 
