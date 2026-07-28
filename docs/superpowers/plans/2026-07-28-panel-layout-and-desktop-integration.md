@@ -2083,18 +2083,16 @@ Inside `PanelGrid`, after `const visible = ...`, add:
 const visibleIds = visible.map((panel) => panel.id);
 
 const drag = useDragReorder(visibleIds, (next) => {
-  // Reordering the visible panels must not disturb the hidden ones, so the
-  // new order is applied to the visible slots of the full layout.
-  let cursor = 0;
-  onLayoutChange(
-    layout.map((panel) => {
-      if (panel.hidden) return panel;
-      const id = next[cursor++];
-      return layout.find((candidate) => candidate.id === id) ?? panel;
-    })
-  );
+  // Reordering the visible panels must not disturb the hidden ones. Task 5
+  // added `applyVisibleOrder` to `panelLayout.ts` for exactly this, after the
+  // menu's Move up/Move down hit the same problem: a hidden panel between two
+  // visible ones absorbed the move and the click looked like a no-op. Reuse it
+  // rather than writing a second translation that can drift from the first.
+  onLayoutChange(applyVisibleOrder(layout, next));
 });
 ```
+
+`applyVisibleOrder` is imported from `../lib/panelLayout` — `PanelGrid.tsx` already imports from that module.
 
 Change the panel wrapper `<div>` to carry the ref, the drag state and the pointer-events guard, and pass a grip to `Collapsible`:
 
@@ -2395,8 +2393,27 @@ Append to the `tests` module in `src-tauri/src/sampler.rs`:
     }
 
     #[test]
-    fn the_background_tick_is_slower_than_anything_the_ui_offers() {
-        assert!(BACKGROUND_INTERVAL > Duration::from_millis(5_000));
+    fn hiding_the_window_never_samples_faster_than_the_foreground_would() {
+        // Asserts the invariant rather than pinning the constant: a test that
+        // only compared BACKGROUND_INTERVAL against literals would still pass
+        // if MAX_INTERVAL were raised to ten minutes tomorrow.
+        for foreground in [
+            MIN_INTERVAL,
+            Duration::from_secs(2),
+            BACKGROUND_INTERVAL,
+            Duration::from_secs(30),
+            MAX_INTERVAL,
+        ] {
+            let background = effective_interval(Activity::Background, foreground);
+            assert!(
+                background >= foreground,
+                "hiding must never speed sampling up: {foreground:?} became {background:?}"
+            );
+            assert!(
+                background >= BACKGROUND_INTERVAL,
+                "background must never tick faster than its floor"
+            );
+        }
     }
 
     #[test]
@@ -2440,10 +2457,13 @@ In `src-tauri/src/sampler.rs`, add after the `MIN_INTERVAL` constant:
 ```rust
 /// How often the sampler ticks while the window cannot be seen.
 ///
-/// Slower than anything the UI offers, because the only thing it feeds is a
-/// tray tooltip. It is deliberately not configurable: a setting for it would be
-/// a knob whose only effect is how much battery osstat burns while nobody is
-/// looking.
+/// The **floor** for how often the sampler ticks while the window cannot be
+/// seen — a slower foreground rate is honoured rather than overridden, because
+/// hiding the window must never make osstat sample more often.
+///
+/// The only thing it feeds is a tray tooltip. It is deliberately not
+/// configurable: a setting for it would be a knob whose only effect is how much
+/// battery osstat burns while nobody is looking.
 pub const BACKGROUND_INTERVAL: Duration = Duration::from_secs(5);
 
 /// What the sampler is currently doing, and why.
@@ -2499,11 +2519,17 @@ pub const fn activity_for(visible: bool, minimized: bool, user_paused: bool) -> 
 }
 
 /// The tick length a given activity actually uses.
+///
+/// `BACKGROUND_INTERVAL` is a floor rather than a replacement: `MAX_INTERVAL`
+/// lets a foreground rate reach a minute, and someone who deliberately slowed
+/// sampling down must not find it sped up the moment the window is hidden.
+///
+/// Note `Duration`'s comparison operators are not `const`, so this cannot be
+/// written as `foreground.max(BACKGROUND_INTERVAL)` inside a `const fn` —
+/// compare `as_nanos()` and branch, or drop the `const`.
 const fn effective_interval(activity: Activity, foreground: Duration) -> Duration {
-    match activity {
-        Activity::Background => BACKGROUND_INTERVAL,
-        _ => foreground,
-    }
+    // Background: the slower of the user's rate and the floor.
+    // Everything else: the user's rate.
 }
 ```
 
