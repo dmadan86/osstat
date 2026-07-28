@@ -1,7 +1,8 @@
 # Interactive dashboard: live system metrics, process tree and selectable views
 
 **Date:** 2026-07-28
-**Status:** Approved, ready for planning
+**Status:** Implemented. Sections marked _(changed during implementation)_ record
+where the built thing differs from the design, and why.
 **Supersedes:** nothing. **Depends on:** ADR-002, ADR-003, ADR-007, ADR-008
 
 ## Context
@@ -73,19 +74,25 @@ depend only on traits, and replacing `sysinfo` on one platform stays local.
 
 ```rust
 pub trait SystemInfoProvider {
-    fn describe(&self) -> Result<SystemDescription>;   // static-ish: OS, CPU model, total RAM
-    fn sample(&mut self) -> Result<MetricsSample>;     // per-tick scalars
+    fn describe(&mut self) -> Result<SystemDescription>;  // OS, CPU model, disks, interfaces
+    fn sample(&mut self) -> Result<MetricsSample>;        // per-tick scalars
 }
 
 pub trait ProcessProvider {
-    fn sample(&mut self) -> Result<Vec<ProcessRecord>>;  // flat; the tree is built in core
+    fn processes(&mut self) -> Result<Vec<ProcessRecord>>;  // flat; arranged by the front-end
 }
 
 pub trait GpuProvider {
-    fn probe(&self) -> Result<Vec<GpuDevice>>;    // enumeration, called once
-    fn sample(&mut self) -> Result<Vec<GpuSample>>;  // per-tick, may be empty
+    fn devices(&mut self) -> Result<Vec<GpuDevice>>;  // enumeration, called once
+    fn measure(&mut self) -> Result<Vec<GpuSample>>;  // per-tick, may be empty
 }
 ```
+
+The methods are named apart rather than all being `sample` _(changed during
+implementation)_: one type implements both `SystemInfoProvider` and
+`ProcessProvider` over a single `sysinfo::System`, and two methods of the same
+name would force fully-qualified syntax at every call site. Every sampler takes
+`&mut self` because a rate only exists relative to a previous reading.
 
 `MetricsSample` is a small, flat, `Copy`-friendly struct — CPU total, per-core
 vector, memory used/available/cached, swap, per-disk used/total, per-interface
@@ -130,25 +137,35 @@ Per ADR-007: push from Rust on a tick, do not poll from the webview.
   `MetricsHistory`, and refreshes on the configured interval.
 - **History lives in Rust, not React.** Charts fill instantly on first paint and
   survive a reload or a navigation change, instead of starting empty each time.
-- Sampling **pauses when the window is hidden** (Tauri window focus/visibility
-  events), for the idle-RAM budget.
+- Sampling **pauses when the window is minimised** — and deliberately _not_ when
+  it merely loses focus _(clarified during implementation)_. Alt-tabbing away to
+  make something happen and then coming back to look at the graph is the most
+  common way this app will be used; a sampler that stopped on blur would erase
+  exactly the history the user went to fetch. While paused the thread waits on a
+  condition variable rather than ticking, so a minimised window costs nothing.
 
 **Commands** (pull — initial paint and explicit refresh):
 
 | Command               | Returns                                                                                       |
 | --------------------- | --------------------------------------------------------------------------------------------- |
 | `system_description`  | OS, kernel, hostname, uptime, CPU model, core counts, total memory, disk list, interface list |
-| `metrics_history`     | the whole ring buffer, for first chart paint                                                  |
-| `process_tree`        | full tree snapshot                                                                            |
-| `gpu_devices`         | enumerated adapters (see 1.6)                                                                 |
-| `set_sample_interval` | acknowledges a new tick rate                                                                  |
+| `metrics_history`     | recent samples, bounded by a `limit`, for the first chart paint                               |
+| `process_list`        | every process, flat — the front-end's starting snapshot                                       |
+| `gpu_devices`         | enumerated adapters, or `null` while the probe is still running (see 1.6)                     |
+| `set_sample_interval` | changes the tick rate                                                                         |
+| `set_sampling_paused` | suspends or resumes sampling                                                                  |
 
 **Events** (push — per tick):
 
-| Event            | Payload                                                    |
-| ---------------- | ---------------------------------------------------------- |
-| `metrics:tick`   | one `MetricsSample`. Scalars only; small enough to ignore. |
-| `processes:tick` | **a diff**: `{ added: [], removed: [pid], changed: [] }`   |
+| Event            | Payload                                                                   |
+| ---------------- | ------------------------------------------------------------------------- |
+| `metrics:tick`   | one `MetricsSample`. Scalars only; small enough to ignore.                |
+| `processes:tick` | **a diff**: `{ added: [], removed: [ProcessKey], changed: [] }`           |
+| `gpus:ready`     | fired once, when the GPU probe finishes; the UI refetches the device list |
+
+`removed` carries the full `ProcessKey` rather than a bare PID _(changed during
+implementation)_: when a PID is recycled, the same number appears as removed and
+as added in one tick, and only the start time tells them apart.
 
 The process diff is not optional. Serialising 1000+ full process records every
 2 s is precisely the cost ADR-007 pushes back on, and it would show up as webview
