@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -135,6 +135,64 @@ describe('PanelGrid', () => {
       'cpu',
     ]);
     // The hidden panel kept its own slot rather than absorbing the move.
+    expect(next[1]).toMatchObject({ id: 'disks', hidden: true });
+  });
+
+  it('reorders by dragging a grip, without disturbing a hidden neighbour', () => {
+    const onLayoutChange = vi.fn();
+
+    // Same arrangement as the menu case above: cpu, disks(hidden), memory.
+    // Dragging memory to the top must produce memory, disks, cpu -- not swap
+    // memory with the hidden disks and leave the visible order unchanged.
+    render(
+      <PanelGrid
+        sections={SECTIONS}
+        layout={layout({ id: 'cpu' }, { id: 'disks', hidden: true }, { id: 'memory' })}
+        onLayoutChange={onLayoutChange}
+      />
+    );
+
+    const cpuRow = screen.getByTestId('panel-cpu');
+    const memoryRow = screen.getByTestId('panel-memory');
+
+    cpuRow.getBoundingClientRect = () =>
+      ({
+        top: 0,
+        bottom: 100,
+        left: 0,
+        right: 400,
+        height: 100,
+        width: 400,
+        x: 0,
+        y: 0,
+      }) as DOMRect;
+    memoryRow.getBoundingClientRect = () =>
+      ({
+        top: 100,
+        bottom: 200,
+        left: 0,
+        right: 400,
+        height: 100,
+        width: 400,
+        x: 0,
+        y: 100,
+      }) as DOMRect;
+
+    fireEvent.pointerDown(screen.getByTitle('Drag to reorder Memory'), {
+      clientY: 150,
+      pointerId: 1,
+    });
+    fireEvent.pointerMove(document, { clientY: 10, pointerId: 1 });
+    fireEvent.pointerUp(document, { clientY: 10, pointerId: 1 });
+
+    expect(onLayoutChange).toHaveBeenCalledTimes(1);
+    const next = onLayoutChange.mock.calls[0]?.[0] as PanelLayout[];
+
+    expect(next.map((panel) => panel.id)).toEqual(['memory', 'disks', 'cpu']);
+    expect(next.filter((panel) => !panel.hidden).map((panel) => panel.id)).toEqual([
+      'memory',
+      'cpu',
+    ]);
     expect(next[1]).toMatchObject({ id: 'disks', hidden: true });
   });
 });
