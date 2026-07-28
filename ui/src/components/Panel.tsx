@@ -57,29 +57,42 @@ export function Collapsible({
   const contentId = useId();
 
   return (
-    <section className="overflow-hidden rounded-xl border border-edge bg-surface-raised">
+    <section className="rounded-xl border border-edge bg-surface-raised">
       <h3 className="flex items-center gap-1 pr-1.5">
-        {grip}
+        {/*
+          Clipping lives here, not on the <section>: PanelMenu's dropdown is an
+          absolutely-positioned descendant of this header, and an
+          `overflow-hidden` ancestor clips it regardless of its own
+          positioning. So only the grip and the collapse button -- the pieces
+          whose hover background would otherwise square off the card's rounded
+          top corners -- are wrapped in a clipping container. The menu is a
+          sibling outside it and escapes the card's bounds freely.
+        */}
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden rounded-t-xl">
+          {grip}
 
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-controls={contentId}
-          onClick={() => {
-            setOpen((current) => !current);
-          }}
-          className="flex min-w-0 flex-1 items-center gap-2 px-2 py-2.5 text-left hover:bg-white/[0.03]"
-        >
-          <span aria-hidden="true" className="text-xs text-accent">
-            {open ? '▾' : '▸'}
-          </span>
-          <span className="truncate text-sm font-semibold">{section.title}</span>
-          {section.summary !== undefined && (
-            <span className="ml-auto truncate font-mono text-sm text-neutral-300">
-              {section.summary}
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={contentId}
+            onClick={() => {
+              setOpen((current) => !current);
+            }}
+            className={`flex min-w-0 flex-1 items-center gap-2 py-2.5 pr-2 text-left hover:bg-white/[0.03] ${
+              grip === undefined ? 'pl-4' : 'pl-2'
+            }`}
+          >
+            <span aria-hidden="true" className="text-xs text-accent">
+              {open ? '▾' : '▸'}
             </span>
-          )}
-        </button>
+            <span className="truncate text-sm font-semibold">{section.title}</span>
+            {section.summary !== undefined && (
+              <span className="ml-auto truncate font-mono text-sm text-neutral-300">
+                {section.summary}
+              </span>
+            )}
+          </button>
+        </div>
 
         {controls !== undefined && <PanelMenu title={section.title} {...controls} />}
       </h3>
