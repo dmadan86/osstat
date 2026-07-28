@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/osstat-core", "crates/osstat-platform", "src-tauri"]
+members = [
+  "crates/osstat-core",
+  "crates/osstat-llm",
+  "crates/osstat-platform",
+  "src-tauri",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,6 +18,7 @@ authors = ["osstat contributors"]
 
 [workspace.dependencies]
 osstat-core = { path = "crates/osstat-core", version = "0.1.0" }
+osstat-llm = { path = "crates/osstat-llm", version = "0.1.0" }
 osstat-platform = { path = "crates/osstat-platform", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

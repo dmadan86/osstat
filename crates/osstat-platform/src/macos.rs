@@ -9,3 +9,53 @@ use crate::PlatformId;
 
 pub(crate) const PLATFORM_ID: PlatformId = PlatformId::MacOs;
 pub(crate) const DISPLAY_NAME: &str = "macOS";
+
+/// Names a disk the way a macOS user would.
+///
+/// Finder shows mounted volumes by their name, so `/Volumes/Backup` reads as
+/// `Backup`. The boot volume is the exception: it mounts at `/` and calling it
+/// by its device node would help nobody.
+pub(crate) fn disk_display_name(device: &str, mount_point: &str) -> String {
+    let mount_point = mount_point.trim();
+
+    if let Some(volume) = mount_point.strip_prefix("/Volumes/")
+        && !volume.is_empty()
+    {
+        return volume.to_owned();
+    }
+
+    match mount_point {
+        "" => device.trim().to_owned(),
+        mount_point => mount_point.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn a_mounted_volume_is_named_as_finder_names_it() {
+        assert_eq!(
+            disk_display_name("/dev/disk4s1", "/Volumes/Backup"),
+            "Backup"
+        );
+    }
+
+    #[test]
+    fn the_boot_volume_keeps_its_mount_point() {
+        assert_eq!(disk_display_name("/dev/disk1s1", "/"), "/");
+    }
+
+    #[test]
+    fn an_empty_volumes_path_does_not_produce_an_empty_name() {
+        assert_eq!(disk_display_name("/dev/disk9", "/Volumes/"), "/Volumes/");
+    }
+
+    #[test]
+    fn a_mount_without_a_path_falls_back_to_the_device() {
+        assert_eq!(disk_display_name("/dev/disk9", ""), "/dev/disk9");
+    }
+}
