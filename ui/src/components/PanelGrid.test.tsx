@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PanelGrid } from './PanelGrid';
@@ -8,6 +9,7 @@ import type { SectionSpec } from './Section';
 const SECTIONS: SectionSpec[] = [
   { id: 'cpu', title: 'CPU', content: <p>cpu body</p> },
   { id: 'memory', title: 'Memory', content: <p>memory body</p> },
+  { id: 'disks', title: 'Disks', content: <p>disks body</p> },
 ];
 
 function layout(...entries: Array<Partial<PanelLayout> & { id: string }>): PanelLayout[] {
@@ -103,5 +105,36 @@ describe('PanelGrid', () => {
     );
 
     expect(screen.getByTestId('panel-cpu')).toHaveStyle({ gridColumn: 'span 12' });
+  });
+
+  it('moving a panel steps over a hidden neighbour in one click', async () => {
+    const user = userEvent.setup();
+    const onLayoutChange = vi.fn();
+
+    // disks sits hidden between the two visible panels: cpu, disks(hidden),
+    // memory. A move that only counted array positions (moveById) would swap
+    // memory with the hidden disks and leave the visible order -- cpu, memory
+    // -- unchanged, so the click would look like it did nothing.
+    render(
+      <PanelGrid
+        sections={SECTIONS}
+        layout={layout({ id: 'cpu' }, { id: 'disks', hidden: true }, { id: 'memory' })}
+        onLayoutChange={onLayoutChange}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Arrange Memory' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Move up' }));
+
+    expect(onLayoutChange).toHaveBeenCalledTimes(1);
+    const next = onLayoutChange.mock.calls[0]?.[0] as PanelLayout[];
+
+    expect(next.map((panel) => panel.id)).toEqual(['memory', 'disks', 'cpu']);
+    expect(next.filter((panel) => !panel.hidden).map((panel) => panel.id)).toEqual([
+      'memory',
+      'cpu',
+    ]);
+    // The hidden panel kept its own slot rather than absorbing the move.
+    expect(next[1]).toMatchObject({ id: 'disks', hidden: true });
   });
 });
