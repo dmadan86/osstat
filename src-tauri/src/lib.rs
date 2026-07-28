@@ -15,7 +15,7 @@ pub mod window_state;
 
 use std::time::Duration;
 
-use tauri::{Manager, WindowEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
 use crate::sampler::Sampler;
@@ -30,6 +30,17 @@ const DEFAULT_INTERVAL: Duration = Duration::from_secs(2);
 
 /// The flag the sign-in entry adds, so a login launch opens no window.
 const HIDDEN_FLAG: &str = "--hidden";
+
+/// Event fired the instant `CloseRequested` hides the window instead of
+/// letting it close.
+///
+/// The tray-explanation banner has to wait on this rather than on the
+/// close-behaviour preference: the preference only says a hide *would*
+/// happen on the next close, not that one just did, and a banner about an
+/// event that has not occurred yet is the bug this exists to avoid. This is
+/// also the only way the front end can learn a hide happened at all — the
+/// decision is made here, synchronously, with no round trip to the webview.
+pub const TRAY_HIDDEN_EVENT: &str = "tray:hidden";
 
 /// Whether this process was started by the sign-in entry.
 ///
@@ -104,6 +115,7 @@ pub fn run() -> tauri::Result<()> {
                 if let Some(sampler) = window.try_state::<Sampler>() {
                     sampler.set_window_state(false, false);
                 }
+                let _ = window.emit(TRAY_HIDDEN_EVENT, ());
             }
         })
         .invoke_handler(tauri::generate_handler![

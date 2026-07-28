@@ -41,6 +41,7 @@ export const EVENTS = {
   metricsTick: 'metrics:tick',
   processesTick: 'processes:tick',
   gpusReady: 'gpus:ready',
+  trayHidden: 'tray:hidden',
 } as const;
 
 /**
@@ -144,6 +145,20 @@ export function onProcessesTick(handler: (diff: ProcessDiff) => void): Promise<U
 /** Subscribes to the one-shot signal that GPU probing has finished. */
 export function onGpusReady(handler: () => void): Promise<UnlistenFn> {
   return listen(EVENTS.gpusReady, () => {
+    handler();
+  });
+}
+
+/**
+ * Subscribes to the signal that the window was just hidden to the tray
+ * rather than closed.
+ *
+ * This is the only way the front end learns a hide happened: the decision is
+ * made inside Rust's close handler, synchronously, with nothing asked of the
+ * webview beforehand.
+ */
+export function onTrayHidden(handler: () => void): Promise<UnlistenFn> {
+  return listen(EVENTS.trayHidden, () => {
     handler();
   });
 }

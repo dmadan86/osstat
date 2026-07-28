@@ -14,7 +14,13 @@ import { Navigation } from './components/Navigation';
 import { setCloseBehaviour, setSampleInterval } from './lib/ipc';
 import { samplesInWindow, usePreferences, type Preferences } from './lib/preferences';
 import type { ProcessTree } from './lib/processTree';
-import { useGpuDevices, useMetrics, useProcesses, useSystemDescription } from './lib/useLiveData';
+import {
+  useGpuDevices,
+  useMetrics,
+  useProcesses,
+  useSystemDescription,
+  useTrayHidden,
+} from './lib/useLiveData';
 import { Overview } from './pages/Overview';
 import { Planned } from './pages/Planned';
 import { Processes } from './pages/Processes';
@@ -32,6 +38,7 @@ export function App(): React.JSX.Element {
   );
   const { tree, loaded } = useProcesses();
   const gpus = useGpuDevices();
+  const hiddenToTray = useTrayHidden();
 
   // Push the chosen tick rate to the sampler. The backend clamps anything it
   // cannot honour, so a stale stored preference cannot produce a busy loop.
@@ -78,6 +85,7 @@ export function App(): React.JSX.Element {
             processesLoaded={loaded}
             preferences={preferences}
             onPreferenceChange={updatePreferences}
+            hiddenToTray={hiddenToTray}
           />
         )}
       </main>
@@ -105,6 +113,8 @@ interface PageProps {
   preferences: Preferences;
   /** Applies a preference change. */
   onPreferenceChange: (update: Partial<Preferences>) => void;
+  /** Whether the window has been hidden to the tray this session. */
+  hiddenToTray: boolean;
 }
 
 /** Chooses the page for the current route. */
@@ -118,6 +128,7 @@ function Page({
   processesLoaded,
   preferences,
   onPreferenceChange,
+  hiddenToTray,
 }: PageProps): React.JSX.Element {
   switch (route) {
     case 'overview':
@@ -132,7 +143,7 @@ function Page({
           onPanelsChange={(overviewPanels) => {
             onPreferenceChange({ overviewPanels });
           }}
-          showTrayNotice={!preferences.hasSeenTrayNotice && preferences.closeBehaviour === 'hide'}
+          showTrayNotice={hiddenToTray && !preferences.hasSeenTrayNotice}
           onTrayNoticeSeen={() => {
             onPreferenceChange({ hasSeenTrayNotice: true });
           }}

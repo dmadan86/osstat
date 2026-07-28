@@ -21,6 +21,7 @@ import {
   onGpusReady,
   onMetricsTick,
   onProcessesTick,
+  onTrayHidden,
 } from './ipc';
 import { applyDiff, buildTree, keyOf, type ProcessTree } from './processTree';
 
@@ -191,4 +192,39 @@ export function useGpuDevices(): GpuDevice[] | null {
   }, []);
 
   return devices;
+}
+
+/**
+ * Whether the window has been hidden to the tray at least once this session.
+ *
+ * Deliberately in-memory only: it seeds from nothing and flips true only on
+ * the runtime event, never from storage. A launch that follows an earlier
+ * hide must start `false` again — that hide happened to a window this
+ * process never had, so there is nothing this session to explain.
+ *
+ * @returns Whether a hide-to-tray has happened since this page loaded.
+ */
+export function useTrayHidden(): boolean {
+  const [hidden, setHidden] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    onTrayHidden(() => {
+      setHidden(true);
+    })
+      .then((stop) => {
+        if (cancelled) stop();
+        else unlisten = stop;
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  return hidden;
 }

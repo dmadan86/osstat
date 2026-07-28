@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -285,6 +285,23 @@ describe('App', () => {
     await screen.findByText('TESTBOX');
 
     expect(await screen.findByText(/No GPU was found/)).toBeInTheDocument();
+  });
+
+  it('explains the tray only after a hide actually happens, not on a fresh launch', async () => {
+    render(<App />);
+    await screen.findByText('TESTBOX');
+
+    expect(screen.queryByRole('status', { name: /notification area/i })).not.toBeInTheDocument();
+
+    const [, onHidden] =
+      listen.mock.calls.find((call) => call[0] === 'tray:hidden') ??
+      ([undefined, undefined] as const);
+    expect(onHidden).toBeDefined();
+    await act(async () => {
+      onHidden?.({});
+    });
+
+    expect(await screen.findByRole('status', { name: /notification area/i })).toBeInTheDocument();
   });
 
   it('offers no way to kill a process in this phase', async () => {
