@@ -9,6 +9,7 @@
 //! later without moving any logic.
 
 pub mod commands;
+pub mod ports;
 pub mod sampler;
 pub mod tray;
 pub mod window_state;
@@ -18,6 +19,7 @@ use std::time::Duration;
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
+use crate::ports::PortInspector;
 use crate::sampler::Sampler;
 use crate::window_state::CloseSetting;
 
@@ -61,6 +63,7 @@ pub fn run() -> tauri::Result<()> {
             let sampler = Sampler::start(app.handle().clone(), DEFAULT_INTERVAL)?;
             app.manage(sampler);
             app.manage(CloseSetting::default());
+            app.manage(PortInspector::default());
 
             // A tray that could not be created is logged and moved past. An app
             // without a tray icon still works; an app that refuses to start
@@ -111,6 +114,7 @@ pub fn run() -> tauri::Result<()> {
             commands::system_description,
             commands::metrics_history,
             commands::process_list,
+            commands::port_list,
             commands::gpu_devices,
             commands::set_sample_interval,
             commands::set_sampling_paused,

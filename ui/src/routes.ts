@@ -35,7 +35,7 @@ export interface NavItem {
 export const NAV_ITEMS: readonly NavItem[] = [
   { route: 'overview', label: 'Overview', icon: '◧' },
   { route: 'processes', label: 'Processes', icon: '▤' },
-  { route: 'ports', label: 'Ports', icon: '⇄', milestone: 'M2' },
+  { route: 'ports', label: 'Ports', icon: '⇄' },
   { route: 'cleaner', label: 'Cleaner', icon: '✦', milestone: 'M3' },
   { route: 'llm', label: 'LLM advisor', icon: '◇', milestone: 'M4' },
 ];
@@ -49,11 +49,6 @@ export const SETTINGS_ITEM: NavItem = {
 
 /** What each unbuilt page will do, shown on its placeholder. */
 export const PLANNED: Record<string, { title: string; summary: string }> = {
-  ports: {
-    title: 'Port inspector',
-    summary:
-      'Which process holds which port, and closing it on demand — joined to the process table you can already see.',
-  },
   cleaner: {
     title: 'System cleaner',
     summary:

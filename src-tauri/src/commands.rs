@@ -13,11 +13,14 @@
 
 use std::time::Duration;
 
-use osstat_core::{BuildInfo, GpuDevice, MetricsSample, ProcessRecord, SystemDescription};
+use osstat_core::{
+    BuildInfo, GpuDevice, MetricsSample, PortRecord, ProcessRecord, SystemDescription,
+};
 use osstat_platform::PlatformId;
 use serde::Serialize;
 use tauri::State;
 
+use crate::ports::PortInspector;
 use crate::sampler::Sampler;
 use crate::window_state::{CloseBehaviour, CloseSetting};
 
@@ -89,6 +92,17 @@ pub fn metrics_history(sampler: State<'_, Sampler>, limit: Option<u32>) -> Vec<M
 #[must_use]
 pub fn process_list(sampler: State<'_, Sampler>) -> Vec<ProcessRecord> {
     sampler.processes()
+}
+
+/// Returns every socket currently open, joined to the process that holds it.
+///
+/// Read fresh on every call rather than cached: unlike the process table this
+/// is not on the sampler's tick, so "fresh" here means "as of this call",
+/// which is what a page a user opens to check one specific port wants.
+#[tauri::command]
+#[must_use]
+pub fn port_list(sampler: State<'_, Sampler>, ports: State<'_, PortInspector>) -> Vec<PortRecord> {
+    ports.list(&sampler.processes())
 }
 
 /// Returns the GPUs found, or `None` while the probe is still running.

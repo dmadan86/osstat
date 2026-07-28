@@ -17,6 +17,7 @@ import type { ProcessTree } from './lib/processTree';
 import { useGpuDevices, useMetrics, useProcesses, useSystemDescription } from './lib/useLiveData';
 import { Overview } from './pages/Overview';
 import { Planned } from './pages/Planned';
+import { Ports } from './pages/Ports';
 import { Processes } from './pages/Processes';
 import { Settings } from './pages/Settings';
 import { NAV_ITEMS, type Route } from './routes';
@@ -141,6 +142,9 @@ function Page({
 
     case 'processes':
       return <Processes tree={tree} loaded={processesLoaded} />;
+
+    case 'ports':
+      return <Ports />;
 
     case 'settings':
       return <Settings preferences={preferences} onChange={onPreferenceChange} />;
