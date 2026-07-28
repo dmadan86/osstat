@@ -20,6 +20,7 @@ import type { AppInfo } from '../bindings/AppInfo';
 import type { CloseBehaviour } from '../bindings/CloseBehaviour';
 import type { GpuDevice } from '../bindings/GpuDevice';
 import type { MetricsSample } from '../bindings/MetricsSample';
+import type { PortRecord } from '../bindings/PortRecord';
 import type { ProcessDiff } from '../bindings/ProcessDiff';
 import type { ProcessRecord } from '../bindings/ProcessRecord';
 import type { SystemDescription } from '../bindings/SystemDescription';
@@ -30,6 +31,7 @@ export const COMMANDS = {
   systemDescription: 'system_description',
   metricsHistory: 'metrics_history',
   processList: 'process_list',
+  portList: 'port_list',
   gpuDevices: 'gpu_devices',
   setSampleInterval: 'set_sample_interval',
   setSamplingPaused: 'set_sampling_paused',
@@ -68,6 +70,16 @@ export function fetchMetricsHistory(limit: number): Promise<MetricsSample[]> {
 /** Returns every process from the most recent tick, flat and unordered. */
 export function fetchProcessList(): Promise<ProcessRecord[]> {
   return invoke<ProcessRecord[]>(COMMANDS.processList);
+}
+
+/**
+ * Returns every socket currently open, joined to the process that holds it.
+ *
+ * Read fresh on every call — unlike the process table this is not fed by the
+ * sampler's tick, so each call is a live enumeration as of that moment.
+ */
+export function fetchPortList(): Promise<PortRecord[]> {
+  return invoke<PortRecord[]>(COMMANDS.portList);
 }
 
 /**
