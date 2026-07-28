@@ -1,0 +1,18 @@
+# Default owner for everything.
+* @dmadan86
+
+# Cleaning rule manifests. A wrong glob deletes real user data, so these are
+# reviewed against what the target application actually stores (ADR-004).
+/rules/ @dmadan86
+
+# The deletion engine and the elevation helper are the two places where a bug is
+# a security incident rather than an inconvenience (ADR-005, ADR-006).
+/crates/osstat-core/src/clean/ @dmadan86
+/src-tauri/src/elevation/ @dmadan86
+
+# Changing the security posture, the capability allow-list, or the recorded
+# decisions requires maintainer sign-off.
+/SECURITY.md @dmadan86
+/docs/adr/ @dmadan86
+/src-tauri/capabilities/ @dmadan86
+/src-tauri/tauri.conf.json @dmadan86

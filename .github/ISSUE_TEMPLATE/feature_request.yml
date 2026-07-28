@@ -1,0 +1,36 @@
+name: Feature request
+description: Suggest a capability or an improvement
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check [ROADMAP.md](https://github.com/dmadan86/osstat/blob/main/ROADMAP.md)
+        first — it may already be planned.
+
+        Some things are deliberately excluded and will be declined regardless of
+        implementation quality: registry cleaning, driver updating, malware
+        scanning, and any form of telemetry.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: Describe the situation you are in, not the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like osstat to do
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today instead
+      description: Which tool or workaround are you using, and where does it fall short?
+    validations:
+      required: false
