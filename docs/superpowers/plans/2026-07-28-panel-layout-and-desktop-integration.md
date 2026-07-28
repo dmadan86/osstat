@@ -3092,8 +3092,8 @@ const QUIT_ID: &str = "tray-quit";
 
 /// Renders the tooltip text.
 ///
-/// @param sample The most recent sample, or `None` before the first tick.
-/// @param total_memory Installed memory, for the denominator.
+/// `sample` is `None` before the first tick; `total_memory` is installed
+/// memory, used as the denominator.
 #[must_use]
 pub fn tooltip(sample: Option<&MetricsSample>, total_memory: u64) -> String {
     let Some(sample) = sample else {
@@ -3336,7 +3336,7 @@ const HIDDEN_FLAG: &str = "--hidden";
 
 /// Whether this process was started by the sign-in entry.
 ///
-/// @param args The process arguments, including the program name.
+/// `args` is the process arguments, including the program name.
 #[must_use]
 pub fn starts_hidden(args: &[String]) -> bool {
     args.iter().any(|arg| arg == HIDDEN_FLAG)
@@ -3487,6 +3487,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Files:**
 
+- Modify: `ui/src/lib/ipc.ts` (autostart wrappers)
 - Modify: `ui/src/pages/Settings.tsx`
 - Modify: `ui/src/lib/preferences.ts` (the seen-notice flag)
 - Modify: `ui/src/pages/Overview.tsx` (the banner)
@@ -3495,23 +3496,26 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Interfaces:**
 
 - Consumes: `@tauri-apps/plugin-autostart` (`isEnabled`, `enable`, `disable`); `Preferences` from Task 3 and Task 9.
-- Produces: `Preferences.hasSeenTrayNotice: boolean`, default `false`.
+- Produces:
+  - `isAutostartEnabled(): Promise<boolean>` and `setAutostart(enabled: boolean): Promise<void>` in `ui/src/lib/ipc.ts`
+  - `Preferences.hasSeenTrayNotice: boolean`, default `false`
+
+**The autostart plugin is reached through `ipc.ts`, not imported into the page.** The Global Constraints put every backend call behind a named function there, and a plugin's JS API is a backend call — it crosses the same boundary an `invoke` does. Routing it through `ipc.ts` keeps the webview's reach auditable in one file, and lets the Settings test mock `../lib/ipc` like every other test in the suite rather than mocking a third-party module.
 
 - [ ] **Step 1: Write the failing tests**
 
 Append to `ui/src/pages/Settings.test.tsx`:
 
 ```tsx
-vi.mock('@tauri-apps/plugin-autostart', () => ({
-  isEnabled: vi.fn(async () => false),
-  enable: vi.fn(async () => {}),
-  disable: vi.fn(async () => {}),
+vi.mock('../lib/ipc', () => ({
+  isAutostartEnabled: vi.fn(async () => false),
+  setAutostart: vi.fn(async () => {}),
 }));
 
 describe('Settings › Start at sign-in', () => {
   it('reflects what the operating system actually has registered', async () => {
-    const { isEnabled } = await import('@tauri-apps/plugin-autostart');
-    vi.mocked(isEnabled).mockResolvedValueOnce(true);
+    const { isAutostartEnabled } = await import('../lib/ipc');
+    vi.mocked(isAutostartEnabled).mockResolvedValueOnce(true);
 
     render(<Settings preferences={prefs()} onChange={vi.fn()} />);
 
@@ -3519,17 +3523,17 @@ describe('Settings › Start at sign-in', () => {
   });
 
   it('writes to the operating system, not to a stored copy', async () => {
-    const { enable } = await import('@tauri-apps/plugin-autostart');
+    const { setAutostart } = await import('../lib/ipc');
     render(<Settings preferences={prefs()} onChange={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole('switch', { name: /sign in/i }));
 
-    expect(enable).toHaveBeenCalled();
+    expect(setAutostart).toHaveBeenCalledWith(true);
   });
 
   it('says so rather than lying when the entry cannot be read', async () => {
-    const { isEnabled } = await import('@tauri-apps/plugin-autostart');
-    vi.mocked(isEnabled).mockRejectedValueOnce(new Error('registry unavailable'));
+    const { isAutostartEnabled } = await import('../lib/ipc');
+    vi.mocked(isAutostartEnabled).mockRejectedValueOnce(new Error('registry unavailable'));
 
     render(<Settings preferences={prefs()} onChange={vi.fn()} />);
 
@@ -3537,6 +3541,8 @@ describe('Settings › Start at sign-in', () => {
   });
 });
 ```
+
+If `ui/src/pages/Settings.test.tsx` already mocks `../lib/ipc` for another reason, extend that factory rather than adding a second `vi.mock` for the same module — the later call silently replaces the earlier one.
 
 Append to `ui/src/pages/Overview.test.tsx`:
 
@@ -3599,13 +3605,44 @@ In `ui/src/lib/preferences.ts`, add `hasSeenTrayNotice: boolean;` to `Preference
     hasSeenTrayNotice: candidate.hasSeenTrayNotice === true,
 ```
 
-- [ ] **Step 4: Add the startup toggle**
+- [ ] **Step 4: Put the autostart plugin behind `ipc.ts`**
+
+In `ui/src/lib/ipc.ts`, add:
+
+```ts
+import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart';
+
+/**
+ * Whether the operating system is set to start osstat at sign-in.
+ *
+ * Behind this module for the same reason every command is: a plugin's API
+ * crosses the same boundary an `invoke` does, and the webview's reach stays
+ * auditable when it is all in one file.
+ *
+ * @returns What the OS currently has registered.
+ */
+export function isAutostartEnabled(): Promise<boolean> {
+  return isEnabled();
+}
+
+/**
+ * Registers or removes the sign-in entry.
+ *
+ * @param enabled Whether osstat should start at sign-in.
+ */
+export async function setAutostart(enabled: boolean): Promise<void> {
+  await (enabled ? enable() : disable());
+}
+```
+
+- [ ] **Step 5: Add the startup toggle**
 
 In `ui/src/pages/Settings.tsx`, add:
 
 ```tsx
 import { useEffect, useState } from 'react';
-import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart';
+
+import { isAutostartEnabled, setAutostart } from '../lib/ipc';
 ```
 
 and this component:
@@ -3624,16 +3661,15 @@ function StartAtSignIn(): React.JSX.Element {
   const [problem, setProblem] = useState<string | null>(null);
 
   useEffect(() => {
-    isEnabled().then(setEnabled, (error: unknown) => {
+    isAutostartEnabled().then(setEnabled, (error: unknown) => {
       setProblem(error instanceof Error ? error.message : String(error));
     });
   }, []);
 
   const toggle = (): void => {
     const next = enabled !== true;
-    const applied = next ? enable() : disable();
 
-    applied.then(
+    setAutostart(next).then(
       () => {
         setEnabled(next);
         setProblem(null);
@@ -3686,7 +3722,7 @@ function StartAtSignIn(): React.JSX.Element {
 
 Add `<StartAtSignIn />` to the settings card, above the `When I close the window` choice.
 
-- [ ] **Step 5: Add the banner**
+- [ ] **Step 6: Add the banner**
 
 In `ui/src/pages/Overview.tsx`, add to `OverviewProps`:
 
@@ -3733,12 +3769,12 @@ In `ui/src/App.tsx`, pass them:
           }}
 ```
 
-- [ ] **Step 6: Run everything**
+- [ ] **Step 7: Run everything**
 
 Run: `npm run test --workspace @osstat/ui; npm run typecheck --workspace @osstat/ui; npm run lint --workspace @osstat/ui; cargo test -p osstat`
 Expected: all exit 0.
 
-- [ ] **Step 7: Verify Phase B by hand**
+- [ ] **Step 8: Verify Phase B by hand**
 
 Run `npm run build` and launch the built binary from `src-tauri/target/release/`.
 
@@ -3750,10 +3786,10 @@ Run `npm run build` and launch the built binary from `src-tauri/target/release/`
 6. Settings › When I close the window → Quit. Close. The app exits.
 7. Turn the sign-in toggle off. Task Manager's Startup tab no longer lists it.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add ui/src/pages/Settings.tsx ui/src/pages/Settings.test.tsx ui/src/pages/Overview.tsx ui/src/pages/Overview.test.tsx ui/src/lib/preferences.ts ui/src/App.tsx
+git add ui/src/lib/ipc.ts ui/src/pages/Settings.tsx ui/src/pages/Settings.test.tsx ui/src/pages/Overview.tsx ui/src/pages/Overview.test.tsx ui/src/lib/preferences.ts ui/src/App.tsx
 git commit -m "feat(ui): add the start-at-sign-in switch and the tray notice
 
 The switch reads and writes the operating system directly, with no
