@@ -16,14 +16,16 @@
 //! covering both would make every command wait on a tick that can legitimately
 //! take tens of milliseconds with a thousand processes in flight.
 //!
-//! # Why pausing is tied to minimising, not to focus
+//! # Why the window state is tied to minimising, not to focus
 //!
-//! Sampling stops when the window is minimised, which is when nobody can see
-//! it. It deliberately does *not* stop when the window merely loses focus:
-//! alt-tabbing away to make something happen and then coming back to look at
-//! the graph is the single most common way this app will be used, and a
-//! sampler that stopped on blur would erase exactly the history the user went
-//! to fetch.
+//! Sampling drops to the background — slower, silent, but still running —
+//! when the window is minimised or hidden, which is when nobody can see it.
+//! It stops altogether only when the user explicitly pauses it (see
+//! [`Activity`] for the three states). Neither transition happens when the
+//! window merely loses focus: alt-tabbing away to make something happen and
+//! then coming back to look at the graph is the single most common way this
+//! app will be used, and a sampler that slowed on blur would erase exactly the
+//! history the user went to fetch.
 
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
@@ -56,12 +58,13 @@ const MAX_INTERVAL: Duration = Duration::from_mins(1);
 /// The fastest tick the UI offers.
 const MIN_INTERVAL: Duration = Duration::from_millis(500);
 
-/// How often the sampler ticks while the window cannot be seen.
+/// The floor for how often the sampler ticks while the window cannot be seen.
 ///
-/// No faster than the slowest tick the UI offers, because the only thing it
-/// feeds is a tray tooltip. It is deliberately not configurable: a setting for
-/// it would be a knob whose only effect is how much battery osstat burns while
-/// nobody is looking.
+/// This is a floor, not a fixed rate: the only thing background sampling feeds
+/// is a tray tooltip, so it never needs to tick faster than this, but it does
+/// not speed a slower foreground rate up either — see [`effective_interval`].
+/// It is deliberately not configurable: a setting for it would be a knob whose
+/// only effect is how much battery osstat burns while nobody is looking.
 pub const BACKGROUND_INTERVAL: Duration = Duration::from_secs(5);
 
 /// What the sampler is currently doing, and why.
@@ -117,8 +120,16 @@ pub const fn activity_for(visible: bool, minimized: bool, user_paused: bool) -> 
 }
 
 /// The tick length a given activity actually uses.
+///
+/// `BACKGROUND_INTERVAL` is a floor rather than a replacement: someone who
+/// deliberately slowed sampling down must not find it sped up the moment the
+/// window is hidden. `Duration`'s comparison operators are not `const`, so the
+/// floor is applied by comparing nanoseconds, which is.
 const fn effective_interval(activity: Activity, foreground: Duration) -> Duration {
     match activity {
+        Activity::Background if foreground.as_nanos() > BACKGROUND_INTERVAL.as_nanos() => {
+            foreground
+        }
         Activity::Background => BACKGROUND_INTERVAL,
         _ => foreground,
     }
@@ -485,11 +496,23 @@ mod tests {
 
     #[test]
     fn hiding_the_window_never_samples_faster_than_the_foreground_would() {
-        // The point of the background state is to cost less, so it must be no
-        // faster than the slowest rate the UI offers, and strictly slower than
-        // the default the app ships with.
-        assert!(BACKGROUND_INTERVAL >= Duration::from_secs(5));
-        assert!(BACKGROUND_INTERVAL > Duration::from_secs(2));
+        for foreground in [
+            MIN_INTERVAL,
+            Duration::from_secs(2),
+            BACKGROUND_INTERVAL,
+            Duration::from_secs(30),
+            MAX_INTERVAL,
+        ] {
+            let background = effective_interval(Activity::Background, foreground);
+            assert!(
+                background >= foreground,
+                "hiding must never speed sampling up: {foreground:?} became {background:?}"
+            );
+            assert!(
+                background >= BACKGROUND_INTERVAL,
+                "background must never tick faster than its floor"
+            );
+        }
     }
 
     #[test]
