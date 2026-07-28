@@ -17,6 +17,7 @@
 //! - [`metrics`] — system description, per-tick samples and the history ring.
 //! - [`process`] — process records, their identity, and tick diffing.
 //! - [`gpu`] — GPU description and measurement, including how far to trust it.
+//! - [`socket`] — socket records and their join to the process table.
 
 #![forbid(unsafe_code)]
 
@@ -26,6 +27,7 @@ pub mod meta;
 pub mod metrics;
 pub mod process;
 pub mod provider;
+pub mod socket;
 
 pub use error::{Error, Result};
 pub use gpu::{GpuDevice, GpuKind, GpuSample, GpuSource};
@@ -35,4 +37,7 @@ pub use metrics::{
     InterfaceSample, MetricsHistory, MetricsSample, SystemDescription,
 };
 pub use process::{ProcessDiff, ProcessKey, ProcessRecord, ProcessStatus, diff_processes};
-pub use provider::{GpuProvider, ProcessProvider, SystemInfoProvider};
+pub use provider::{GpuProvider, ProcessProvider, SocketProvider, SystemInfoProvider};
+pub use socket::{
+    PortRecord, SocketProtocol, SocketRecord, SocketState, join_sockets_to_processes,
+};

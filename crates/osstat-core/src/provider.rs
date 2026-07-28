@@ -13,6 +13,7 @@ use crate::error::Result;
 use crate::gpu::{GpuDevice, GpuSample};
 use crate::metrics::{MetricsSample, SystemDescription};
 use crate::process::ProcessRecord;
+use crate::socket::SocketRecord;
 
 /// Describes the machine and measures it.
 pub trait SystemInfoProvider {
@@ -74,6 +75,27 @@ pub trait GpuProvider {
     ///
     /// Returns an error if a device that was enumerated can no longer be read.
     fn measure(&mut self) -> Result<Vec<GpuSample>>;
+}
+
+/// Enumerates network sockets, unjoined to the process table.
+///
+/// Joining is [`crate::socket::join_sockets_to_processes`] rather than a
+/// method here, for the same reason [`ProcessProvider::processes`] returns a
+/// flat list rather than a tree: assembling two tables together is portable
+/// logic, testable without a socket open, and does not belong behind a trait
+/// only the platform layer can implement.
+pub trait SocketProvider {
+    /// Every socket currently open on the machine.
+    ///
+    /// # Errors
+    ///
+    /// A process that cannot enumerate sockets at all — sandboxed, or on a CI
+    /// runner with restricted permissions — is the ordinary case, not a
+    /// failure, and this degrades to an empty list the way
+    /// [`GpuProvider::devices`] degrades for a machine with no GPU. An error
+    /// here means the probe itself could not run, never merely that it found
+    /// nothing to report.
+    fn sockets(&mut self) -> Result<Vec<SocketRecord>>;
 }
 
 #[cfg(test)]
@@ -138,5 +160,23 @@ mod tests {
             samples[0].utilisation.is_none(),
             "a device that cannot be measured must not report 0%"
         );
+    }
+
+    /// A provider standing in for a sandboxed process that cannot enumerate
+    /// sockets at all, standing in for a locked-down CI runner.
+    #[derive(Default)]
+    struct RestrictedSockets;
+
+    impl SocketProvider for RestrictedSockets {
+        fn sockets(&mut self) -> Result<Vec<SocketRecord>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn a_process_that_cannot_enumerate_sockets_degrades_to_empty_not_an_error() {
+        let mut provider = RestrictedSockets;
+
+        assert!(provider.sockets().unwrap().is_empty());
     }
 }
