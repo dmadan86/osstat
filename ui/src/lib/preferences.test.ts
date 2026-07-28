@@ -29,6 +29,7 @@ describe('coercePreferences', () => {
       pageLayout: 'nonsense',
       refreshMs: 1000,
       historySeconds: 'later',
+      closeBehaviour: 'nonsense',
     };
 
     const result = coercePreferences(partly);
@@ -37,6 +38,14 @@ describe('coercePreferences', () => {
     expect(result.refreshMs).toBe(1000);
     expect(result.pageLayout).toBe(DEFAULT_PREFERENCES.pageLayout);
     expect(result.historySeconds).toBe(DEFAULT_PREFERENCES.historySeconds);
+    expect(result.closeBehaviour).toBe(DEFAULT_PREFERENCES.closeBehaviour);
+  });
+
+  it('rejects a close behaviour that is not one the UI offers', () => {
+    // A hand-edited or stale value must not decide what closing the window does.
+    expect(coercePreferences({ closeBehaviour: 'nonsense' }).closeBehaviour).toBe(
+      DEFAULT_PREFERENCES.closeBehaviour
+    );
   });
 
   it('rejects a refresh interval that is not one the UI offers', () => {

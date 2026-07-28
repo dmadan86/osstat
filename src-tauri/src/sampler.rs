@@ -516,7 +516,10 @@ mod tests {
     }
 
     #[test]
-    fn the_background_interval_replaces_the_users_rate_rather_than_scaling_it() {
+    // Paired with `hiding_the_window_never_samples_faster_than_the_foreground_would`
+    // above: that test covers the floor from the slow side, this one covers it
+    // from the fast side.
+    fn a_fast_foreground_rate_drops_to_the_background_floor() {
         assert_eq!(
             effective_interval(Activity::Background, Duration::from_secs(1)),
             BACKGROUND_INTERVAL
