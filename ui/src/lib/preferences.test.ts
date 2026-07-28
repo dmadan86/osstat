@@ -6,6 +6,7 @@ import {
   loadPreferences,
   samplesInWindow,
   savePreferences,
+  type Preferences,
 } from './preferences';
 
 describe('coercePreferences', () => {
@@ -15,6 +16,7 @@ describe('coercePreferences', () => {
       pageLayout: 'subTabs',
       refreshMs: 5000,
       historySeconds: 60,
+      overviewPanels: [],
     };
 
     expect(coercePreferences(valid)).toEqual(valid);
@@ -61,12 +63,13 @@ describe('loadPreferences', () => {
   });
 
   it('round-trips through storage', () => {
-    const chosen = {
+    const chosen: Preferences = {
       navigation: 'rail',
       pageLayout: 'subTabs',
       refreshMs: 1000,
       historySeconds: 600,
-    } as const;
+      overviewPanels: [],
+    };
 
     savePreferences(chosen);
 
@@ -96,6 +99,45 @@ describe('loadPreferences', () => {
     expect(() => {
       savePreferences(DEFAULT_PREFERENCES);
     }).not.toThrow();
+  });
+});
+
+describe('overviewPanels', () => {
+  it('defaults to an empty list, which reconciliation fills from the sections', () => {
+    expect(DEFAULT_PREFERENCES.overviewPanels).toEqual([]);
+  });
+
+  it('reads a stored layout back', () => {
+    const panels = [{ id: 'cpu', span: 6, height: 'tall', hidden: false }];
+    expect(coercePreferences({ overviewPanels: panels }).overviewPanels).toEqual(panels);
+  });
+
+  it('falls back to no layout without disturbing the other settings', () => {
+    const result = coercePreferences({ overviewPanels: 'sideways', navigation: 'rail' });
+    expect(result.overviewPanels).toEqual([]);
+    expect(result.navigation).toBe('rail');
+  });
+
+  it('repairs a bad entry rather than discarding the whole layout', () => {
+    const result = coercePreferences({
+      overviewPanels: [
+        { id: 'cpu', span: 99 },
+        { id: 'gpu', span: 4 },
+      ],
+    });
+    expect(result.overviewPanels).toEqual([
+      { id: 'cpu', span: 12, height: 'normal', hidden: false },
+      { id: 'gpu', span: 4, height: 'normal', hidden: false },
+    ]);
+  });
+
+  it('survives a record written before this field existed', () => {
+    // The upgrade path: no key bump, no migration.
+    const old = { navigation: 'tabs', pageLayout: 'subTabs', refreshMs: 5000, historySeconds: 60 };
+    const result = coercePreferences(old);
+    expect(result.overviewPanels).toEqual([]);
+    expect(result.navigation).toBe('tabs');
+    expect(result.refreshMs).toBe(5000);
   });
 });
 

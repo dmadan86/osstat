@@ -15,6 +15,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import { coercePanelLayout, type PanelLayout } from './panelLayout';
+
 /** Where the primary navigation lives. */
 export type NavigationStyle = 'sidebar' | 'tabs' | 'rail';
 
@@ -31,6 +33,13 @@ export interface Preferences {
   refreshMs: number;
   /** Seconds of history the charts show. */
   historySeconds: number;
+  /**
+   * How the Overview panels are arranged.
+   *
+   * Empty means "never arranged"; the canonical section order is used, and
+   * `reconcileLayout` fills this in from the sections that actually exist.
+   */
+  overviewPanels: PanelLayout[];
 }
 
 /** The allowed value of each setting, used for both the UI and validation. */
@@ -63,12 +72,16 @@ export const DEFAULT_PREFERENCES: Preferences = {
   pageLayout: 'onePage',
   refreshMs: 2000,
   historySeconds: 300,
+  overviewPanels: [],
 };
 
 const STORAGE_KEY = 'osstat.preferences.v1';
 
 /** Whether `value` is one of the values `key` allows. */
-function isAllowed<K extends keyof Preferences>(key: K, value: unknown): value is Preferences[K] {
+function isAllowed<K extends keyof typeof CHOICES>(
+  key: K,
+  value: unknown
+): value is Preferences[K] {
   return CHOICES[key].some((choice) => choice.value === value);
 }
 
@@ -101,6 +114,9 @@ export function coercePreferences(raw: unknown): Preferences {
     historySeconds: isAllowed('historySeconds', candidate.historySeconds)
       ? candidate.historySeconds
       : DEFAULT_PREFERENCES.historySeconds,
+    // Not an `isAllowed` check: this is a list, not one of a fixed set of
+    // choices, so it has its own coercion that repairs entries individually.
+    overviewPanels: coercePanelLayout(candidate.overviewPanels),
   };
 }
 

@@ -18,7 +18,7 @@ export interface SettingsProps {
 }
 
 /** One setting, rendered as a row of choices. */
-function Choice<K extends keyof Preferences>({
+function Choice<K extends keyof typeof CHOICES>({
   label,
   description,
   setting,
@@ -39,7 +39,7 @@ function Choice<K extends keyof Preferences>({
       </div>
 
       <div role="radiogroup" aria-label={label} className="flex flex-wrap gap-1.5">
-        {CHOICES[setting].map((choice) => {
+        {CHOICES[setting].map((choice: (typeof CHOICES)[K][number]) => {
           const selected = choice.value === value;
           return (
             <button
