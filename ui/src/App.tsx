@@ -122,6 +122,10 @@ function Page({
           latest={latest}
           gpus={gpus}
           layout={preferences.pageLayout}
+          panels={preferences.overviewPanels}
+          onPanelsChange={(overviewPanels) => {
+            onPreferenceChange({ overviewPanels });
+          }}
         />
       );
 

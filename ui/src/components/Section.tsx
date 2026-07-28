@@ -9,32 +9,63 @@
 import { useState } from 'react';
 
 import { Collapsible, type SectionSpec } from './Panel';
+import { PanelGrid } from './PanelGrid';
+import { PanelMenu } from './PanelMenu';
+import { moveById, updatePanel, type PanelLayout } from '../lib/panelLayout';
 
 export type { SectionSpec } from './Panel';
 
 /** How a page presents its sections. */
 export interface SectionContainerProps {
-  /** The sections, in order. */
+  /** The sections, in canonical order. */
   sections: SectionSpec[];
-  /** `onePage` stacks them collapsibly; `subTabs` shows one at a time. */
+  /** `onePage` arranges them in a grid; `subTabs` shows one at a time. */
   layout: 'onePage' | 'subTabs';
+  /** The panel arrangement, when the page supports arranging. */
+  panels?: PanelLayout[];
+  /** Applies an arrangement change. */
+  onPanelsChange?: (next: PanelLayout[]) => void;
 }
 
 /**
  * Presents a page's sections according to the layout preference.
  *
- * @param props The sections and the chosen layout.
+ * @param props The sections, the chosen layout, and the panel arrangement.
  */
-export function SectionContainer({ sections, layout }: SectionContainerProps): React.JSX.Element {
+export function SectionContainer({
+  sections,
+  layout,
+  panels,
+  onPanelsChange,
+}: SectionContainerProps): React.JSX.Element {
   const [active, setActive] = useState(sections[0]?.id ?? '');
 
+  // Ordered by the arrangement where there is one, so the sub-tab order is the
+  // same order the grid uses. Hidden panels are hidden in both.
+  const arranged =
+    panels === undefined
+      ? sections
+      : panels
+          .filter((panel) => !panel.hidden)
+          .flatMap((panel) => sections.filter((section) => section.id === panel.id));
+
   if (layout === 'subTabs') {
-    const current = sections.find((section) => section.id === active) ?? sections[0];
+    const current = arranged.find((section) => section.id === active) ?? arranged[0];
+
+    // One menu, acting on the selected tab. Width and height are omitted:
+    // one section fills the pane, so they would do nothing, and a control that
+    // does nothing is worse than no control. Order still matters here — it is
+    // the tab order — and so does hiding.
+    const index = current === undefined ? -1 : arranged.findIndex((s) => s.id === current.id);
 
     return (
       <div className="flex flex-col gap-3">
-        <div role="tablist" aria-label="Sections" className="flex gap-1 border-b border-edge">
-          {sections.map((section) => {
+        <div
+          role="tablist"
+          aria-label="Sections"
+          className="flex items-center gap-1 border-b border-edge"
+        >
+          {arranged.map((section) => {
             const selected = section.id === current?.id;
             return (
               <button
@@ -55,6 +86,31 @@ export function SectionContainer({ sections, layout }: SectionContainerProps): R
               </button>
             );
           })}
+
+          {current !== undefined && panels !== undefined && onPanelsChange !== undefined && (
+            <div className="ml-auto pb-1">
+              <PanelMenu
+                title={current.title}
+                span={12}
+                height="normal"
+                canMoveUp={index > 0}
+                canMoveDown={index >= 0 && index < arranged.length - 1}
+                showSize={false}
+                onSpan={() => {}}
+                onHeight={() => {}}
+                onMove={(delta) => {
+                  onPanelsChange(moveById(panels, current.id, delta));
+                }}
+                onHide={() => {
+                  const remaining = arranged.filter((section) => section.id !== current.id);
+                  // Move off the tab about to disappear, or the panel would be
+                  // hidden while still selected and the pane would go blank.
+                  setActive(remaining[0]?.id ?? '');
+                  onPanelsChange(updatePanel(panels, current.id, { hidden: true }));
+                }}
+              />
+            </div>
+          )}
         </div>
 
         {current !== undefined && (
@@ -66,9 +122,13 @@ export function SectionContainer({ sections, layout }: SectionContainerProps): R
     );
   }
 
+  if (panels !== undefined && onPanelsChange !== undefined) {
+    return <PanelGrid sections={sections} layout={panels} onLayoutChange={onPanelsChange} />;
+  }
+
   return (
     <div className="flex flex-col gap-2">
-      {sections.map((section) => (
+      {arranged.map((section) => (
         <Collapsible key={section.id} section={section} defaultOpen />
       ))}
     </div>

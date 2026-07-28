@@ -10,6 +10,7 @@ import type { MetricsSample } from '../bindings/MetricsSample';
 import type { SystemDescription } from '../bindings/SystemDescription';
 import { Chart } from '../components/Chart';
 import { Meter } from '../components/Meter';
+import { chartHeightFor } from '../components/PanelGrid';
 import { SectionContainer, type SectionSpec } from '../components/Section';
 import {
   memoryAreaOption,
@@ -25,7 +26,9 @@ import {
   formatPercent,
   formatRate,
 } from '../lib/format';
+import { reconcileLayout, type PanelLayout } from '../lib/panelLayout';
 import type { PageLayout } from '../lib/preferences';
+import { OVERVIEW_PANEL_IDS } from './overviewPanels';
 
 /** What the Overview page needs. */
 export interface OverviewProps {
@@ -39,6 +42,10 @@ export interface OverviewProps {
   gpus: GpuDevice[] | null;
   /** How to present the sections. */
   layout: PageLayout;
+  /** The stored panel arrangement. */
+  panels: PanelLayout[];
+  /** Applies an arrangement change. */
+  onPanelsChange: (next: PanelLayout[]) => void;
 }
 
 /** A labelled figure. */
@@ -64,7 +71,10 @@ function Waiting({ children }: { children: string }): React.JSX.Element {
 
 /** Builds the Overview sections. */
 function sectionsFor(props: OverviewProps): SectionSpec[] {
-  const { system, samples, latest, gpus } = props;
+  const { system, samples, latest, gpus, panels } = props;
+
+  const reconciled = reconcileLayout(panels, OVERVIEW_PANEL_IDS);
+  const heightOf = (id: string): number => chartHeightFor(reconciled, id);
 
   const cpuPoints: TimePoint[] = samples.map((sample) => ({
     at: sample.atMs,
@@ -114,7 +124,7 @@ function sectionsFor(props: OverviewProps): SectionSpec[] {
             ) : (
               <Chart
                 option={percentAreaOption(cpuPoints, 'CPU')}
-                height={120}
+                height={heightOf('cpu')}
                 label="Total CPU utilisation over time"
               />
             )}
@@ -162,7 +172,7 @@ function sectionsFor(props: OverviewProps): SectionSpec[] {
             ) : (
               <Chart
                 option={memoryAreaOption(memoryPoints, memoryTotal)}
-                height={120}
+                height={heightOf('memory')}
                 label="Memory in use over time"
               />
             )}
@@ -220,7 +230,7 @@ function sectionsFor(props: OverviewProps): SectionSpec[] {
               <>
                 <Chart
                   option={throughputOption(rxPoints, txPoints)}
-                  height={110}
+                  height={heightOf('network')}
                   label={`Throughput on ${interfaceName}`}
                 />
                 <div className="mt-1.5 flex gap-4 text-[11px] text-neutral-500">
@@ -372,7 +382,12 @@ export function Overview(props: OverviewProps): React.JSX.Element {
         </p>
       </header>
 
-      <SectionContainer sections={sectionsFor(props)} layout={props.layout} />
+      <SectionContainer
+        sections={sectionsFor(props)}
+        layout={props.layout}
+        panels={reconcileLayout(props.panels, OVERVIEW_PANEL_IDS)}
+        onPanelsChange={props.onPanelsChange}
+      />
     </div>
   );
 }
