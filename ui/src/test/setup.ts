@@ -16,6 +16,18 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
   globalThis.ResizeObserver = NoopResizeObserver;
 }
 
+// jsdom does not implement pointer capture at all -- calling either method
+// throws "is not a function". `useDragReorder` captures the pointer on drag
+// start so a release outside the viewport still reaches `document`; the
+// capture itself has no observable effect in jsdom (which lays nothing out
+// and delivers events to `document` regardless), so a no-op is enough.
+if (typeof HTMLElement.prototype.setPointerCapture === 'undefined') {
+  HTMLElement.prototype.setPointerCapture = (): void => {};
+}
+if (typeof HTMLElement.prototype.releasePointerCapture === 'undefined') {
+  HTMLElement.prototype.releasePointerCapture = (): void => {};
+}
+
 afterEach(() => {
   cleanup();
 });

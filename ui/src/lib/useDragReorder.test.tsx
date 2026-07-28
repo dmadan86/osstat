@@ -89,4 +89,34 @@ describe('useDragReorder', () => {
 
     expect(onReorder).not.toHaveBeenCalled();
   });
+
+  it('abandons the drag on pointercancel, leaving the order unchanged', () => {
+    // The OS or browser can take a gesture away mid-drag -- a touch turning
+    // into a scroll, a pen leaving range, a window losing the pointer. That
+    // must end the drag the same as Escape does, not leave it stuck.
+    const onReorder = vi.fn();
+    render(<Harness onReorder={onReorder} />);
+    stackRows();
+
+    fireEvent.pointerDown(screen.getByTestId('grip-a'), { clientY: 10, pointerId: 1 });
+    fireEvent.pointerMove(document, { clientY: 250, pointerId: 1 });
+    fireEvent.pointerCancel(document, { pointerId: 1 });
+
+    expect(onReorder).not.toHaveBeenCalled();
+    expect(screen.queryByText(/dragging/)).not.toBeInTheDocument();
+  });
+
+  it('does not reorder when the pointer is released outside every row', () => {
+    // Dropped below the last row (or off the grid entirely): no row contains
+    // the pointer, so there is nowhere to move to.
+    const onReorder = vi.fn();
+    render(<Harness onReorder={onReorder} />);
+    stackRows();
+
+    fireEvent.pointerDown(screen.getByTestId('grip-a'), { clientY: 10, pointerId: 1 });
+    fireEvent.pointerMove(document, { clientY: 1000, pointerId: 1 });
+    fireEvent.pointerUp(document, { clientY: 1000, pointerId: 1 });
+
+    expect(onReorder).not.toHaveBeenCalled();
+  });
 });

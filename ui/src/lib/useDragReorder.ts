@@ -89,19 +89,32 @@ export function useDragReorder(
       onReorder(reorder(latestOrder.current, from, to));
     };
 
-    const cancel = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape') return;
+    /** Ends the gesture without reordering. */
+    const abandon = (): void => {
       setDraggingId(null);
       dropIndex.current = null;
     };
 
+    const cancel = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return;
+      abandon();
+    };
+
     document.addEventListener('pointermove', move);
     document.addEventListener('pointerup', finish);
+    // A drag that ends abnormally must still end. `pointercancel` fires when
+    // the OS or the browser takes the gesture away -- a touch turning into a
+    // scroll, a pen leaving range, a window losing the pointer. Without this
+    // the drag never terminates, and because a non-null `draggingId` is what
+    // switches every panel body to `pointer-events-none`, the whole grid of
+    // charts goes inert until the user happens to press Escape.
+    document.addEventListener('pointercancel', abandon);
     document.addEventListener('keydown', cancel);
 
     return () => {
       document.removeEventListener('pointermove', move);
       document.removeEventListener('pointerup', finish);
+      document.removeEventListener('pointercancel', abandon);
       document.removeEventListener('keydown', cancel);
     };
   }, [draggingId, onReorder]);
@@ -111,6 +124,13 @@ export function useDragReorder(
       ({
         onPointerDown: (event: React.PointerEvent) => {
           event.preventDefault();
+          // Capture so the release is delivered even if the pointer has left
+          // the window by then. Without it a button released outside the
+          // viewport never produces a `pointerup` on `document`, which is the
+          // same stuck-grid failure `pointercancel` guards the other side of.
+          // Captured events still bubble, so the document listeners above see
+          // them unchanged.
+          event.currentTarget.setPointerCapture(event.pointerId);
           dropIndex.current = latestOrder.current.indexOf(id);
           setDraggingId(id);
         },
