@@ -1,0 +1,16 @@
+npx lint-staged
+
+# Git hooks do not always inherit an interactive shell's PATH, and on Windows in
+# particular ~/.cargo/bin is often missing from it.
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+
+# lint-staged formats individual files; clippy only makes sense per crate, so it
+# runs here, and only when Rust actually changed (ADR-011).
+if git diff --cached --name-only --diff-filter=ACM | grep -q '\.rs$'; then
+  if command -v cargo >/dev/null 2>&1; then
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
+  else
+    echo "pre-commit: cargo not found on PATH, skipping clippy."
+    echo "            CI will still run it - install Rust or fix your PATH to catch issues here."
+  fi
+fi

@@ -1,0 +1,20 @@
+# Normalise line endings to LF in the repository and in the working tree.
+#
+# Without `eol=lf`, Git's autocrlf on Windows checks files out as CRLF, and
+# Prettier (configured with endOfLine: lf) then fails for Windows contributors
+# on files they never touched.
+* text=auto eol=lf
+
+# Binary assets must never be normalised.
+*.png binary
+*.ico binary
+*.icns binary
+*.jpg binary
+*.gif binary
+*.woff binary
+*.woff2 binary
+
+# Generated; excluded from language statistics and collapsed in diffs.
+ui/src/bindings/** linguist-generated=true
+package-lock.json linguist-generated=true
+Cargo.lock linguist-generated=true
