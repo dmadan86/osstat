@@ -13,8 +13,10 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod netstat_source;
 pub mod sysinfo_source;
 
+pub use netstat_source::NetstatSource;
 pub use sysinfo_source::SysinfoSource;
 
 #[cfg(target_os = "windows")]

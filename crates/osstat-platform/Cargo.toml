@@ -14,6 +14,7 @@ default = []
 ts-bindings = ["dep:ts-rs", "osstat-core/ts-bindings"]
 
 [dependencies]
+netstat2 = "0.11.2"
 osstat-core = { workspace = true }
 serde = { workspace = true }
 sysinfo = { version = "0.39.6", default-features = false, features = ["system", "disk", "network", "user"] }
