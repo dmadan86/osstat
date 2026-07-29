@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dmadan86/osstat/blob/main/crates/osstat-llm/registry/models.schema.json",
+  "title": "osstat LLM model registry",
+  "description": "Seed data for the runnability advisor (ADR-008 / ROADMAP.md M4): the quantization levels the calculator prices models at, and the models themselves. This is data, not code, so the registry can grow without a release. Every number here is meant to be a real, sourced fact — a contributor adding a model should cite where a figure came from in `sourceNote` rather than estimate one.",
+  "type": "object",
+  "required": ["version", "quantLevels", "models"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Bumped whenever the shape of this file changes, so a future loader can tell old data from new."
+    },
+    "quantLevels": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The quantization levels the calculator evaluates every model at. Bit widths are approximate — GGUF k-quants mix precisions across tensor types — and are a property of the quantization scheme, not of any one model, which is why they live here once rather than being repeated per model.",
+      "items": { "$ref": "#/$defs/quantLevel" }
+    },
+    "models": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/model" }
+    }
+  },
+  "$defs": {
+    "quantLevel": {
+      "type": "object",
+      "required": ["id", "label", "bitsPerWeight", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Z0-9_]+$",
+          "description": "Stable identifier, e.g. Q4_K_M. Matches the llama.cpp quantization name."
+        },
+        "label": { "type": "string" },
+        "bitsPerWeight": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 32,
+          "description": "Average bits per weight, used to derive a file size from a parameter count."
+        },
+        "description": {
+          "type": "string",
+          "description": "What this level trades off, for the explanation drawer."
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "required": ["id", "name", "family", "parametersBillion", "architecture", "sourceNote"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+([.-][a-z0-9]+)*$",
+          "description": "Stable slug, used as a React key and in the fit matrix."
+        },
+        "name": { "type": "string", "description": "Display name." },
+        "family": { "type": "string", "description": "Model family, for grouping in the UI." },
+        "parametersBillion": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Total parameter count in billions, as published by the model's own card or technical report. Leave the model out of the registry entirely rather than guess this number."
+        },
+        "architecture": { "$ref": "#/$defs/architecture" },
+        "sourceNote": {
+          "type": "string",
+          "description": "Where the numbers above came from — a model card, technical report or config.json — so a reviewer can check them without re-deriving anything."
+        }
+      }
+    },
+    "architecture": {
+      "type": "object",
+      "required": [
+        "numLayers",
+        "hiddenSize",
+        "numAttentionHeads",
+        "numKvHeads",
+        "headDim",
+        "maxContextLength"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "numLayers": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Transformer block count (num_hidden_layers)."
+        },
+        "hiddenSize": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Model dimension (hidden_size), kept for documentation even though the calculator derives head_dim independently."
+        },
+        "numAttentionHeads": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Query head count (num_attention_heads)."
+        },
+        "numKvHeads": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Key/value head count (num_key_value_heads) — equal to numAttentionHeads on a model with no grouped-query attention."
+        },
+        "headDim": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Per-head dimension. The KV cache scales with this and numKvHeads, not with hiddenSize directly, which is why it is stored rather than derived."
+        },
+        "maxContextLength": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The model's native maximum context (max_position_embeddings), used to cap the context-length control in the UI."
+        }
+      }
+    }
+  }
+}
