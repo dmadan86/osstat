@@ -79,5 +79,12 @@ audit:
     cargo audit
     npm audit --audit-level=high
 
+# Licence and advisory gate (ADR-010). Needs `cargo install cargo-deny`; CI
+# uses EmbarkStudios/cargo-deny-action instead. Exceptions live in deny.toml,
+# each with a reason - a new failure here is a decision to make, not a
+# threshold to raise.
+deny:
+    cargo deny check
+
 # Everything a pull request must pass.
 ci: lint test

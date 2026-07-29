@@ -171,6 +171,20 @@ jobs:
       - name: npm audit
         run: npm audit --audit-level=high
 
+  deny:
+    name: Licence and advisory check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # ADR-010: dependencies must be licence-compatible with dual MIT OR
+      # Apache-2.0, and every advisory exception lives in deny.toml with a
+      # reason, not a blanket suppression (ROADMAP M5).
+      - name: cargo deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
   dco:
     name: DCO
     if: github.event_name == 'pull_request'

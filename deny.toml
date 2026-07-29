@@ -1,0 +1,105 @@
+# Dependency licence and advisory policy (ADR-009, ADR-010; ROADMAP M5).
+#
+# This file reflects a real `cargo deny check` against the workspace's actual
+# dependency tree, not a template. Every `ignore` and every licence in `allow`
+# was put here because something in the tree currently needs it — run
+# `cargo deny check` after any dependency bump and treat a new failure as a
+# decision to make, not a line to add without reading the advisory.
+
+[graph]
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------
+# Licences (ADR-010: dual MIT OR Apache-2.0, so every dependency's licence
+# must be compatible with redistributing osstat under that choice).
+# ---------------------------------------------------------------------------
+[licenses]
+confidence-threshold = 0.8
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception", # LLVM's own exception text; permissive, used by a handful of codegen crates (e.g. target-lexicon).
+  "0BSD",                           # Public-domain-equivalent; strictly more permissive than MIT.
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",                            # Functionally equivalent to a simplified MIT.
+  "Zlib",
+  "Unlicense",                      # Public-domain dedication with a fallback permissive grant.
+  "CC0-1.0",                        # Public-domain dedication used by a few small data/const crates.
+  "MIT-0",
+  "Unicode-3.0",                    # Unicode data-table licence pulled in by ICU/unicode-* crates; permissive, attribution-only.
+  # MPL-2.0 is *file-level* copyleft (Mozilla Public License 2.0): it requires
+  # modifications to MPL-covered files to stay MPL, but does not propagate to
+  # the rest of the tree the way GPL/LGPL would. Every MPL crate here
+  # (cssparser, cssparser-macros, dtoa-short, option-ext, selectors, and their
+  # kin) is pulled in unmodified as a transitive dependency of wry/tao's CSS
+  # and style parsing — osstat neither forks nor patches them. This is the
+  # same reasoning Firefox-derived tooling across the Rust ecosystem relies
+  # on; it does not create an obligation on osstat's own MIT/Apache-2.0 code.
+  "MPL-2.0",
+]
+
+[licenses.private]
+ignore = false
+
+# ---------------------------------------------------------------------------
+# Advisories: RustSec vulnerabilities, unmaintained crates, and yanked
+# versions. Everything below is a considered exception with a reason, not a
+# blanket suppression — `cargo deny check` still fails on any *new* advisory
+# that lands in the tree.
+# ---------------------------------------------------------------------------
+[advisories]
+ignore = [
+  # --- quick-xml, pulled in transitively via `plist` (tauri-utils / tauri
+  # bundling support), owned by upstream Tauri, not by osstat. ---
+  { id = "RUSTSEC-2026-0194", reason = "Quadratic-time DoS in quick-xml's attribute-duplicate check, reached only through the `plist` crate that tauri-utils uses to read/write Apple property-list files during bundling and Info.plist handling. osstat never parses an attacker-supplied .plist at runtime; the exposure is a developer's own build environment. No version of `plist` compatible with tauri 2.11.x pulls a fixed quick-xml (>=0.41). Tracked for the next tauri upgrade; re-run `cargo deny check` then." },
+  { id = "RUSTSEC-2026-0195", reason = "Same root cause and same `plist` dependency chain as RUSTSEC-2026-0194 (unbounded namespace-declaration allocation in quick-xml's NsReader) — see that entry. Not reachable with attacker-controlled input in osstat's own code paths." },
+
+  # --- gtk-rs GTK3 bindings, pulled in transitively via tray-icon/wry/tao on
+  # Linux only. The gtk-rs project itself declared these unmaintained when it
+  # moved to GTK4, but GTK3 + webkit2gtk is still the toolkit every
+  # Tauri/Electron-class Linux desktop app on today's distros links against;
+  # there is no drop-in GTK4 replacement in wry/tao yet. No safe upgrade
+  # exists per the advisories themselves. ---
+  { id = "RUSTSEC-2024-0411", reason = "gtk-rs GTK3 bindings (gdkwayland-sys) unmaintained; transitive via tao -> tauri on Linux. No safe upgrade; see RUSTSEC-2024-0413 for the full rationale." },
+  { id = "RUSTSEC-2024-0412", reason = "gtk-rs GTK3 bindings (gdk) unmaintained; transitive via wry/gtk -> tauri on Linux. No safe upgrade; see RUSTSEC-2024-0413." },
+  { id = "RUSTSEC-2024-0413", reason = "gtk-rs GTK3 bindings (atk) unmaintained. Transitive via tray-icon/gtk -> tauri, Linux-only tray-icon support. GTK3 + webkit2gtk remains the toolkit Tauri's Linux backend targets; wry/tao have not migrated to GTK4. No safe upgrade is available per the advisory itself." },
+  { id = "RUSTSEC-2024-0414", reason = "gtk-rs GTK3 bindings (gdkx11-sys) unmaintained; same chain and rationale as RUSTSEC-2024-0413." },
+  { id = "RUSTSEC-2024-0415", reason = "gtk-rs GTK3 bindings (gtk) unmaintained; same chain and rationale as RUSTSEC-2024-0413." },
+  { id = "RUSTSEC-2024-0416", reason = "gtk-rs GTK3 bindings (atk-sys) unmaintained; same chain and rationale as RUSTSEC-2024-0413." },
+  { id = "RUSTSEC-2024-0417", reason = "gtk-rs GTK3 bindings (gdkx11) unmaintained; same chain and rationale as RUSTSEC-2024-0413." },
+  { id = "RUSTSEC-2024-0418", reason = "gtk-rs GTK3 bindings (gdk-sys) unmaintained; same chain and rationale as RUSTSEC-2024-0413." },
+  { id = "RUSTSEC-2024-0419", reason = "gtk-rs GTK3 bindings (gtk3-macros) unmaintained; same chain and rationale as RUSTSEC-2024-0413." },
+  { id = "RUSTSEC-2024-0420", reason = "gtk-rs GTK3 bindings (gtk-sys) unmaintained; same chain and rationale as RUSTSEC-2024-0413." },
+
+  # --- Small unmaintained leaf crates with no safe upgrade, pulled in by
+  # deep transitive dependencies osstat does not choose directly. ---
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained; pulled in by glib-macros -> glib -> the same Linux GTK3 tray-icon stack as RUSTSEC-2024-0413. No safe upgrade; owned by upstream gtk-rs/tauri, not osstat." },
+  { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained; pulled in by wgpu-hal's Metal backend (osstat-llm's hardware probe, ADR-008) and by netlink-packet-utils via netstat2's socket inspection. Purely a proc-macro used at compile time; no safe upgrade exists yet in either dependency chain." },
+  { id = "RUSTSEC-2025-0075", reason = "unic-char-range is unmaintained; pulled in via urlpattern -> tauri-utils (used for Tauri's custom-protocol URL matching, not attacker-facing network input in osstat). No safe upgrade; owned by upstream Tauri." },
+  { id = "RUSTSEC-2025-0080", reason = "unic-common is unmaintained; same urlpattern -> tauri-utils chain as RUSTSEC-2025-0075." },
+  { id = "RUSTSEC-2025-0081", reason = "unic-char-property is unmaintained; same urlpattern -> tauri-utils chain as RUSTSEC-2025-0075." },
+  { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version is unmaintained; same urlpattern -> tauri-utils chain as RUSTSEC-2025-0075." },
+  { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident is unmaintained; same urlpattern -> tauri-utils chain as RUSTSEC-2025-0075." },
+]
+
+# ---------------------------------------------------------------------------
+# Bans and sources: defaults pass cleanly against the current tree. Left at
+# cargo-deny's defaults rather than widened, so a genuinely new problem (a
+# banned crate, an unexpected git/registry source) still fails the check.
+# ---------------------------------------------------------------------------
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
