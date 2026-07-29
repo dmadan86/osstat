@@ -47,6 +47,12 @@ bench-rust:
 bench-ui:
     npm run bench --workspace @osstat/ui
 
+# Cold-start timing check against the under-2s product goal (ROADMAP M5).
+# Needs `cargo install hyperfine` and a release build (`just build`) - the
+# script says what the number does and does not include.
+cold-start:
+    bash scripts/cold-start.sh
+
 # End-to-end suite (tauri-driver + WebdriverIO). Arrives in M5.
 e2e:
     @echo "e2e suite lands in M5 - see ROADMAP.md"

@@ -90,7 +90,8 @@ probing degrades gracefully with no GPU present.
 **Gate:** v0.1.0 tagged with signed artifacts for all three platforms.
 
 - [ ] End-to-end suite via `tauri-driver` across the matrix
-- [ ] Cold-start timing check with `hyperfine` against the under-2 s target
+- [x] Cold-start timing check with `hyperfine` against the under-2 s target
+      (`just cold-start`; the script states what the figure excludes)
 - [ ] Code signing: Windows Authenticode and macOS notarization
 - [ ] Rule-authoring guide in `docs/`
 - [ ] OpenSSF Best Practices badge application; `cargo deny` licence check

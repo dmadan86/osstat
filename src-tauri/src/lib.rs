@@ -33,6 +33,21 @@ const DEFAULT_INTERVAL: Duration = Duration::from_secs(2);
 /// The flag the sign-in entry adds, so a login launch opens no window.
 const HIDDEN_FLAG: &str = "--hidden";
 
+/// The flag that puts osstat into cold-start measurement mode for the
+/// `just cold-start` / `scripts/cold-start.sh` hyperfine check (ROADMAP M5):
+/// print the elapsed time from process entry to the main window becoming
+/// visible, then exit immediately instead of running normally.
+///
+/// This is a floor on the product goal, not the whole of it. It times the
+/// native window appearing, not the front-end's first paint inside it, which
+/// happens asynchronously once the webview finishes navigating to the
+/// bundled `index.html`. Closing that gap would mean the front-end reporting
+/// back over IPC once mounted, which adds a permanent round trip to every
+/// real launch just to serve a benchmark — not a trade worth making here.
+/// `scripts/cold-start.sh` states this limitation alongside the numbers it
+/// prints, rather than passing a partial measurement off as the full one.
+const MEASURE_STARTUP_FLAG: &str = "--measure-startup";
+
 /// Event fired the instant `CloseRequested` hides the window instead of
 /// letting it close.
 ///
@@ -52,6 +67,13 @@ pub fn starts_hidden(args: &[String]) -> bool {
     args.iter().any(|arg| arg == HIDDEN_FLAG)
 }
 
+/// Whether this process was asked to measure and report its own cold-start
+/// time instead of running normally. See [`MEASURE_STARTUP_FLAG`].
+#[must_use]
+pub fn wants_startup_measurement(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == MEASURE_STARTUP_FLAG)
+}
+
 /// Starts the application and blocks until the last window closes.
 ///
 /// # Errors
@@ -59,6 +81,12 @@ pub fn starts_hidden(args: &[String]) -> bool {
 /// Returns an error if the webview runtime, the bundled context or the event
 /// loop fails to initialise — most often a missing system webview runtime.
 pub fn run() -> tauri::Result<()> {
+    // Taken as early as this crate's own code can observe: it excludes the
+    // OS loader and dynamic-linking time before `main` runs, which nothing
+    // inside the process can measure. `scripts/cold-start.sh` states this.
+    let process_start = std::time::Instant::now();
+    let measuring_startup = wants_startup_measurement(&std::env::args().collect::<Vec<_>>());
+
     tauri::Builder::default()
         // Registered first, as this plugin requires. Once osstat starts at
         // sign-in, clicking the desktop shortcut would otherwise launch a rival
@@ -70,7 +98,7 @@ pub fn run() -> tauri::Result<()> {
             MacosLauncher::LaunchAgent,
             Some(vec![HIDDEN_FLAG]),
         ))
-        .setup(|app| {
+        .setup(move |app| {
             let sampler = Sampler::start(app.handle().clone(), DEFAULT_INTERVAL)?;
             app.manage(sampler);
             app.manage(CloseSetting::default());
@@ -90,6 +118,17 @@ pub fn run() -> tauri::Result<()> {
                 && let Some(window) = app.get_webview_window("main")
             {
                 let _ = window.show();
+
+                // The measurement run's whole job is this one line, then a
+                // clean exit: hyperfine times the process's wall-clock life,
+                // so cold-start mode makes that lifetime *be* the number.
+                if measuring_startup {
+                    println!(
+                        "osstat_cold_start_ms={}",
+                        process_start.elapsed().as_millis()
+                    );
+                    std::process::exit(0);
+                }
             }
 
             Ok(())
@@ -133,4 +172,33 @@ pub fn run() -> tauri::Result<()> {
             commands::set_close_behaviour,
         ])
         .run(tauri::generate_context!())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{starts_hidden, wants_startup_measurement};
+
+    #[test]
+    fn recognises_the_hidden_flag_anywhere_in_argv() {
+        let args = vec!["osstat".to_owned(), "--hidden".to_owned()];
+        assert!(starts_hidden(&args));
+    }
+
+    #[test]
+    fn plain_launch_does_not_start_hidden() {
+        let args = vec!["osstat".to_owned()];
+        assert!(!starts_hidden(&args));
+    }
+
+    #[test]
+    fn recognises_the_measure_startup_flag() {
+        let args = vec!["osstat".to_owned(), "--measure-startup".to_owned()];
+        assert!(wants_startup_measurement(&args));
+    }
+
+    #[test]
+    fn plain_launch_does_not_measure_startup() {
+        let args = vec!["osstat".to_owned()];
+        assert!(!wants_startup_measurement(&args));
+    }
 }

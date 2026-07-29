@@ -29,3 +29,7 @@ Thumbs.db
 
 # Superpowers brainstorming companion
 .superpowers/
+
+# Claude Code agent scaffolding (settings, worktrees, local session state).
+.claude/
+.claude-flow/
