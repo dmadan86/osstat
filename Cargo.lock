@@ -3360,6 +3360,7 @@ name = "osstat-platform"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "libc",
  "netstat2",
  "osstat-core",
  "serde",

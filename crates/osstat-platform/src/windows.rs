@@ -48,8 +48,9 @@ pub(crate) fn mark_executable(_path: &std::path::Path) -> std::io::Result<()> {
 /// Windows has no signals. The graceful equivalent is posting `WM_CLOSE` to the
 /// process's top-level windows, which is what Task Manager's "End task" does and
 /// what gives an application the chance to prompt about unsaved work.
-/// `sysinfo::Process::kill` is `TerminateProcess`, so using it for both steps
-/// would make them identical while the UI claimed otherwise.
+/// `sysinfo::Process::kill` shells out to `taskkill.exe /PID <pid> /F` rather
+/// than calling `TerminateProcess` directly, so using it for both steps would
+/// make them identical while the UI claimed otherwise.
 pub(crate) fn terminate(
     process: &sysinfo::Process,
     mode: osstat_core::TerminationMode,

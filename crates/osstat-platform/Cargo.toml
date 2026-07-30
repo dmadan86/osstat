@@ -34,6 +34,12 @@ windows = { version = "0.62", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 
+# Only used for the ESRCH errno constant, to tell "already gone" apart from a
+# real permission refusal after kill_with fails. Already in Cargo.lock via
+# sysinfo itself, so this adds nothing to the licence surface.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # The M1 gate from ROADMAP.md: a 500-process refresh under 50 ms.
 [[bench]]
 name = "process_refresh"

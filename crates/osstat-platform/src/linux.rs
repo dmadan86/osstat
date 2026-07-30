@@ -49,12 +49,22 @@ pub(crate) fn terminate(
     };
 
     match process.kill_with(signal) {
-        // `false` is the OS refusing. The overwhelmingly common reason is that
-        // the process belongs to someone else, and ADR-006 needs that distinct.
-        Some(false) => Err(osstat_core::Error::PermissionDenied(format!(
-            "cannot signal pid {}",
-            process.pid().as_u32()
-        ))),
+        // `kill(2)` failing is not one thing. `kill_with` collapses both ESRCH
+        // (the process ended in the gap between our identity check and this
+        // call — gone is what the caller wanted) and EPERM (a real refusal,
+        // overwhelmingly because the process belongs to someone else) into the
+        // same `false`. ADR-006 needs those distinct, so the errno is read back
+        // here rather than trusted to `kill_with`'s boolean.
+        Some(false) => {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                Ok(osstat_core::Termination::AlreadyGone)
+            } else {
+                Err(osstat_core::Error::PermissionDenied(format!(
+                    "cannot signal pid {}",
+                    process.pid().as_u32()
+                )))
+            }
+        }
         Some(true) => Ok(osstat_core::Termination::Signalled),
         None => Err(osstat_core::Error::Unsupported(format!(
             "{signal:?} is not supported on this platform"
