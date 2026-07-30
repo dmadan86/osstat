@@ -1,11 +1,16 @@
 /**
  * The port inspector.
  *
- * Read-only, like the process page was before its kill flow existed: M1's
- * kill flow does not exist yet, so there is deliberately no "kill owning
- * process" affordance here either — not even a disabled one. Adding it now
- * would mean designing the destructive-action decisions (SIGTERM/SIGKILL
- * escalation, the critical-process confirmation) that M1 owns, not this page.
+ * Ending the owning process shares the same confirmation dialog and
+ * identity-checked backend as the process tree — see `EndProcessDialog` and
+ * `crates/osstat-platform/src/terminate.rs`. `PortRecord` carries a PID and
+ * no start time (see "Why the join is by PID alone" in
+ * `crates/osstat-core/src/socket.rs`), which is a fine trade for *display*
+ * but not for *ending* a process: a real `ProcessKey` is resolved from the
+ * process tree by PID before the dialog opens, and the button is disabled
+ * when that PID is not currently in the tree rather than sent with a
+ * synthesised start time, which would either fail identity on every attempt
+ * or, worse, match whatever genuinely started at the epoch.
  *
  * Unlike the process table this is not pushed from a background tick — see
  * `src-tauri/src/ports.rs` for why — so this page fetches on mount and again
@@ -15,8 +20,11 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import type { PortRecord } from '../bindings/PortRecord';
+import type { ProcessRecord } from '../bindings/ProcessRecord';
 import { fetchPortList } from '../lib/ipc';
 import { filterPorts } from '../lib/ports';
+import { recordsByPid, type ProcessTree } from '../lib/processTree';
+import type { EndProcessTarget } from '../lib/termination';
 
 /** What a load can be doing. */
 type LoadState =
@@ -25,7 +33,7 @@ type LoadState =
   | { status: 'error'; message: string };
 
 /** The columns, in display order. */
-const COLUMNS = ['Protocol', 'Local', 'Remote', 'State', 'PID', 'Process', 'Path'] as const;
+const COLUMNS = ['Protocol', 'Local', 'Remote', 'State', 'PID', 'Process', 'Path', 'End'] as const;
 
 /** Renders an unknown thrown value as a message. */
 function messageOf(error: unknown): string {
@@ -36,11 +44,21 @@ function messageOf(error: unknown): string {
  * `useMemo` a fresh `[]` reference every render. */
 const NO_ROWS: PortRecord[] = [];
 
+/** What the Ports page needs. */
+export interface PortsProps {
+  /** The current process tree, used only to resolve an owning process's real `ProcessKey` by PID before ending it. */
+  tree: ProcessTree;
+  /** Opens the confirmation dialog for a process the user wants ended. */
+  onEndProcess: (target: EndProcessTarget) => void;
+}
+
 /** Renders the port inspector. */
-export function Ports(): React.JSX.Element {
+export function Ports({ tree, onEndProcess }: PortsProps): React.JSX.Element {
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   const [port, setPort] = useState('');
   const [processFilter, setProcessFilter] = useState('');
+
+  const byPid = useMemo(() => recordsByPid(tree), [tree]);
 
   // Load once on mount, the same cancellation-guarded shape as
   // `useSystemDescription` in `lib/useLiveData.ts`. There is no push event to
@@ -130,7 +148,9 @@ export function Ports(): React.JSX.Element {
                   ? 'min-w-0 flex-1'
                   : label === 'PID'
                     ? 'w-16 text-right'
-                    : 'w-32'
+                    : label === 'End'
+                      ? 'w-16'
+                      : 'w-32'
               }
             >
               {label}
@@ -167,6 +187,8 @@ export function Ports(): React.JSX.Element {
                 // uniqueness the data does not have.
                 key={`${row.protocol}-${row.localAddress}-${row.localPort}-${row.pid ?? 'none'}-${index}`}
                 row={row}
+                owner={row.pid !== null ? byPid.get(row.pid) : undefined}
+                onEndProcess={onEndProcess}
               />
             ))}
           </div>
@@ -184,7 +206,18 @@ export function Ports(): React.JSX.Element {
 }
 
 /** One rendered socket row. */
-function Row({ row }: { row: PortRecord }): React.JSX.Element {
+function Row({
+  row,
+  owner,
+  onEndProcess,
+}: {
+  row: PortRecord;
+  /** The owning process, resolved from the tree by PID. `undefined` when the
+   * PID is absent or is not currently in the tree — the End control disables
+   * itself rather than guessing. */
+  owner: ProcessRecord | undefined;
+  onEndProcess: (target: EndProcessTarget) => void;
+}): React.JSX.Element {
   const listening = row.state === 'listen';
 
   return (
@@ -221,6 +254,25 @@ function Row({ row }: { row: PortRecord }): React.JSX.Element {
         title={row.processPath ?? undefined}
       >
         {row.processPath ?? '—'}
+      </span>
+      <span className="w-16 shrink-0">
+        <button
+          type="button"
+          disabled={owner === undefined}
+          aria-label={owner !== undefined ? `End ${owner.name}` : 'End owning process'}
+          title={owner === undefined ? 'The owning process could not be identified.' : undefined}
+          onClick={() => {
+            if (owner === undefined) return;
+            onEndProcess({
+              key: { pid: owner.pid, startedAt: owner.startedAt },
+              name: owner.name,
+              exe: owner.exe,
+            });
+          }}
+          className="rounded-md border border-edge px-2 py-0.5 text-[10px] text-neutral-400 hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          End
+        </button>
       </span>
     </div>
   );

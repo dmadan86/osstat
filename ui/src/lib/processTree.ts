@@ -371,6 +371,31 @@ export function flattenTree(tree: ProcessTree, options: FlattenOptions): Process
 }
 
 /**
+ * Flattens a tree into a PID-keyed lookup.
+ *
+ * For a caller that only has a bare PID to work from — the port table,
+ * notably, which has no start time of its own and must resolve a real
+ * {@link ProcessRecord} from the tree before it can build a `ProcessKey`
+ * safe to end.
+ *
+ * @param tree The tree to flatten.
+ * @returns Every process in the tree, keyed by PID.
+ */
+export function recordsByPid(tree: ProcessTree): Map<number, ProcessRecord> {
+  const byPid = new Map<number, ProcessRecord>();
+  const stack = [...tree.roots];
+
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (node === undefined) break;
+    byPid.set(node.record.pid, node.record);
+    stack.push(...node.children);
+  }
+
+  return byPid;
+}
+
+/**
  * Applies a tick's changes to the records the UI holds.
  *
  * @param current The records held, keyed by {@link keyOf}.

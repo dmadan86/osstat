@@ -10,10 +10,12 @@ import { useEffect, useState } from 'react';
 import type { GpuDevice } from './bindings/GpuDevice';
 import type { MetricsSample } from './bindings/MetricsSample';
 import type { SystemDescription } from './bindings/SystemDescription';
+import { EndProcessDialog } from './components/EndProcessDialog';
 import { Navigation } from './components/Navigation';
 import { setCloseBehaviour, setSampleInterval } from './lib/ipc';
 import { samplesInWindow, usePreferences, type Preferences } from './lib/preferences';
 import type { ProcessTree } from './lib/processTree';
+import type { EndProcessTarget } from './lib/termination';
 import {
   useGpuDevices,
   useMetrics,
@@ -41,6 +43,7 @@ export function App(): React.JSX.Element {
   const { tree, loaded } = useProcesses();
   const gpus = useGpuDevices();
   const hiddenToTray = useTrayHidden();
+  const [endTarget, setEndTarget] = useState<EndProcessTarget | null>(null);
 
   // Push the chosen tick rate to the sampler. The backend clamps anything it
   // cannot honour, so a stale stored preference cannot produce a busy loop.
@@ -88,9 +91,23 @@ export function App(): React.JSX.Element {
             preferences={preferences}
             onPreferenceChange={updatePreferences}
             hiddenToTray={hiddenToTray}
+            onEndProcess={setEndTarget}
           />
         )}
       </main>
+
+      {/* Rendered here rather than inside a page: it subscribes to
+          processes:tick for its own reasons regardless of which page is
+          visible, and a user who switches pages mid-confirmation should not
+          lose it. */}
+      {endTarget !== null && (
+        <EndProcessDialog
+          target={endTarget}
+          onClose={() => {
+            setEndTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -117,6 +134,8 @@ interface PageProps {
   onPreferenceChange: (update: Partial<Preferences>) => void;
   /** Whether the window has been hidden to the tray this session. */
   hiddenToTray: boolean;
+  /** Opens the confirmation dialog for a process the user wants ended. */
+  onEndProcess: (target: EndProcessTarget) => void;
 }
 
 /** Chooses the page for the current route. */
@@ -131,6 +150,7 @@ function Page({
   preferences,
   onPreferenceChange,
   hiddenToTray,
+  onEndProcess,
 }: PageProps): React.JSX.Element {
   switch (route) {
     case 'overview':
@@ -153,10 +173,10 @@ function Page({
       );
 
     case 'processes':
-      return <Processes tree={tree} loaded={processesLoaded} />;
+      return <Processes tree={tree} loaded={processesLoaded} onEndProcess={onEndProcess} />;
 
     case 'ports':
-      return <Ports />;
+      return <Ports tree={tree} onEndProcess={onEndProcess} />;
 
     case 'llm':
       return <Llm />;

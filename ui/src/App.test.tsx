@@ -304,13 +304,19 @@ describe('App', () => {
     expect(await screen.findByRole('status', { name: /notification area/i })).toBeInTheDocument();
   });
 
-  it('offers no way to kill a process in this phase', async () => {
+  it('offers to end a process, and ends nothing without a confirmation', async () => {
+    // Replaces "offers no way to kill a process in this phase". The absence was
+    // pinned deliberately, so what replaces it is pinned deliberately too.
     render(<App />);
     await screen.findByText('TESTBOX');
     await userEvent.click(screen.getByTitle('Processes'));
     await screen.findByText('chrome');
 
-    // Not even a disabled control: it would promise something not delivered.
-    expect(screen.queryByRole('button', { name: /kill|terminate|end task/i })).toBeNull();
+    const [endButton] = screen.getAllByRole('button', { name: /end .*chrome/i });
+    expect(endButton).toBeDefined();
+    await userEvent.click(endButton as HTMLElement);
+
+    expect(await screen.findByRole('dialog', { name: /end chrome/i })).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith('terminate_process', expect.anything());
   });
 });
