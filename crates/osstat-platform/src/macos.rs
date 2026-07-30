@@ -42,6 +42,35 @@ pub(crate) fn mark_executable(path: &std::path::Path) -> std::io::Result<()> {
     std::fs::set_permissions(path, permissions)
 }
 
+/// Ends a process that has already been identity-checked.
+///
+/// Uses `sysinfo`'s signal API rather than `libc::kill` so this crate keeps its
+/// `#![deny(unsafe_code)]`. `kill_with` returns `None` when the platform cannot
+/// send the signal at all, which on Unix means the signal is unsupported rather
+/// than that the process refused it.
+pub(crate) fn terminate(
+    process: &sysinfo::Process,
+    mode: osstat_core::TerminationMode,
+) -> osstat_core::Result<osstat_core::Termination> {
+    let signal = match mode {
+        osstat_core::TerminationMode::Graceful => sysinfo::Signal::Term,
+        osstat_core::TerminationMode::Forceful => sysinfo::Signal::Kill,
+    };
+
+    match process.kill_with(signal) {
+        // `false` is the OS refusing. The overwhelmingly common reason is that
+        // the process belongs to someone else, and ADR-006 needs that distinct.
+        Some(false) => Err(osstat_core::Error::PermissionDenied(format!(
+            "cannot signal pid {}",
+            process.pid().as_u32()
+        ))),
+        Some(true) => Ok(osstat_core::Termination::Signalled),
+        None => Err(osstat_core::Error::Unsupported(format!(
+            "{signal:?} is not supported on this platform"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
