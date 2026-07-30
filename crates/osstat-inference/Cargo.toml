@@ -21,8 +21,23 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 ts-rs = { workspace = true, optional = true }
+# reqwest and tokio are already in Cargo.lock through Tauri, so this is the
+# first code in osstat to make a network request but not the first network
+# stack in the tree. `rustls` rather than the default so no system OpenSSL is
+# needed on any of the three platforms. `http2` because GitHub release
+# downloads redirect to a host that negotiates it.
+reqwest = { version = "0.13", default-features = false, features = [
+  "rustls",
+  "stream",
+  "http2",
+] }
+sha2 = "0.10"
+tokio = { version = "1", features = ["fs", "io-util"] }
+futures-util = { version = "0.3", default-features = false }
 
 [dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # Validates the pinned manifest against its own JSON Schema in a test, rather
 # than trusting that the schema and the data never drift apart. Same convention
 # as osstat-llm's model registry.
