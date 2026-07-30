@@ -164,8 +164,15 @@ fn a_reused_pid_is_refused_and_the_process_survives() {
         .unwrap_err();
 
     assert!(matches!(error, osstat_core::Error::IdentityMismatch { .. }));
+    // Deliberately generous: this is the assertion that makes the identity
+    // check falsifiable, so it must not pass by accident. If the check were
+    // broken and actually signalled, the forceful path on Windows shells out
+    // to `taskkill.exe /PID … /F` — a process spawn and round trip that can
+    // plausibly exceed a shorter window under load. A tight bound could let a
+    // real signal through unnoticed just because `try_wait` had not caught up
+    // yet, which would make this test decoration rather than proof.
     assert!(
-        !exited_within(&mut child, Duration::from_millis(500)),
+        !exited_within(&mut child, Duration::from_secs(2)),
         "a stale key ended a process it did not identify"
     );
 
