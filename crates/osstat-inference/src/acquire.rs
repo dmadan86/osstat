@@ -114,7 +114,9 @@ pub async fn acquire(
     target: Target,
     gpu: &GpuCapability,
     cuda: CudaChoice,
-    on_stage: &mut dyn FnMut(Stage),
+    // `+ Send` because the caller spawns this onto Tauri's async runtime, and a
+    // future holding a non-Send callback cannot cross a thread boundary.
+    on_stage: &mut (dyn FnMut(Stage) + Send),
 ) -> Result<InstalledRuntime, AcquireError> {
     let manifest = pinned_manifest();
     let (_, artifact) = resolve(manifest, target, gpu, cuda)?;

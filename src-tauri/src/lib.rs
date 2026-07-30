@@ -10,6 +10,7 @@
 
 pub mod commands;
 pub mod ports;
+pub mod runtime;
 pub mod sampler;
 pub mod tray;
 pub mod window_state;
@@ -169,6 +170,9 @@ pub fn run() -> tauri::Result<()> {
             commands::gpu_devices,
             commands::model_registry,
             commands::llm_advice,
+            runtime::runtime_status,
+            runtime::acquire_runtime,
+            runtime::delete_runtime,
             commands::set_sample_interval,
             commands::set_sampling_paused,
             commands::set_close_behaviour,

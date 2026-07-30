@@ -82,7 +82,7 @@ pub async fn download_verified(
     expected_sha256: &str,
     expected_size: u64,
     dest: &Path,
-    on_progress: &mut dyn FnMut(Progress),
+    on_progress: &mut (dyn FnMut(Progress) + Send),
 ) -> Result<(), AcquireError> {
     let response = client
         .get(url)

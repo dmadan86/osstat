@@ -143,6 +143,12 @@ struct Snapshot {
     history: MetricsHistory,
     processes: Vec<ProcessRecord>,
     devices: Option<Vec<GpuDevice>>,
+    /// The NVIDIA driver's major CUDA version, read once with the devices.
+    ///
+    /// Kept here rather than asked for on demand because the probe is moved
+    /// into the sampler thread and never comes back, and because it is fixed
+    /// for the session exactly as the device list is.
+    cuda_driver_major: Option<u32>,
 }
 
 /// Knobs the UI can turn, and the signal that they have turned.
@@ -262,6 +268,16 @@ impl Sampler {
         read(&self.shared.snapshot).devices.clone()
     }
 
+    /// The NVIDIA driver's major CUDA version, if this machine has one.
+    ///
+    /// Chooses between llama.cpp's two published Windows CUDA builds. `None`
+    /// on every machine without an NVIDIA driver, and also before the probe has
+    /// finished — callers gate on [`Self::devices`] returning `Some` first.
+    #[must_use]
+    pub fn cuda_driver_major(&self) -> Option<u32> {
+        read(&self.shared.snapshot).cuda_driver_major
+    }
+
     /// Changes the foreground tick interval, taking effect immediately.
     ///
     /// Out-of-range values are clamped rather than rejected: this arrives from
@@ -319,7 +335,13 @@ fn run(
     // Probe for GPUs first: it is the slowest thing here and it only happens
     // once, so it runs off the startup path rather than delaying the window.
     let devices = gpus.devices().unwrap_or_default();
-    write(&shared.snapshot).devices = Some(devices);
+    {
+        let mut snapshot = write(&shared.snapshot);
+        snapshot.devices = Some(devices);
+        // Read after probing, not before: `cuda_driver_major` is `None` until
+        // NVML has actually been attached.
+        snapshot.cuda_driver_major = gpus.cuda_driver_major();
+    }
     let _ = app.emit(GPUS_READY_EVENT, ());
 
     let mut previous: Vec<ProcessRecord> = Vec::new();
