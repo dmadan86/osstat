@@ -714,6 +714,37 @@ mod tests {
     }
 
     #[test]
+    fn a_zero_layer_model_offloads_without_dividing_by_zero() {
+        // The registry's schema forbids a zero-layer model, but `evaluate` is
+        // a pure function that does not get to assume its caller honoured the
+        // schema — so both guards on the offload path (the per-layer share and
+        // the offloaded fraction) have a zero case, and this is what reaches
+        // them. 1B @ 8 bits = 1e9 of weights + 10% overhead = 1.1e9 required,
+        // against 1e9 of VRAM: short of VRAM alone, comfortably inside VRAM
+        // plus system memory, which is the offload branch.
+        let mut zero_layer = model();
+        zero_layer.architecture.num_layers = 0;
+
+        let result = evaluate(
+            &zero_layer,
+            &quant(8.0),
+            0,
+            GpuBudget {
+                present: true,
+                vram_bytes: Some(1_000_000_000),
+            },
+            8_000_000_000,
+        );
+
+        assert_eq!(result.verdict.kind, VerdictKind::FitsWithCpuOffload);
+        assert_eq!(result.verdict.cpu_layers, 0);
+        assert_eq!(result.verdict.gpu_layers, 0);
+        // A model with no layers has nothing resident on the GPU, so the
+        // offloaded fraction is treated as total rather than as 0/0.
+        assert_eq!(result.verdict.tier, SpeedTier::Slow);
+    }
+
+    #[test]
     fn offload_tier_is_moderate_under_half_and_slow_at_or_above_half() {
         // Required ~1.1e9 bytes. VRAM at 990,000,000 leaves ~110,000,000 to
         // move — under one layer's ~100,000,000-byte share once overhead is

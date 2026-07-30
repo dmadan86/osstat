@@ -21,6 +21,7 @@ import {
   useSystemDescription,
   useTrayHidden,
 } from './lib/useLiveData';
+import { Llm } from './pages/Llm';
 import { Overview } from './pages/Overview';
 import { Planned } from './pages/Planned';
 import { Ports } from './pages/Ports';
@@ -156,6 +157,9 @@ function Page({
 
     case 'ports':
       return <Ports />;
+
+    case 'llm':
+      return <Llm />;
 
     case 'settings':
       return <Settings preferences={preferences} onChange={onPreferenceChange} />;

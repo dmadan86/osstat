@@ -37,7 +37,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { route: 'processes', label: 'Processes', icon: '▤' },
   { route: 'ports', label: 'Ports', icon: '⇄' },
   { route: 'cleaner', label: 'Cleaner', icon: '✦', milestone: 'M3' },
-  { route: 'llm', label: 'LLM advisor', icon: '◇', milestone: 'M4' },
+  { route: 'llm', label: 'LLM advisor', icon: '◇' },
 ];
 
 /** Settings, kept apart from the capabilities in every navigation style. */
@@ -53,10 +53,5 @@ export const PLANNED: Record<string, { title: string; summary: string }> = {
     title: 'System cleaner',
     summary:
       'Caches, logs and dev-tool junk, defined in readable TOML manifests. Nothing is ever deleted without a preview first.',
-  },
-  llm: {
-    title: 'LLM runnability advisor',
-    summary:
-      'Which local models this machine can actually run, with the arithmetic shown rather than hidden. The hardware probe behind it already works — see the GPU section on Overview.',
   },
 };
