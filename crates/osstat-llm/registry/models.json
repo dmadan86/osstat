@@ -1,0 +1,256 @@
+{
+  "version": 1,
+  "quantLevels": [
+    {
+      "id": "Q4_K_M",
+      "label": "Q4_K_M",
+      "bitsPerWeight": 4.85,
+      "description": "4-bit k-quant, medium — the usual default for consumer hardware: the smallest file most people would actually pick, at a quality cost most people cannot hear or read."
+    },
+    {
+      "id": "Q5_K_M",
+      "label": "Q5_K_M",
+      "bitsPerWeight": 5.69,
+      "description": "5-bit k-quant, medium — a step closer to full precision for a moderately larger file."
+    },
+    {
+      "id": "Q8_0",
+      "label": "Q8_0",
+      "bitsPerWeight": 8.5,
+      "description": "8-bit, near-lossless — close to FP16 output quality at roughly half the size."
+    },
+    {
+      "id": "FP16",
+      "label": "FP16",
+      "bitsPerWeight": 16.0,
+      "description": "Full half-precision weights. Not a quantization at all — the reference point the other three are traded off against."
+    }
+  ],
+  "models": [
+    {
+      "id": "llama-3.1-8b",
+      "name": "Llama 3.1 8B",
+      "family": "Llama",
+      "parametersBillion": 8.03,
+      "architecture": {
+        "numLayers": 32,
+        "hiddenSize": 4096,
+        "numAttentionHeads": 32,
+        "numKvHeads": 8,
+        "headDim": 128,
+        "maxContextLength": 131072
+      },
+      "sourceNote": "Meta Llama 3.1 model card (8B parameters); architecture cross-checked against the published config.json (num_hidden_layers, hidden_size, num_attention_heads, num_key_value_heads, head_dim, max_position_embeddings)."
+    },
+    {
+      "id": "llama-3.1-70b",
+      "name": "Llama 3.1 70B",
+      "family": "Llama",
+      "parametersBillion": 70.6,
+      "architecture": {
+        "numLayers": 80,
+        "hiddenSize": 8192,
+        "numAttentionHeads": 64,
+        "numKvHeads": 8,
+        "headDim": 128,
+        "maxContextLength": 131072
+      },
+      "sourceNote": "Meta Llama 3.1 model card (70B parameters); architecture cross-checked against the published config.json."
+    },
+    {
+      "id": "llama-3.1-405b",
+      "name": "Llama 3.1 405B",
+      "family": "Llama",
+      "parametersBillion": 405.0,
+      "architecture": {
+        "numLayers": 126,
+        "hiddenSize": 16384,
+        "numAttentionHeads": 128,
+        "numKvHeads": 8,
+        "headDim": 128,
+        "maxContextLength": 131072
+      },
+      "sourceNote": "Meta Llama 3.1 model card (405B parameters); architecture cross-checked against the published config.json. Included deliberately as the machine this feature will most often have to say no to."
+    },
+    {
+      "id": "llama-3.2-1b",
+      "name": "Llama 3.2 1B",
+      "family": "Llama",
+      "parametersBillion": 1.24,
+      "architecture": {
+        "numLayers": 16,
+        "hiddenSize": 2048,
+        "numAttentionHeads": 32,
+        "numKvHeads": 8,
+        "headDim": 64,
+        "maxContextLength": 131072
+      },
+      "sourceNote": "Meta Llama 3.2 model card (1.24B parameters); architecture cross-checked against the published config.json."
+    },
+    {
+      "id": "llama-3.2-3b",
+      "name": "Llama 3.2 3B",
+      "family": "Llama",
+      "parametersBillion": 3.21,
+      "architecture": {
+        "numLayers": 28,
+        "hiddenSize": 3072,
+        "numAttentionHeads": 24,
+        "numKvHeads": 8,
+        "headDim": 128,
+        "maxContextLength": 131072
+      },
+      "sourceNote": "Meta Llama 3.2 model card (3.21B parameters); architecture cross-checked against the published config.json."
+    },
+    {
+      "id": "mistral-7b-v0.3",
+      "name": "Mistral 7B v0.3",
+      "family": "Mistral",
+      "parametersBillion": 7.3,
+      "architecture": {
+        "numLayers": 32,
+        "hiddenSize": 4096,
+        "numAttentionHeads": 32,
+        "numKvHeads": 8,
+        "headDim": 128,
+        "maxContextLength": 32768
+      },
+      "sourceNote": "Mistral AI model card (7.3B parameters); architecture cross-checked against the published config.json (head_dim derived as hidden_size / num_attention_heads, the model's own config does not list it separately)."
+    },
+    {
+      "id": "qwen2.5-0.5b",
+      "name": "Qwen2.5 0.5B",
+      "family": "Qwen",
+      "parametersBillion": 0.49,
+      "architecture": {
+        "numLayers": 24,
+        "hiddenSize": 896,
+        "numAttentionHeads": 14,
+        "numKvHeads": 2,
+        "headDim": 64,
+        "maxContextLength": 32768
+      },
+      "sourceNote": "Qwen2.5 technical report (0.49B parameters); architecture cross-checked against the published config.json."
+    },
+    {
+      "id": "qwen2.5-7b",
+      "name": "Qwen2.5 7B",
+      "family": "Qwen",
+      "parametersBillion": 7.61,
+      "architecture": {
+        "numLayers": 28,
+        "hiddenSize": 3584,
+        "numAttentionHeads": 28,
+        "numKvHeads": 4,
+        "headDim": 128,
+        "maxContextLength": 131072
+      },
+      "sourceNote": "Qwen2.5 technical report (7.61B parameters); architecture cross-checked against the published config.json."
+    },
+    {
+      "id": "qwen2.5-14b",
+      "name": "Qwen2.5 14B",
+      "family": "Qwen",
+      "parametersBillion": 14.7,
+      "architecture": {
+        "numLayers": 48,
+        "hiddenSize": 5120,
+        "numAttentionHeads": 40,
+        "numKvHeads": 8,
+        "headDim": 128,
+        "maxContextLength": 131072
+      },
+      "sourceNote": "Qwen2.5 technical report (14.7B parameters); architecture cross-checked against the published config.json."
+    },
+    {
+      "id": "qwen2.5-32b",
+      "name": "Qwen2.5 32B",
+      "family": "Qwen",
+      "parametersBillion": 32.5,
+      "architecture": {
+        "numLayers": 64,
+        "hiddenSize": 5120,
+        "numAttentionHeads": 40,
+        "numKvHeads": 8,
+        "headDim": 128,
+        "maxContextLength": 131072
+      },
+      "sourceNote": "Qwen2.5 technical report (32.5B parameters); architecture cross-checked against the published config.json."
+    },
+    {
+      "id": "qwen2.5-72b",
+      "name": "Qwen2.5 72B",
+      "family": "Qwen",
+      "parametersBillion": 72.7,
+      "architecture": {
+        "numLayers": 80,
+        "hiddenSize": 8192,
+        "numAttentionHeads": 64,
+        "numKvHeads": 8,
+        "headDim": 128,
+        "maxContextLength": 131072
+      },
+      "sourceNote": "Qwen2.5 technical report (72.7B parameters); architecture cross-checked against the published config.json."
+    },
+    {
+      "id": "gemma-2-2b",
+      "name": "Gemma 2 2B",
+      "family": "Gemma",
+      "parametersBillion": 2.61,
+      "architecture": {
+        "numLayers": 26,
+        "hiddenSize": 2304,
+        "numAttentionHeads": 8,
+        "numKvHeads": 4,
+        "headDim": 256,
+        "maxContextLength": 8192
+      },
+      "sourceNote": "Google Gemma 2 technical report (2.61B parameters); architecture cross-checked against the published config.json. Note head_dim (256) is not hiddenSize / numAttentionHeads on this family."
+    },
+    {
+      "id": "gemma-2-9b",
+      "name": "Gemma 2 9B",
+      "family": "Gemma",
+      "parametersBillion": 9.24,
+      "architecture": {
+        "numLayers": 42,
+        "hiddenSize": 3584,
+        "numAttentionHeads": 16,
+        "numKvHeads": 8,
+        "headDim": 256,
+        "maxContextLength": 8192
+      },
+      "sourceNote": "Google Gemma 2 technical report (9.24B parameters); architecture cross-checked against the published config.json."
+    },
+    {
+      "id": "gemma-2-27b",
+      "name": "Gemma 2 27B",
+      "family": "Gemma",
+      "parametersBillion": 27.2,
+      "architecture": {
+        "numLayers": 46,
+        "hiddenSize": 4608,
+        "numAttentionHeads": 32,
+        "numKvHeads": 16,
+        "headDim": 128,
+        "maxContextLength": 8192
+      },
+      "sourceNote": "Google Gemma 2 technical report (27.2B parameters); architecture cross-checked against the published config.json."
+    },
+    {
+      "id": "phi-3.5-mini",
+      "name": "Phi-3.5-mini",
+      "family": "Phi",
+      "parametersBillion": 3.82,
+      "architecture": {
+        "numLayers": 32,
+        "hiddenSize": 3072,
+        "numAttentionHeads": 32,
+        "numKvHeads": 32,
+        "headDim": 96,
+        "maxContextLength": 131072
+      },
+      "sourceNote": "Microsoft Phi-3.5-mini model card (3.82B parameters); architecture cross-checked against the published config.json. No grouped-query attention on this model — numKvHeads equals numAttentionHeads."
+    }
+  ]
+}

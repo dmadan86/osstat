@@ -11,11 +11,19 @@ authors.workspace = true
 
 [features]
 default = []
-ts-bindings = ["osstat-core/ts-bindings"]
+# Derives `ts_rs::TS` on the registry and calculator types so `cargo test
+# --features ts-bindings` regenerates ui/src/bindings/ (ADR-002), the same
+# convention osstat-platform uses.
+ts-bindings = ["dep:ts-rs", "osstat-core/ts-bindings"]
 
 [dependencies]
 osstat-core = { workspace = true }
 serde = { workspace = true }
+# The seed registry ships as JSON, not Rust structs (ROADMAP.md M4: "the
+# registry is data, not code"), so parsing it is a runtime dependency here,
+# not just a dev one.
+serde_json = { workspace = true }
+ts-rs = { workspace = true, optional = true }
 # Adapter enumeration only — osstat never renders anything. ADR-008 calls wgpu
 # "a heavy dependency for what is ultimately adapter enumeration" and asks for
 # its installer cost to be measured; see docs/measurements.md.
@@ -32,7 +40,9 @@ wgpu = { version = "27.0.1", default-features = false, features = [
 nvml-wrapper = "0.11.0"
 
 [dev-dependencies]
-serde_json = { workspace = true }
+# Validates the seed registry against its own JSON Schema in a test, rather
+# than trusting that the schema and the data never drift apart.
+jsonschema = "0.49"
 
 [lints]
 workspace = true

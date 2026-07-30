@@ -29,6 +29,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod calculator;
 pub mod probe;
+pub mod registry;
 
 pub use probe::HardwareProbe;
