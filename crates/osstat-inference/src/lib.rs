@@ -34,9 +34,11 @@ pub mod error;
 pub mod manifest;
 pub mod select;
 pub mod target;
+pub mod unpack;
 
 pub use download::{Progress, download_verified, sha256_file};
 pub use error::AcquireError;
 pub use manifest::{Companion, RuntimeArtifact, RuntimeManifest, pinned_manifest};
 pub use select::{Backend, CudaChoice, GpuCapability, cuda_is_offered, select};
 pub use target::{Target, TargetArch, TargetOs};
+pub use unpack::{find_server, server_file_name, unpack};

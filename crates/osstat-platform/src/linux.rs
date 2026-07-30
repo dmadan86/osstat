@@ -21,6 +21,18 @@ pub(crate) fn disk_display_name(device: &str, mount_point: &str) -> String {
     }
 }
 
+/// Makes a file runnable by its owner.
+///
+/// Adds the owner-execute bit rather than replacing the mode, so whatever the
+/// archive already set — group and other bits included — survives.
+pub(crate) fn mark_executable(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_mode(permissions.mode() | 0o700);
+    std::fs::set_permissions(path, permissions)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]

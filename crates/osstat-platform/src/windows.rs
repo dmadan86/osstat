@@ -28,6 +28,21 @@ pub(crate) fn disk_display_name(label: &str, mount_point: &str) -> String {
     }
 }
 
+/// Makes a file runnable by its owner.
+///
+/// Windows decides what is executable by extension, not by a permission bit, so
+/// there is nothing to set. Returning `Ok` rather than an "unsupported" error
+/// keeps the caller free of a `cfg` branch.
+// The Result is unnecessary *here* and required by the shared signature: the
+// Unix implementations genuinely fail on a noexec mount or a denied chmod, and
+// the caller must have one shape to handle on all three platforms. Narrowing
+// this to `()` would push a cfg branch into osstat-inference, which is the
+// arrangement ADR-003 exists to prevent.
+#[allow(clippy::unnecessary_wraps)]
+pub(crate) fn mark_executable(_path: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]

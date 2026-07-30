@@ -87,6 +87,23 @@ pub const fn display_name() -> &'static str {
     imp::DISPLAY_NAME
 }
 
+/// Makes a file runnable by its owner.
+///
+/// The only OS-specific step in acquiring the llama.cpp runtime: Unix needs the
+/// executable bit set on a file that came out of an archive, and Windows
+/// decides by extension and needs nothing. Keeping the no-op here rather than
+/// at the call site spares `osstat-inference` a `cfg` branch, which is the
+/// whole point of ADR-003's arrangement.
+///
+/// # Errors
+///
+/// If the mode cannot be read or written — a `noexec` mount or a policy denying
+/// the change. The caller reports the path, so both are diagnosable rather than
+/// mysterious.
+pub fn mark_executable(path: &std::path::Path) -> std::io::Result<()> {
+    imp::mark_executable(path)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -123,5 +140,53 @@ mod tests {
     #[test]
     fn display_name_is_populated() {
         assert!(!display_name().is_empty());
+    }
+
+    #[test]
+    fn marking_a_file_executable_succeeds_on_every_platform() {
+        // Windows has nothing to set and must still report success, because the
+        // caller has no cfg branch to fall back on.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("llama-server");
+        std::fs::write(&path, b"#!/bin/sh\nexit 0\n").unwrap();
+
+        mark_executable(&path).expect("marking a plain file executable must succeed");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn marking_a_file_executable_sets_the_owner_bit() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("llama-server");
+        std::fs::write(&path, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        mark_executable(&path).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o100, 0o100, "owner execute bit was not set");
+        assert_eq!(
+            mode & 0o600,
+            0o600,
+            "the existing read/write bits were lost"
+        );
+    }
+
+    #[test]
+    fn marking_a_file_that_is_not_there_fails_rather_than_succeeding_quietly() {
+        // On Unix this is a real stat failure. On Windows the no-op returns Ok,
+        // which is correct: there is no permission to set either way, and the
+        // caller checks the server exists separately.
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("absent");
+
+        let result = mark_executable(&missing);
+
+        #[cfg(unix)]
+        assert!(result.is_err(), "stat of a missing file must fail");
+        #[cfg(windows)]
+        assert!(result.is_ok(), "Windows has no bit to set, present or not");
     }
 }
