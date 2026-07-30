@@ -32,6 +32,19 @@ pub enum Error {
         path: PathBuf,
     },
 
+    /// The process at this PID is not the one the caller meant.
+    ///
+    /// Raised when a [`crate::process::ProcessKey`]'s start time no longer
+    /// matches the process now holding its PID. The original exited and the
+    /// number was reused, so signalling would end something the user never
+    /// selected. Deliberately not a permission problem: elevation would not
+    /// help, and offering it would be an invitation to force a mistake.
+    #[error("pid {pid} has been reused by a different process; nothing was signalled")]
+    IdentityMismatch {
+        /// The PID that was reused.
+        pid: u32,
+    },
+
     /// An underlying I/O failure that is not a permission problem.
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
@@ -89,5 +102,21 @@ mod tests {
             path: PathBuf::from("/tmp/missing"),
         };
         assert!(err.to_string().contains("missing"));
+    }
+
+    #[test]
+    fn an_identity_mismatch_is_not_a_permission_problem() {
+        // It must never offer "Retry elevated": elevation would not help, and
+        // the whole point is that we refused to signal anything at all.
+        let error = Error::IdentityMismatch { pid: 4321 };
+
+        assert!(!error.is_permission_denied());
+    }
+
+    #[test]
+    fn an_identity_mismatch_names_the_pid_that_was_reused() {
+        let error = Error::IdentityMismatch { pid: 4321 };
+
+        assert!(error.to_string().contains("4321"));
     }
 }
