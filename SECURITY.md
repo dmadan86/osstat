@@ -77,6 +77,35 @@ are all security-relevant changes.
 weekly schedule. Dependencies are reviewed on addition, and release artifacts are
 published with SHA256 sums.
 
+### 5. Executing a downloaded inference runtime
+
+The LLM features need a llama.cpp server binary. It is too large to bundle
+within the installer budget, so it is fetched when a user asks for it
+(ADR-012). osstat will only execute a build whose SHA256 matches a hash
+**pinned in this repository**, in `crates/osstat-inference/runtimes.json`.
+
+The hash is compiled into osstat rather than fetched alongside the artifact.
+A digest served from the same origin as the binary proves the transfer was not
+corrupted; it does not prove the file is the one anybody reviewed.
+
+The controls:
+
+- A mismatched archive is deleted and never extracted, never marked executable
+  and never run. There is no retry and no override — retrying a hash that did
+  not match is not a recovery strategy.
+- Archive entries that would be written outside the runtime directory are
+  refused, exactly as cleaning-rule paths are (threat 2).
+- The runtime runs as the user, never elevated, and never through a shell.
+  Arguments are passed as a vector, so a model path cannot become a command.
+- It binds `127.0.0.1` on an ephemeral port, never `0.0.0.0`.
+- Downloads land in a temporary file and are moved into place only after the
+  hash matches, so nothing partial can be mistaken for a usable runtime.
+- What was downloaded is listed with its size in Settings and can be deleted.
+
+A way to make osstat execute a binary that does not match its pinned hash is a
+critical vulnerability. So is a way to make an archive write outside its
+directory, or to reach the runtime's HTTP port from off the machine.
+
 ## Not vulnerabilities
 
 - **Deleting files you told it to delete.** Preview-and-confirm is the control;
@@ -90,3 +119,9 @@ published with SHA256 sums.
 osstat contains no telemetry, analytics or crash reporting, and makes no network
 requests except ones you explicitly trigger. If you find network traffic that
 contradicts this, report it as a vulnerability — because it would be one.
+
+At present exactly one action reaches the network: downloading an inference
+runtime from Settings, which happens only when you press the button (ADR-012).
+There is no background polling, no prefetch, and no check for a newer upstream
+build. All of it happens in Rust — the webview's Content Security Policy allows
+it no network access at all, and this feature did not change that.

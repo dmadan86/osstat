@@ -21,10 +21,14 @@ import type { CloseBehaviour } from '../bindings/CloseBehaviour';
 import type { GpuDevice } from '../bindings/GpuDevice';
 import type { LlmAdvice } from '../bindings/LlmAdvice';
 import type { MetricsSample } from '../bindings/MetricsSample';
+import type { InstalledRuntimeInfo } from '../bindings/InstalledRuntimeInfo';
 import type { ModelRegistry } from '../bindings/ModelRegistry';
 import type { PortRecord } from '../bindings/PortRecord';
 import type { ProcessDiff } from '../bindings/ProcessDiff';
 import type { ProcessRecord } from '../bindings/ProcessRecord';
+import type { RuntimeFailure } from '../bindings/RuntimeFailure';
+import type { RuntimeProgress } from '../bindings/RuntimeProgress';
+import type { RuntimeStatus } from '../bindings/RuntimeStatus';
 import type { SystemDescription } from '../bindings/SystemDescription';
 
 /** Names of every command the Rust side exposes. */
@@ -37,6 +41,9 @@ export const COMMANDS = {
   gpuDevices: 'gpu_devices',
   modelRegistry: 'model_registry',
   llmAdvice: 'llm_advice',
+  runtimeStatus: 'runtime_status',
+  acquireRuntime: 'acquire_runtime',
+  deleteRuntime: 'delete_runtime',
   setSampleInterval: 'set_sample_interval',
   setSamplingPaused: 'set_sampling_paused',
   setCloseBehaviour: 'set_close_behaviour',
@@ -48,6 +55,9 @@ export const EVENTS = {
   processesTick: 'processes:tick',
   gpusReady: 'gpus:ready',
   trayHidden: 'tray:hidden',
+  runtimeProgress: 'runtime:progress',
+  runtimeReady: 'runtime:ready',
+  runtimeFailed: 'runtime:failed',
 } as const;
 
 /**
@@ -120,6 +130,74 @@ export function fetchModelRegistry(): Promise<ModelRegistry> {
  */
 export function fetchLlmAdvice(contextLength: number): Promise<LlmAdvice | null> {
   return invoke<LlmAdvice | null>(COMMANDS.llmAdvice, { contextLength });
+}
+
+/**
+ * Returns what inference runtimes are installed and what could be installed,
+ * or `null` while the GPU probe is still running.
+ *
+ * `null` for the same reason {@link fetchLlmAdvice} uses it: recommending a CPU
+ * build on a machine that has a GPU is a confident wrong answer. The
+ * `gpus:ready` event is the cue to ask again.
+ */
+export function fetchRuntimeStatus(): Promise<RuntimeStatus | null> {
+  return invoke<RuntimeStatus | null>(COMMANDS.runtimeStatus);
+}
+
+/**
+ * Starts downloading and verifying a llama.cpp runtime.
+ *
+ * Resolves as soon as the work is spawned, not when it completes — a Windows
+ * CUDA acquisition moves 642 MB. Progress and the outcome arrive on
+ * {@link onRuntimeProgress}, {@link onRuntimeReady} and {@link onRuntimeFailed}.
+ *
+ * @param acceptCuda Whether the user accepted CUDA's much larger download.
+ *   Defaults to the smaller Vulkan build, because a 642 MB download is a
+ *   choice rather than a consequence of owning an NVIDIA card.
+ */
+export async function acquireRuntime(acceptCuda: boolean): Promise<void> {
+  await invoke(COMMANDS.acquireRuntime, { acceptCuda });
+}
+
+/**
+ * Deletes an installed runtime.
+ *
+ * @param tag The upstream release tag it came from.
+ * @param artifactId Which build, as named in `runtimes.json`.
+ */
+export async function deleteRuntime(tag: string, artifactId: string): Promise<void> {
+  await invoke(COMMANDS.deleteRuntime, { tag, artifactId });
+}
+
+/** Subscribes to download and verification progress. */
+export function onRuntimeProgress(
+  handler: (progress: RuntimeProgress) => void
+): Promise<UnlistenFn> {
+  return listen<RuntimeProgress>(EVENTS.runtimeProgress, (event) => {
+    handler(event.payload);
+  });
+}
+
+/** Subscribes to the one-shot signal that a runtime is installed and usable. */
+export function onRuntimeReady(
+  handler: (runtime: InstalledRuntimeInfo) => void
+): Promise<UnlistenFn> {
+  return listen<InstalledRuntimeInfo>(EVENTS.runtimeReady, (event) => {
+    handler(event.payload);
+  });
+}
+
+/**
+ * Subscribes to acquisition failures.
+ *
+ * The payload carries `retryable` and `verificationFailure` rather than only a
+ * message: a checksum mismatch must not be offered a retry, and must not read
+ * like a bad day on the network.
+ */
+export function onRuntimeFailed(handler: (failure: RuntimeFailure) => void): Promise<UnlistenFn> {
+  return listen<RuntimeFailure>(EVENTS.runtimeFailed, (event) => {
+    handler(event.payload);
+  });
 }
 
 /**

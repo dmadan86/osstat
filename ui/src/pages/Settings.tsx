@@ -9,6 +9,7 @@
 
 import { useEffect, useState } from 'react';
 
+import { InferenceRuntime } from '../components/InferenceRuntime';
 import { isAutostartEnabled, setAutostart } from '../lib/ipc';
 import { CHOICES, type Preferences } from '../lib/preferences';
 import { reconcileLayout, updatePanel } from '../lib/panelLayout';
@@ -203,7 +204,8 @@ export function Settings({ preferences, onChange }: SettingsProps): React.JSX.El
       <header>
         <h2 className="text-lg font-semibold">Settings</h2>
         <p className="text-xs text-neutral-500">
-          Stored on this machine only. osstat makes no network requests.
+          Stored on this machine only. osstat makes no network request unless you ask it to —
+          downloading an inference runtime, below, is the only thing that does.
         </p>
       </header>
 
@@ -255,6 +257,7 @@ export function Settings({ preferences, onChange }: SettingsProps): React.JSX.El
             onChange({ closeBehaviour });
           }}
         />
+        <InferenceRuntime />
       </div>
     </div>
   );

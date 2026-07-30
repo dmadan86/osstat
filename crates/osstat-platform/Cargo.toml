@@ -23,6 +23,7 @@ ts-rs = { workspace = true, optional = true }
 [dev-dependencies]
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 serde_json = { workspace = true }
+tempfile = "3"
 
 # The M1 gate from ROADMAP.md: a 500-process refresh under 50 ms.
 [[bench]]

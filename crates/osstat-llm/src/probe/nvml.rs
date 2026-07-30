@@ -55,6 +55,17 @@ impl Nvidia {
             .collect()
     }
 
+    /// The major CUDA version this machine's driver supports.
+    ///
+    /// Upstream llama.cpp publishes two Windows CUDA builds, against 12.4 and
+    /// 13.3, and running the wrong one against a driver fails at load. NVML is
+    /// the only source that can answer which is right, which is why the
+    /// question is answered here rather than in `osstat-inference`.
+    pub(super) fn cuda_driver_major(&self) -> Option<u32> {
+        let version = self.nvml.sys_cuda_driver_version().ok()?;
+        u32::try_from(nvml_wrapper::cuda_driver_version_major(version)).ok()
+    }
+
     /// Reads utilisation for the `(device index, NVML index)` pairs given.
     ///
     /// A device that has since become unreadable — an eGPU unplugged mid-session

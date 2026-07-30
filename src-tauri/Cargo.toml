@@ -25,6 +25,7 @@ default = []
 ts-bindings = [
   "dep:ts-rs",
   "osstat-core/ts-bindings",
+  "osstat-inference/ts-bindings",
   "osstat-llm/ts-bindings",
   "osstat-platform/ts-bindings",
 ]
@@ -34,8 +35,10 @@ tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 osstat-core = { workspace = true }
+osstat-inference = { workspace = true }
 osstat-llm = { workspace = true }
 osstat-platform = { workspace = true }
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "http2"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { version = "2.11.5", features = ["tray-icon"] }

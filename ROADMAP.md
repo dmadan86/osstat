@@ -84,6 +84,38 @@ probing degrades gracefully with no GPU present.
 - [x] Hardware card, fit matrix, and an explanation drawer showing the arithmetic
 - [x] Apple Silicon reports unified memory correctly
 
+### M4.1 — Inference runtime acquisition
+
+The advisor says whether a model fits; this is the first step towards acting on
+it. Split from the rest of local inference because it carries the security
+decisions and has no visible payoff of its own — see
+[ADR-012](docs/adr/ADR-012-local-inference-runtime.md) and
+[the design](docs/superpowers/specs/2026-07-30-local-inference-runtime-design.md).
+
+**Gate:** backend selection resolves on all three platforms and both
+architectures, proven by test; a checksum mismatch is proven to leave nothing
+executable behind.
+
+- [x] `osstat-inference`: backend selection as pure functions over the ADR-008
+      probe, exhaustively table-tested
+- [x] `runtimes.json` pinning eleven upstream artifacts by SHA256, schema-validated,
+      with drift tests in both directions against selection
+- [x] Verified download: streamed, hashed as it arrives, moved into place only
+      on a match, nothing left behind on failure
+- [x] Extraction refusing any entry that would escape the runtime directory
+- [x] Install store: two pinned versions coexist, sizes listed, deletable
+- [x] Settings section offering both backends with their download sizes
+- [ ] Manual acquisition verified by hand on Windows, Linux and macOS
+
+### M4.2–M4.4 — Running a model
+
+- [ ] **M4.2** Model acquisition: Hugging Face search, resumable GGUF download,
+      local file import, GGUF header parsing reconciled against the registry
+- [ ] **M4.3** Inference session: spawn with the advisor's `gpu_layers`,
+      supervise, stream, cancel, tear down without orphaning the process
+- [ ] **M4.4** Chat: conversation store, streaming UI, markdown, system prompt
+      and sampling controls, live tokens/sec and context meters
+
 ---
 
 ## M5 — Hardening and release
