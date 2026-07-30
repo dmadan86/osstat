@@ -3367,6 +3367,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "ts-rs",
+ "windows 0.62.2",
 ]
 
 [[package]]

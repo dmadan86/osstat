@@ -25,6 +25,15 @@ criterion = { version = "0.7", default-features = false, features = ["cargo_benc
 serde_json = { workspace = true }
 tempfile = "3"
 
+# Posting WM_CLOSE is the only part of ending a process with no safe wrapper
+# anywhere in the ecosystem. Already in Cargo.lock via wgpu, so this adds
+# nothing to the licence surface.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
 # The M1 gate from ROADMAP.md: a 500-process refresh under 50 ms.
 [[bench]]
 name = "process_refresh"
