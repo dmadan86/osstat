@@ -27,3 +27,4 @@ other decision that would be expensive to reverse.
 | [009](ADR-009-testing-and-ci.md)                 | Testing and CI strategy                              | Accepted |
 | [010](ADR-010-licensing-and-governance.md)       | Dual MIT/Apache-2.0 licensing and governance         | Accepted |
 | [011](ADR-011-code-quality-gates.md)             | Code quality gates and the review process            | Accepted |
+| [012](ADR-012-local-inference-runtime.md)        | Fetching and verifying the llama.cpp runtime         | Accepted |

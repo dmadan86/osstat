@@ -1,7 +1,9 @@
 # Local inference, part 1: acquiring the llama.cpp runtime
 
 **Date:** 2026-07-30
-**Status:** Approved, not yet implemented.
+**Status:** Implemented, except the manual cross-platform acquisition check.
+Amended during implementation: CUDA became an opt-in rather than an automatic
+selection (§2), and `osstat-llm` gained `cuda_driver_major()` (§4).
 **Supersedes:** nothing. **Depends on:** ADR-002, ADR-003, ADR-008, ADR-010.
 **Obliges:** a new ADR-012, and a fifth threat in SECURITY.md. See §8.
 
@@ -103,7 +105,7 @@ Selection is a pure function of three inputs osstat already has — target OS,
 target architecture, and the ADR-008 hardware probe — and produces an artifact
 identifier. No I/O, so it is exhaustively testable.
 
-Upstream's published artifacts for release `b10192` reduce to this table. Every
+Upstream's published artifacts for release `b10194` reduce to this table. Every
 row names a real published asset:
 
 | OS      | Arch  | GPU                      | Artifact                              |
@@ -150,10 +152,25 @@ The CUDA 12.4-versus-13.3 choice is answerable from data osstat already collects
 NVML reports the driver's CUDA version, so the ADR-008 probe extends to backend
 selection rather than requiring a second probe.
 
-**The cost of Vulkan-by-default, stated plainly:** CUDA is meaningfully faster
-than Vulkan on NVIDIA hardware. Windows NVIDIA users get the fast path because
-upstream builds it; Linux NVIDIA users do not, because upstream does not. osstat
-should say which backend it selected and why, in the same spirit as the advisor's
+**CUDA is offered, not selected.** This design originally had CUDA chosen
+automatically whenever NVML confirmed the driver. The published artifact sizes
+changed that:
+
+| Backend                      | Download |
+| ---------------------------- | -------- |
+| `win-vulkan-x64`             | 34 MB    |
+| `win-cuda-13.3-x64` + cudart | 538 MB   |
+| `win-cuda-12.4-x64` + cudart | 642 MB   |
+
+Starting a 642 MB download because a graphics card was detected is not a
+defensible default. Vulkan is the default; CUDA appears beside it with its size
+stated, and is taken only if the user accepts. Selection therefore takes a
+`CudaChoice`, and the UI shows both options rather than announcing one.
+
+**The cost, stated plainly:** CUDA is meaningfully faster than Vulkan on NVIDIA
+hardware. Windows NVIDIA users can have the fast path if they want to pay for
+it; Linux NVIDIA users cannot, because upstream builds no Linux CUDA artifact.
+osstat says which backend an option is, in the same spirit as the advisor's
 explanation drawer — a chosen backend the user cannot see is a performance
 difference they cannot explain.
 
@@ -185,7 +202,11 @@ Per AGENTS.md's placement rules and ADR-003:
 
 **`crates/osstat-inference`** — new workspace member. Owns selection, the pinned
 manifest, download, verification, extraction, and the on-disk layout. Depends on
-`osstat-llm` for the probe result. `osstat-llm` is not modified: it stays the
+`osstat-llm` for the probe result. `osstat-llm` gains exactly one function —
+`cuda_driver_major()` — because choosing between upstream's two Windows CUDA
+builds needs the driver's CUDA version and NVML is the only thing that reports
+it, which makes it a probe concern under ADR-008 rather than a reason to
+duplicate an NVML dependency here. Otherwise it is unchanged: it stays the
 advisor, pure and cheap.
 
 **`crates/osstat-platform`** — gains the OS-specific pieces behind traits: setting
