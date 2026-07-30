@@ -14,11 +14,12 @@
 use std::time::Duration;
 
 use osstat_core::{
-    BuildInfo, GpuDevice, MetricsSample, PortRecord, ProcessRecord, SystemDescription,
+    BuildInfo, CriticalProcess, GpuDevice, MetricsSample, PortRecord, ProcessController,
+    ProcessKey, ProcessRecord, SystemDescription, Termination, TerminationMode,
 };
 use osstat_llm::calculator::{FitResult, GpuBudget, compute_fit_matrix, select_gpu_budget};
 use osstat_llm::registry::{ModelRegistry, seeded_registry};
-use osstat_platform::PlatformId;
+use osstat_platform::{PlatformId, Terminator};
 use serde::Serialize;
 use tauri::State;
 
@@ -232,6 +233,64 @@ pub fn set_close_behaviour(setting: State<'_, CloseSetting>, behaviour: CloseBeh
     setting.set(behaviour);
 }
 
+/// Why a termination did not happen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct TerminationError {
+    /// What went wrong, in a sentence the user can act on.
+    pub message: String,
+    /// Whether elevation could plausibly help.
+    ///
+    /// ADR-006's signal. Nothing elevates yet, so the UI uses it only to
+    /// explain *why* it cannot help rather than to offer a prompt.
+    pub permission_denied: bool,
+    /// Whether the PID was reused by a different process.
+    ///
+    /// Distinct from a permission failure because nothing was signalled and
+    /// retrying is pointless — the process the user selected has already gone.
+    pub identity_mismatch: bool,
+}
+
+/// Ends a process the current user owns.
+///
+/// Takes a whole [`ProcessKey`] rather than a PID. The front end waits several
+/// seconds between the graceful and forceful steps, and a PID freed in that
+/// window can be reused; the key is what stops the second call landing on a
+/// process nobody selected.
+///
+/// # Errors
+///
+/// A [`TerminationError`] describing what the OS refused.
+#[tauri::command]
+pub fn terminate_process(
+    key: ProcessKey,
+    mode: TerminationMode,
+) -> Result<Termination, TerminationError> {
+    Terminator::new()
+        .terminate(key, mode)
+        .map_err(|error| TerminationError {
+            message: error.to_string(),
+            permission_denied: error.is_permission_denied(),
+            identity_mismatch: matches!(error, osstat_core::Error::IdentityMismatch { .. }),
+        })
+}
+
+/// The processes that need a second confirmation, for this platform only.
+#[tauri::command]
+#[must_use]
+pub fn critical_processes() -> Vec<CriticalProcess> {
+    let platform = osstat_platform::current().as_str();
+
+    osstat_core::critical_list()
+        .processes
+        .iter()
+        .filter(|process| process.platform == platform)
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -335,5 +394,37 @@ mod tests {
         assert!(object.contains_key("platformName"));
         assert!(object.contains_key("build"));
         assert!(object.contains_key("platform"));
+    }
+
+    #[test]
+    fn a_termination_error_is_camel_case() {
+        let json = serde_json::to_value(TerminationError {
+            message: "x".to_owned(),
+            permission_denied: true,
+            identity_mismatch: false,
+        })
+        .unwrap();
+        let object = json.as_object().unwrap();
+
+        assert!(object.contains_key("permissionDenied"));
+        assert!(object.contains_key("identityMismatch"));
+    }
+
+    #[test]
+    fn the_critical_list_is_filtered_to_this_platform() {
+        let platform = osstat_platform::current().as_str();
+
+        for process in critical_processes() {
+            assert_eq!(process.platform, platform);
+        }
+    }
+
+    #[test]
+    fn this_platform_has_critical_processes_listed() {
+        assert!(
+            !critical_processes().is_empty(),
+            "a platform with no critical processes would silently drop the \
+             second confirmation entirely"
+        );
     }
 }

@@ -15,14 +15,17 @@
 //! your own session's shell or window manager, where a confirmed kill signs you
 //! out.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
 /// The committed list, embedded at compile time.
 const LIST_JSON: &str = include_str!("../critical-processes.json");
 
 /// One process worth stopping to think about.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
+#[serde(rename_all = "camelCase")]
 pub struct CriticalProcess {
     /// Which OS this entry describes: `windows`, `linux` or `macos`.
     pub platform: String,
