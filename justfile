@@ -47,6 +47,12 @@ bench-rust:
 bench-ui:
     npm run bench --workspace @osstat/ui
 
+# Cold-start timing check against the under-2s product goal (ROADMAP M5).
+# Needs `cargo install hyperfine` and a release build (`just build`) - the
+# script says what the number does and does not include.
+cold-start:
+    bash scripts/cold-start.sh
+
 # End-to-end suite (tauri-driver + WebdriverIO). Arrives in M5.
 e2e:
     @echo "e2e suite lands in M5 - see ROADMAP.md"
@@ -78,6 +84,13 @@ bindings:
 audit:
     cargo audit
     npm audit --audit-level=high
+
+# Licence and advisory gate (ADR-010). Needs `cargo install cargo-deny`; CI
+# uses EmbarkStudios/cargo-deny-action instead. Exceptions live in deny.toml,
+# each with a reason - a new failure here is a decision to make, not a
+# threshold to raise.
+deny:
+    cargo deny check
 
 # Everything a pull request must pass.
 ci: lint test
