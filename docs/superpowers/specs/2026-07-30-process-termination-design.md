@@ -1,10 +1,19 @@
 # Ending a process, from the tree and from the port table
 
 **Date:** 2026-07-30
-**Status:** Approved, not yet implemented.
+**Status:** Implemented.
 **Supersedes:** the deliberate absence recorded in `Processes.tsx`, `Ports.tsx`
 and `App.test.tsx`. **Depends on:** ADR-003, ADR-006, ADR-007.
 **Delivers:** the four unticked kill items in ROADMAP M1 and M2.
+
+**Amendment during implementation:** the critical-process list is
+`critical-processes.json`, not `.toml` as §3 and §5 originally specified.
+ADR-004's "rules are data" precedent holds; the format does not. ADR-004 is
+about cleaning-rule manifests, which users author; this list is internal data,
+and the two internal data files already in the tree — `models.json` and
+`runtimes.json` — are JSON with a sibling JSON Schema and a test validating
+one against the other, which is the precedent this list actually follows.
+`serde_json` was already a workspace dependency; `toml` would have been new.
 
 ## Context
 
@@ -52,15 +61,15 @@ holding port 3000, or a build has hung. Both are processes the user already owns
 
 Recorded because each closed off an option that will look attractive again later.
 
-| Decision                                      | Rejected alternative            | Why                                                                                                                                                                                                |
-| --------------------------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Kill takes a `ProcessKey`                     | Kill takes a PID                | Five seconds separate the two steps, and a PID freed in that window can be reused. See §2 — this is the single most important property in the spec.                                                |
-| Own processes only, no elevation              | Build ADR-006's helper first    | The helper is a second shipped binary with a versioned protocol, a Polkit policy and macOS registration. It roughly triples the work, and killing your own process needs none of it.               |
-| `WM_CLOSE` then `TerminateProcess` on Windows | `sysinfo`'s `kill()` everywhere | `sysinfo::Process::kill` is `TerminateProcess` on Windows. Using it for the "graceful" step would make both steps identical there while the UI claimed otherwise.                                  |
-| One process, not the subtree                  | "End this and its children"     | Multiplies the blast radius of a misclick. The roadmap's integration test is single-process.                                                                                                       |
-| The 5 s wait lives in the front end           | A pending-kill timer in Rust    | Backend state would have to survive the app quitting mid-wait, handle two requests for one PID, and re-check identity anyway. Each command becomes one action for which consent was already given. |
-| Critical list is TOML data                    | A hardcoded array               | ADR-004's precedent: rules are data, reviewed as data.                                                                                                                                             |
-| Match on name **and** path                    | Name alone                      | A user's own `explorer.exe` in Downloads is not the real one.                                                                                                                                      |
+| Decision                                      | Rejected alternative            | Why                                                                                                                                                                                                                                                                       |
+| --------------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kill takes a `ProcessKey`                     | Kill takes a PID                | Five seconds separate the two steps, and a PID freed in that window can be reused. See §2 — this is the single most important property in the spec.                                                                                                                       |
+| Own processes only, no elevation              | Build ADR-006's helper first    | The helper is a second shipped binary with a versioned protocol, a Polkit policy and macOS registration. It roughly triples the work, and killing your own process needs none of it.                                                                                      |
+| `WM_CLOSE` then `TerminateProcess` on Windows | `sysinfo`'s `kill()` everywhere | The graceful step posts `WM_CLOSE`; the forceful step calls `sysinfo::Process::kill`, which shells out to `taskkill.exe /PID <pid> /F` rather than calling `TerminateProcess` directly. Using it for both steps would make them identical while the UI claimed otherwise. |
+| One process, not the subtree                  | "End this and its children"     | Multiplies the blast radius of a misclick. The roadmap's integration test is single-process.                                                                                                                                                                              |
+| The 5 s wait lives in the front end           | A pending-kill timer in Rust    | Backend state would have to survive the app quitting mid-wait, handle two requests for one PID, and re-check identity anyway. Each command becomes one action for which consent was already given.                                                                        |
+| Critical list is JSON data                    | TOML, or a hardcoded array      | ADR-004's precedent — rules are data, reviewed as data — holds; the format named in the original spec did not. See the amendment note above.                                                                                                                              |
+| Match on name **and** path                    | Name alone                      | A user's own `explorer.exe` in Downloads is not the real one.                                                                                                                                                                                                             |
 
 ## 2. Identity: why this takes a `ProcessKey`
 
@@ -110,19 +119,22 @@ Per ADR-003 and AGENTS.md's placement rules:
 
 **`osstat-platform`** — the OS-specific half:
 
-- Unix: `libc::kill` with `SIGTERM` or `SIGKILL`.
+- Unix: `sysinfo`'s `kill_with` with `SIGTERM` or `SIGKILL`, not `libc::kill`
+  directly, so the crate keeps its `#![deny(unsafe_code)]`.
 - Windows: `EnumWindows` plus `GetWindowThreadProcessId` to find top-level windows
-  belonging to the PID, `PostMessageW(WM_CLOSE)` to each; `TerminateProcess` for
-  the forceful mode. Needs the `windows` crate, which is new to this project and
-  must clear `cargo deny`.
+  belonging to the PID, `PostMessageW(WM_CLOSE)` to each; `sysinfo`'s `kill()`
+  (`taskkill.exe /PID <pid> /F`) for the forceful mode. Needs the `windows`
+  crate, which is new to this project and must clear `cargo deny`.
 
 **`src-tauri`** — one adapter, `terminate_process`, no logic.
 
 **`ui`** — one confirmation component used by both pages. Neither page implements
 a dialog of its own; M2's item is M1's flow reached from a second table.
 
-**`crates/osstat-core/critical-processes.toml`** — the list, with a schema and a
-test validating it, following `models.json` and `runtimes.json`.
+**`crates/osstat-core/critical-processes.json`** — the list, with a schema and a
+test validating it, following `models.json` and `runtimes.json`. See the
+amendment note at the top of this document — the original spec named
+`.toml`.
 
 In `osstat-core` rather than `osstat-platform` despite being per-OS content: it
 is _data about_ operating systems, not code that runs differently on them.
@@ -176,8 +188,8 @@ polling loop for a signal that was already arriving.
 
 ## 5. Critical processes
 
-`critical-processes.toml`, one section per platform, each entry a name and the
-path it is expected at:
+`critical-processes.json`, one entry per platform per process, each with a name
+and the paths it is expected at:
 
 | Platform | Examples                                                                |
 | -------- | ----------------------------------------------------------------------- |
@@ -216,17 +228,22 @@ window manager, where a confirmed kill logs you out.
 - Critical matching: right name and right path matches; right name and wrong path
   does not; wrong name at a protected path does not; per-platform lists are
   matched against the correct platform only.
-- `critical-processes.toml` validated against its schema.
+- `critical-processes.json` validated against its schema.
 
-**Integration** — the test ROADMAP M1 names:
+**Integration** — the test ROADMAP M1 names, delivered in
+`crates/osstat-platform/tests/terminate.rs`:
 
 - Spawn a child process, find it in the tree, terminate it, assert it exited.
 - Spawn, terminate gracefully, assert it exits without needing the forceful step.
 - **Identity refusal:** build a key with a real PID and a wrong `started_at`,
   assert termination refuses and the process is still running afterwards.
+- Ending something already gone is a success, not an error.
 
-**M2's integration test:** bind a listener in-test, assert it appears in the port
-table with the right PID, end it, assert the port frees.
+**M2's integration test — not delivered in this change.** Wiring the Ports page
+into the confirmation flow (resolving a real `ProcessKey` from the tree by PID,
+disabling the control when it cannot) is covered by front-end tests against a
+mocked backend, but no test binds a real listener, ends its owning process, and
+asserts the port frees. That gap is named rather than silently left; see §9.
 
 **Front end:**
 
@@ -243,7 +260,9 @@ anything on the critical list. Both are verified by hand and named as such.
 
 ## 8. Documents this obliges
 
-- **ROADMAP** M1: three items ticked. M2: one, and its integration test.
+- **ROADMAP** M1: three items ticked. M2: "Kill owning process" ticked; its
+  own integration test (bind a listener, end it, assert the port frees) is
+  not delivered in this change and stays unticked — see §7 and §9.
 - **SECURITY.md** needs no new threat. osstat gains no privilege here — it ends
   processes the user could already end from Task Manager or `kill`. The privacy
   and elevation sections are unchanged, and that is worth stating explicitly in
@@ -255,13 +274,17 @@ anything on the critical list. Both are verified by hand and named as such.
 
 ## 9. What "done" means
 
-- [ ] `ProcessController` in `osstat-core` with per-OS implementations.
-- [ ] Termination refuses on identity mismatch, proven by test.
-- [ ] `WM_CLOSE` path on Windows; `SIGTERM`/`SIGKILL` on Unix.
-- [ ] `critical-processes.toml`, schema-validated, matched on name and path.
-- [ ] Confirmation component used by Processes and Ports alike.
-- [ ] `PermissionDenied` reaches the UI intact and reads honestly.
-- [ ] ROADMAP's M1 and M2 integration tests pass.
-- [ ] `App.test.tsx`'s absence test replaced, not deleted.
-- [ ] `just ci` green on Windows, Linux and macOS.
-- [ ] `cargo deny` green with the `windows` crate added.
+- [x] `ProcessController` in `osstat-core` with per-OS implementations.
+- [x] Termination refuses on identity mismatch, proven by test.
+- [x] `WM_CLOSE` path on Windows; `SIGTERM`/`SIGKILL` on Unix.
+- [x] `critical-processes.json`, schema-validated, matched on name and path.
+- [x] Confirmation component used by Processes and Ports alike.
+- [x] `PermissionDenied` reaches the UI intact and reads honestly.
+- [x] ROADMAP's M1 integration test passes.
+- [ ] ROADMAP's M2 integration test (bind a listener, end it, assert the port
+      frees) — not delivered; see §7. Ports.tsx's own wiring is covered by
+      front-end tests against a mocked backend instead.
+- [x] `App.test.tsx`'s absence test replaced, not deleted.
+- [x] `just ci` green — verified on Windows, where this change was built.
+      Linux and macOS are exercised by CI on the pull request, not locally.
+- [x] `cargo deny` green with the `windows` crate added.
