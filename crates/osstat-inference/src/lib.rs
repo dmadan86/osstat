@@ -29,8 +29,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod manifest;
 pub mod select;
 pub mod target;
 
+pub use manifest::{Companion, RuntimeArtifact, RuntimeManifest, pinned_manifest};
 pub use select::{Backend, CudaChoice, GpuCapability, cuda_is_offered, select};
 pub use target::{Target, TargetArch, TargetOs};

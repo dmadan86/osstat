@@ -22,5 +22,11 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 
+[dev-dependencies]
+# Validates the pinned manifest against its own JSON Schema in a test, rather
+# than trusting that the schema and the data never drift apart. Same convention
+# as osstat-llm's model registry.
+jsonschema = "0.49"
+
 [lints]
 workspace = true
