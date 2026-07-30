@@ -46,6 +46,23 @@ allow = [
 [licenses.private]
 ignore = false
 
+# A per-crate exception rather than a licence added to `allow` above: scoping
+# it to the one crate that needs it means a *different* crate arriving under
+# CDLA-Permissive-2.0 still fails the check and gets read, which is the whole
+# point of this file.
+#
+# webpki-root-certs is Mozilla's CA root store compiled into a Rust crate —
+# certificate data, not code, which is why it carries a data licence
+# (Community Data License Agreement Permissive 2.0). CDLA-Permissive-2.0
+# grants use, modification and redistribution with no copyleft and no
+# obligation beyond preserving the disclaimer, so it does not constrain
+# redistributing osstat under MIT OR Apache-2.0 (ADR-010). It reaches the
+# graph through reqwest -> rustls-platform-verifier, shared between tauri and
+# the `jsonschema` dev-dependency that validates the seed model registry.
+[[licenses.exceptions]]
+allow = ["CDLA-Permissive-2.0"]
+name = "webpki-root-certs"
+
 # ---------------------------------------------------------------------------
 # Advisories: RustSec vulnerabilities, unmaintained crates, and yanked
 # versions. Everything below is a considered exception with a reason, not a
