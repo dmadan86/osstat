@@ -163,10 +163,28 @@ jobs:
 
       - run: npm ci
 
-      - name: cargo audit
-        uses: rustsec/audit-check@v2
+      # rustsec/audit-check's newest release (v2.0.0, 2024) still declares
+      # Node 20. GitHub force-runs it on 24 and warns on every build, and the
+      # node24 fix sits unreleased on the action's default branch — so there
+      # is no tag to bump to. Running cargo-audit directly retires the Node
+      # runtime from this step rather than pinning an unreleased commit of a
+      # third-party action into the security path.
+      #
+      # It also fixes two things the action was getting wrong here: it could
+      # not publish its check run ("Resource not accessible by integration"),
+      # which it reported as a failure annotation on every green build, and
+      # the advisories it found never reached the job log. taiki-e's installer
+      # is a shell composite action, so nothing in this step runs on Node.
+      #
+      # This is what `just audit` runs, so a local check and CI no longer
+      # differ. Exceptions live in .cargo/audit.toml, each with a reason.
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+
+      - name: cargo audit
+        run: cargo audit
 
       - name: npm audit
         run: npm audit --audit-level=high

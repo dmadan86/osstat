@@ -79,8 +79,8 @@ fmt:
 bindings:
     cargo test --workspace --features ts-bindings
 
-# Dependency vulnerability checks. Needs `cargo install cargo-audit`; CI uses
-# the rustsec audit action instead, so this is for checking before you push.
+# Dependency vulnerability checks. Needs `cargo install cargo-audit`. CI runs
+# these same two commands, so a pass here is a pass there.
 audit:
     cargo audit
     npm audit --audit-level=high
