@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "osstat critical process list",
+  "description": "Processes whose termination needs a second, distinct confirmation. This guards a misclick, not an adversary: name matching is spoofable, and anyone who can plant a binary has already won.",
+  "type": "object",
+  "required": ["version", "processes"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "type": "integer", "const": 1 },
+    "processes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["platform", "name", "paths", "breaks"],
+        "additionalProperties": false,
+        "properties": {
+          "platform": { "enum": ["windows", "linux", "macos"] },
+          "name": { "type": "string", "minLength": 1 },
+          "paths": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "breaks": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}
