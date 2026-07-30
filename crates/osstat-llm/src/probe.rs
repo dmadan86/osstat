@@ -31,6 +31,10 @@ mod nvml {
         pub(super) fn measure(&self, _indices: &[(u32, u32)]) -> Vec<GpuSample> {
             Vec::new()
         }
+
+        pub(super) fn cuda_driver_major(&self) -> Option<u32> {
+            None
+        }
     }
 }
 
@@ -62,6 +66,22 @@ impl HardwareProbe {
             measurable: Vec::new(),
             probed: false,
         }
+    }
+
+    /// The major CUDA version this machine's NVIDIA driver supports.
+    ///
+    /// `None` when there is no NVIDIA driver, which includes every Mac, every
+    /// CI runner, and any machine where [`GpuProvider::devices`] has not run
+    /// yet.
+    ///
+    /// This is a probe concern rather than a rendering one: it exists because
+    /// choosing between llama.cpp's two published Windows CUDA builds needs the
+    /// driver's CUDA version, and NVML is the only thing that reports it.
+    #[must_use]
+    pub fn cuda_driver_major(&self) -> Option<u32> {
+        self.nvidia
+            .as_ref()
+            .and_then(nvml::Nvidia::cuda_driver_major)
     }
 }
 
@@ -322,6 +342,34 @@ mod tests {
         let devices = probe.devices().unwrap();
 
         assert!(devices.iter().all(|device| device.kind != GpuKind::Cpu));
+    }
+
+    #[test]
+    fn a_machine_with_no_nvidia_driver_reports_no_cuda_version() {
+        // CI runners and every Mac take this path. So does any machine before
+        // `devices()` has run, since nothing has attached yet.
+        let probe = HardwareProbe::new(SYSTEM_MEMORY);
+
+        assert!(
+            probe.cuda_driver_major().is_none(),
+            "no driver has been attached, so there is no version to report"
+        );
+    }
+
+    #[test]
+    fn any_reported_cuda_version_is_plausible() {
+        // On a machine with an NVIDIA card this reads the real driver; on CI it
+        // reads nothing. Either is a pass — what must not happen is a number
+        // that would select a llama.cpp build at random.
+        let mut probe = HardwareProbe::new(SYSTEM_MEMORY);
+        let _ = probe.devices().unwrap();
+
+        if let Some(major) = probe.cuda_driver_major() {
+            assert!(
+                (10..=99).contains(&major),
+                "implausible CUDA major version {major}"
+            );
+        }
     }
 
     #[test]

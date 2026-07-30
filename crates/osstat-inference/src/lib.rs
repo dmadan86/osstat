@@ -29,16 +29,20 @@
 
 #![forbid(unsafe_code)]
 
+pub mod acquire;
 pub mod download;
 pub mod error;
 pub mod manifest;
 pub mod select;
+pub mod store;
 pub mod target;
 pub mod unpack;
 
+pub use acquire::{Stage, acquire, resolve};
 pub use download::{Progress, download_verified, sha256_file};
 pub use error::AcquireError;
 pub use manifest::{Companion, RuntimeArtifact, RuntimeManifest, pinned_manifest};
 pub use select::{Backend, CudaChoice, GpuCapability, cuda_is_offered, select};
+pub use store::{InstalledRuntime, RuntimeStore};
 pub use target::{Target, TargetArch, TargetOs};
 pub use unpack::{find_server, server_file_name, unpack};

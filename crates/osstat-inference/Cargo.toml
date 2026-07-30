@@ -40,6 +40,11 @@ tar = "0.4"
 flate2 = "1"
 tokio = { version = "1", features = ["fs", "io-util"] }
 futures-util = { version = "0.3", default-features = false }
+# Free disk space, before committing to a download that can be 642 MB. Chosen
+# over reusing osstat-platform's sysinfo: fs4 wraps GetDiskFreeSpaceExW and
+# statvfs directly, where sysinfo would mean matching a path against a list of
+# mount points by hand — real code with real edge cases on every platform.
+fs4 = "1.1.0"
 
 [dev-dependencies]
 tempfile = "3"

@@ -33,12 +33,12 @@ pub(crate) fn disk_display_name(label: &str, mount_point: &str) -> String {
 /// Windows decides what is executable by extension, not by a permission bit, so
 /// there is nothing to set. Returning `Ok` rather than an "unsupported" error
 /// keeps the caller free of a `cfg` branch.
-// The Result is unnecessary *here* and required by the shared signature: the
-// Unix implementations genuinely fail on a noexec mount or a denied chmod, and
-// the caller must have one shape to handle on all three platforms. Narrowing
-// this to `()` would push a cfg branch into osstat-inference, which is the
-// arrangement ADR-003 exists to prevent.
-#[allow(clippy::unnecessary_wraps)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the Unix implementations genuinely fail on a noexec mount or a denied chmod, and \
+              callers need one shape on all three platforms; narrowing this to () would push a \
+              cfg branch into osstat-inference, which is what ADR-003 exists to prevent"
+)]
 pub(crate) fn mark_executable(_path: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
