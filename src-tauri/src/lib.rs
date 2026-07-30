@@ -167,6 +167,8 @@ pub fn run() -> tauri::Result<()> {
             commands::process_list,
             commands::port_list,
             commands::gpu_devices,
+            commands::model_registry,
+            commands::llm_advice,
             commands::set_sample_interval,
             commands::set_sampling_paused,
             commands::set_close_behaviour,

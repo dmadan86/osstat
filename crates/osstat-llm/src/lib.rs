@@ -1,11 +1,15 @@
-//! Hardware probing and, later, the LLM runnability advisor.
+//! Hardware probing and the LLM runnability advisor.
 //!
-//! Today this crate holds only the first half of ADR-008: finding the GPUs in a
-//! machine and measuring them where the vendor allows. The model registry and
-//! the runnability arithmetic arrive with M4 and will sit alongside it.
+//! This crate is all of ADR-008: [`probe`] finds the GPUs in a machine and
+//! measures them where the vendor allows, [`registry`] holds the models as
+//! data rather than code, and [`calculator`] weighs the two against each
+//! other as pure functions with no OS access of their own.
 //!
-//! The probe exists early because the Overview page shows GPUs, and the honest
-//! way to show a GPU is to actually look for one.
+//! The probe came first because the Overview page shows GPUs, and the honest
+//! way to show a GPU is to actually look for one. That honesty is the whole
+//! design constraint on the rest: the calculator reasons over three VRAM
+//! states rather than two, so "a GPU whose memory nothing can read" stays
+//! distinguishable from "no GPU" all the way to the verdict.
 //!
 //! # What each source can and cannot tell you
 //!

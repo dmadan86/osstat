@@ -19,7 +19,9 @@ import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart';
 import type { AppInfo } from '../bindings/AppInfo';
 import type { CloseBehaviour } from '../bindings/CloseBehaviour';
 import type { GpuDevice } from '../bindings/GpuDevice';
+import type { LlmAdvice } from '../bindings/LlmAdvice';
 import type { MetricsSample } from '../bindings/MetricsSample';
+import type { ModelRegistry } from '../bindings/ModelRegistry';
 import type { PortRecord } from '../bindings/PortRecord';
 import type { ProcessDiff } from '../bindings/ProcessDiff';
 import type { ProcessRecord } from '../bindings/ProcessRecord';
@@ -33,6 +35,8 @@ export const COMMANDS = {
   processList: 'process_list',
   portList: 'port_list',
   gpuDevices: 'gpu_devices',
+  modelRegistry: 'model_registry',
+  llmAdvice: 'llm_advice',
   setSampleInterval: 'set_sample_interval',
   setSamplingPaused: 'set_sampling_paused',
   setCloseBehaviour: 'set_close_behaviour',
@@ -91,6 +95,31 @@ export function fetchPortList(): Promise<PortRecord[]> {
  */
 export function fetchGpuDevices(): Promise<GpuDevice[] | null> {
   return invoke<GpuDevice[] | null>(COMMANDS.gpuDevices);
+}
+
+/**
+ * Returns the seed model registry: the quantization levels and the models.
+ *
+ * Static data embedded in the binary, so this is fetched once and held rather
+ * than re-read whenever the context length changes.
+ */
+export function fetchModelRegistry(): Promise<ModelRegistry> {
+  return invoke<ModelRegistry>(COMMANDS.modelRegistry);
+}
+
+/**
+ * Weighs every model at every quantization against this machine.
+ *
+ * Returns `null` while the GPU probe is still running, the same convention
+ * {@link fetchGpuDevices} uses: a matrix computed before the probe answers
+ * would report "no GPU" on a machine that has one. The `gpus:ready` event is
+ * the cue to ask again.
+ *
+ * @param contextLength Tokens of context to price the KV cache at. Clamped
+ *   by the backend; the figure actually used comes back on the result.
+ */
+export function fetchLlmAdvice(contextLength: number): Promise<LlmAdvice | null> {
+  return invoke<LlmAdvice | null>(COMMANDS.llmAdvice, { contextLength });
 }
 
 /**

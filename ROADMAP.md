@@ -77,11 +77,12 @@ rule can escape its root.
 **Gate:** the runnability calculator has 100% branch coverage, and hardware
 probing degrades gracefully with no GPU present.
 
-- [ ] `osstat-llm`: hardware probe (NVML, then `wgpu`, then fallback)
-- [ ] Model registry JSON with a schema, seeded with ~15 popular models × 4 quantizations
-- [ ] Runnability calculator as pure, exhaustively-tested functions
-- [ ] Hardware card, fit matrix, and an explanation drawer showing the arithmetic
-- [ ] Apple Silicon reports unified memory correctly
+- [x] `osstat-llm`: hardware probe (NVML, then `wgpu`, then fallback)
+- [x] Model registry JSON with a schema, seeded with ~15 popular models × 4 quantizations
+- [x] Runnability calculator as pure, exhaustively-tested functions
+      (`calculator.rs` measures 100% region, line and function coverage)
+- [x] Hardware card, fit matrix, and an explanation drawer showing the arithmetic
+- [x] Apple Silicon reports unified memory correctly
 
 ---
 

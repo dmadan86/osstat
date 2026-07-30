@@ -16,6 +16,8 @@ use std::time::Duration;
 use osstat_core::{
     BuildInfo, GpuDevice, MetricsSample, PortRecord, ProcessRecord, SystemDescription,
 };
+use osstat_llm::calculator::{FitResult, GpuBudget, compute_fit_matrix, select_gpu_budget};
+use osstat_llm::registry::{ModelRegistry, seeded_registry};
 use osstat_platform::PlatformId;
 use serde::Serialize;
 use tauri::State;
@@ -115,6 +117,97 @@ pub fn gpu_devices(sampler: State<'_, Sampler>) -> Option<Vec<GpuDevice>> {
     sampler.devices()
 }
 
+/// The narrowest context length the advisor will weigh a model at.
+///
+/// Below this the KV-cache term is too small to change any verdict, so a
+/// smaller figure would only produce a table that looks more optimistic
+/// than any real use of the model would be.
+const MIN_CONTEXT_LENGTH: u32 = 512;
+
+/// The widest context length the advisor will weigh a model at.
+///
+/// A megatoken is beyond every model in the seed registry; the per-model
+/// cap the UI actually enforces is `architecture.max_context_length`, and
+/// this is only the backstop that keeps the KV-cache arithmetic away from
+/// figures no model could accept.
+const MAX_CONTEXT_LENGTH: u32 = 1_048_576;
+
+/// Brings a requested context length inside the range the arithmetic is
+/// meaningful over.
+///
+/// Split out from [`llm_advice`] so the clamp is testable without a running
+/// Tauri app and its managed [`Sampler`] state.
+const fn clamped_context_length(requested: u32) -> u32 {
+    if requested < MIN_CONTEXT_LENGTH {
+        MIN_CONTEXT_LENGTH
+    } else if requested > MAX_CONTEXT_LENGTH {
+        MAX_CONTEXT_LENGTH
+    } else {
+        requested
+    }
+}
+
+/// The whole advisor answer for one machine at one context length.
+///
+/// The hardware card and the fit matrix are one payload rather than two
+/// commands because they have to agree: a matrix computed against a GPU
+/// budget the card is not showing is a table whose arithmetic the user
+/// cannot check, which is exactly what ADR-008 asks this feature not to be.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct LlmAdvice {
+    /// The VRAM the matrix was weighed against.
+    pub gpu: GpuBudget,
+    /// The system memory the matrix was weighed against.
+    #[cfg_attr(feature = "ts-bindings", ts(type = "number"))]
+    pub system_memory_bytes: u64,
+    /// The context length actually used, after clamping.
+    pub context_length: u32,
+    /// One row per model per quantization level.
+    pub results: Vec<FitResult>,
+}
+
+/// Returns the seed model registry: the quantization levels and the models.
+///
+/// Static data embedded in the binary, so this is a clone rather than a read
+/// of anything — the UI holds it to label the fit matrix's rows and columns.
+#[tauri::command]
+#[must_use]
+pub fn model_registry() -> ModelRegistry {
+    seeded_registry()
+}
+
+/// Weighs every model at every quantization against this machine.
+///
+/// Returns `None` while the GPU probe is still running, exactly as
+/// [`gpu_devices`] does and for the same reason: a matrix computed before
+/// the probe answers would report "no GPU" on a machine that has one, and a
+/// confident wrong verdict is the failure mode ADR-008 cares most about.
+/// Once the probe finishes it emits `gpus:ready`, which is the front end's
+/// cue to ask again.
+///
+/// `context_length` is clamped rather than rejected, following
+/// [`set_sample_interval`]; the clamped figure travels back in
+/// [`LlmAdvice::context_length`] so the drawer shows the number the
+/// arithmetic actually used.
+#[tauri::command]
+#[must_use]
+pub fn llm_advice(sampler: State<'_, Sampler>, context_length: u32) -> Option<LlmAdvice> {
+    let devices = sampler.devices()?;
+    let context_length = clamped_context_length(context_length);
+    let gpu = select_gpu_budget(&devices);
+    let system_memory_bytes = sampler.description().total_memory;
+
+    Some(LlmAdvice {
+        gpu,
+        system_memory_bytes,
+        context_length,
+        results: compute_fit_matrix(&seeded_registry(), context_length, gpu, system_memory_bytes),
+    })
+}
+
 /// Sets how often the sampler ticks, in milliseconds.
 ///
 /// Out-of-range values are clamped rather than rejected — see
@@ -165,6 +258,74 @@ mod tests {
     #[test]
     fn command_matches_the_constructor() {
         assert_eq!(app_info(), AppInfo::current());
+    }
+
+    #[test]
+    fn the_seed_registry_reaches_the_ipc_surface_populated() {
+        let registry = model_registry();
+        assert!(
+            !registry.models.is_empty(),
+            "the advisor has nothing to advise about"
+        );
+        assert!(
+            !registry.quant_levels.is_empty(),
+            "the fit matrix would have no columns"
+        );
+    }
+
+    #[test]
+    fn a_context_length_inside_the_range_is_left_alone() {
+        assert_eq!(clamped_context_length(4096), 4096);
+        assert_eq!(
+            clamped_context_length(MIN_CONTEXT_LENGTH),
+            MIN_CONTEXT_LENGTH
+        );
+        assert_eq!(
+            clamped_context_length(MAX_CONTEXT_LENGTH),
+            MAX_CONTEXT_LENGTH
+        );
+    }
+
+    #[test]
+    fn a_context_length_below_the_range_is_raised_not_rejected() {
+        assert_eq!(clamped_context_length(0), MIN_CONTEXT_LENGTH);
+        assert_eq!(clamped_context_length(1), MIN_CONTEXT_LENGTH);
+    }
+
+    #[test]
+    fn a_context_length_above_the_range_is_capped_not_rejected() {
+        assert_eq!(clamped_context_length(u32::MAX), MAX_CONTEXT_LENGTH);
+    }
+
+    #[test]
+    fn every_model_is_priced_at_every_quantization_level() {
+        let registry = model_registry();
+        let matrix = osstat_llm::calculator::compute_fit_matrix(
+            &registry,
+            4096,
+            GpuBudget::absent(),
+            32 * 1024 * 1024 * 1024,
+        );
+        assert_eq!(
+            matrix.len(),
+            registry.models.len() * registry.quant_levels.len()
+        );
+    }
+
+    #[test]
+    fn advice_serialises_the_arithmetic_the_drawer_needs() {
+        let advice = LlmAdvice {
+            gpu: GpuBudget::absent(),
+            system_memory_bytes: 16 * 1024 * 1024 * 1024,
+            context_length: 4096,
+            results: Vec::new(),
+        };
+        let json = serde_json::to_value(&advice).unwrap();
+        let object = json.as_object().unwrap();
+        assert!(object.contains_key("systemMemoryBytes"));
+        assert!(object.contains_key("contextLength"));
+        assert!(object.contains_key("results"));
+        assert!(object.contains_key("gpu"));
     }
 
     #[test]
