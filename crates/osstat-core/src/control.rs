@@ -21,7 +21,7 @@ pub enum TerminationMode {
     Graceful,
     /// End it now, with no chance to save.
     ///
-    /// `SIGKILL` on Unix; `TerminateProcess` on Windows.
+    /// `SIGKILL` on Unix; `taskkill.exe /PID <pid> /F` on Windows.
     Forceful,
 }
 

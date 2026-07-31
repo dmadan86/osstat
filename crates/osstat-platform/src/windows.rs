@@ -67,10 +67,32 @@ pub(crate) fn terminate(
             if process.kill() {
                 Ok(osstat_core::Termination::Signalled)
             } else {
-                Err(osstat_core::Error::PermissionDenied(format!(
-                    "cannot end pid {}",
-                    process.pid().as_u32()
-                )))
+                // `kill()` shells out to `taskkill.exe /PID <pid> /F`, which exits
+                // nonzero both when it lacks permission and when the process is
+                // simply no longer there — by far the more common case, since five
+                // seconds separate the graceful attempt from this one. Re-check
+                // existence the same way `Terminator` does before signalling, so
+                // "already gone" is not misreported as "not permitted" (ADR-006
+                // needs `PermissionDenied` to stay the sole "elevation might help"
+                // signal).
+                let key = osstat_core::ProcessKey {
+                    pid: process.pid().as_u32(),
+                    started_at: process.start_time(),
+                };
+                let mut system = sysinfo::System::new();
+                match crate::identity::verify(&mut system, key) {
+                    Ok(crate::identity::Identity::Gone)
+                    | Err(osstat_core::Error::IdentityMismatch { .. }) => {
+                        Ok(osstat_core::Termination::AlreadyGone)
+                    }
+                    Ok(crate::identity::Identity::Matches) => {
+                        Err(osstat_core::Error::PermissionDenied(format!(
+                            "cannot end pid {}",
+                            process.pid().as_u32()
+                        )))
+                    }
+                    Err(other) => Err(other),
+                }
             }
         }
     }
@@ -187,6 +209,34 @@ mod tests {
 
         // Clean up regardless of what the assertion did.
         let _ = terminate(process, osstat_core::TerminationMode::Forceful);
+    }
+
+    #[test]
+    fn a_process_already_gone_by_the_forceful_call_is_reported_as_gone_not_denied() {
+        // Ends the child directly, bypassing taskkill, so it is already gone by
+        // the time `terminate` shells out to check on it — the same situation as
+        // a process that exits on its own during the five-second grace period.
+        // `kill()` returning false here must not be read as a permission
+        // failure, or a vanished process reports as belonging to another user.
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "ping -n 20 127.0.0.1 > NUL"])
+            .spawn()
+            .unwrap();
+        let pid = sysinfo::Pid::from_u32(child.id());
+
+        let mut system = sysinfo::System::new();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[pid]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing(),
+        );
+        let process = system.process(pid).unwrap();
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        let outcome = terminate(process, osstat_core::TerminationMode::Forceful).unwrap();
+        assert_eq!(outcome, osstat_core::Termination::AlreadyGone);
     }
 
     #[test]

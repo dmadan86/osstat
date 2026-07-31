@@ -64,44 +64,59 @@ export function App(): React.JSX.Element {
 
   return (
     <div className={`flex h-full ${stacked ? 'flex-col' : 'flex-row'}`}>
-      <Navigation current={route} onNavigate={setRoute} style={preferences.navigation} />
+      {/* `inert` while the dialog is open, rather than relying on the overlay
+          alone: the overlay blocks the mouse but not Tab, and without this a
+          user could tab to another row's "End" button behind the dialog and
+          reach it with the keyboard. */}
+      <div className="contents" inert={endTarget !== null}>
+        <Navigation current={route} onNavigate={setRoute} style={preferences.navigation} />
 
-      <main className="min-w-0 flex-1 overflow-auto px-5 py-4">
-        {system.status === 'error' && (
-          <p role="alert" className="text-sm text-red-400">
-            Could not reach the osstat backend: {system.message}
-          </p>
-        )}
+        <main className="min-w-0 flex-1 overflow-auto px-5 py-4">
+          {system.status === 'error' && (
+            <p role="alert" className="text-sm text-red-400">
+              Could not reach the osstat backend: {system.message}
+            </p>
+          )}
 
-        {system.status === 'loading' && (
-          <p role="status" className="text-sm text-neutral-400">
-            Reading system information…
-          </p>
-        )}
+          {system.status === 'loading' && (
+            <p role="status" className="text-sm text-neutral-400">
+              Reading system information…
+            </p>
+          )}
 
-        {system.status === 'ready' && (
-          <Page
-            route={route}
-            system={system.value}
-            samples={samples}
-            latest={latest}
-            gpus={gpus}
-            tree={tree}
-            processesLoaded={loaded}
-            preferences={preferences}
-            onPreferenceChange={updatePreferences}
-            hiddenToTray={hiddenToTray}
-            onEndProcess={setEndTarget}
-          />
-        )}
-      </main>
+          {system.status === 'ready' && (
+            <Page
+              route={route}
+              system={system.value}
+              samples={samples}
+              latest={latest}
+              gpus={gpus}
+              tree={tree}
+              processesLoaded={loaded}
+              preferences={preferences}
+              onPreferenceChange={updatePreferences}
+              hiddenToTray={hiddenToTray}
+              onEndProcess={setEndTarget}
+            />
+          )}
+        </main>
+      </div>
 
       {/* Rendered here rather than inside a page: it subscribes to
           processes:tick for its own reasons regardless of which page is
           visible, and a user who switches pages mid-confirmation should not
-          lose it. */}
+          lose it.
+
+          Keyed on the target's identity so that switching targets — e.g.
+          tabbing to a different row's "End" button while a confirmation is
+          open — remounts the dialog's state machine instead of reusing it.
+          Without the key, `state` (which phase the dialog is in) survives a
+          `target` change, so a dialog already advanced to `force` for one
+          process would carry that phase over to a newly selected one and
+          skip its confirmation and critical-process check entirely. */}
       {endTarget !== null && (
         <EndProcessDialog
+          key={`${endTarget.key.pid}:${endTarget.key.startedAt}`}
           target={endTarget}
           onClose={() => {
             setEndTarget(null);

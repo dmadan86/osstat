@@ -23,7 +23,7 @@
  * a promise callback, and subscriptions cleaned up in the effect's return.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import type { CriticalProcess } from '../bindings/CriticalProcess';
 import { fetchCriticalProcesses, onProcessesTick, terminateProcess } from '../lib/ipc';
@@ -100,6 +100,31 @@ export interface EndProcessDialogProps {
 /** The confirmation dialog for ending a process. */
 export function EndProcessDialog({ target, onClose }: EndProcessDialogProps): React.JSX.Element {
   const [state, setState] = useState<DialogState>({ phase: 'confirm' });
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  // Moves focus to the dialog's least destructive control — Cancel, the
+  // first button in every phase that has one — as soon as it opens, so the
+  // keyboard starts inside the dialog instead of wherever it was on the page
+  // behind it. Mount-only is enough: App.tsx keys this component on the
+  // target's identity, so a new target is a new mount, never a prop change
+  // on this one.
+  useEffect(() => {
+    dialogRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
+  }, []);
+
+  // Escape closes the dialog without terminating anything, from any phase.
+  // The overlay alone blocks the mouse but not the keyboard, and closing is
+  // always safe — no phase's Cancel/Close button does anything but call
+  // `onClose`.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [onClose]);
 
   // Active for the dialog's whole lifetime: a process that exits on its own
   // while the user is still looking at a confirmation should close the
@@ -199,6 +224,7 @@ export function EndProcessDialog({ target, onClose }: EndProcessDialogProps): Re
 
   return (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-label={title}

@@ -89,8 +89,9 @@ them apart."
 
 The kill flow has a far worse version of that problem. Between the graceful
 attempt and the forceful one there are five seconds, which is ample for a PID to
-be freed and reused. Sending `TerminateProcess` to a recycled PID would end **a
-process the user never selected**, with no error and no way to tell afterwards.
+be freed and reused. Signalling a recycled PID — `SIGKILL`, or `taskkill.exe
+/PID <pid> /F` on Windows — would end **a process the user never selected**,
+with no error and no way to tell afterwards.
 
 So:
 
@@ -156,7 +157,7 @@ User clicks "End process"
   → otherwise: watch the process stream for up to 5 s
       → key disappears: done. No second dialog, no notification.
       → still present: "It did not exit. End it forcefully?"
-          → terminate(key, Forceful)   [SIGKILL / TerminateProcess]
+          → terminate(key, Forceful)   [SIGKILL / taskkill.exe /PID /F]
 ```
 
 The graceful step succeeding quietly is the common case, and it gets no dialog at

@@ -205,4 +205,82 @@ describe('EndProcessDialog', () => {
       screen.queryByRole('button', { name: /elevate|administrator|retry/i })
     ).not.toBeInTheDocument();
   });
+
+  it('closes on Escape without terminating anything', async () => {
+    const { onClose } = renderDialog();
+
+    await screen.findByRole('dialog', { name: /end chrome/i });
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    expect(onClose).toHaveBeenCalled();
+    expect(terminateProcess).not.toHaveBeenCalled();
+  });
+
+  it('forces the same key it used for the graceful attempt, not stale or rebuilt data', async () => {
+    // The central safety property: a dialog that sent a different key for the
+    // forceful step than for the graceful one — stale data, or a key rebuilt
+    // from something other than `target` — would pass every other test here
+    // while ending the wrong process.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderDialog();
+
+    fireEvent.click(await screen.findByRole('button', { name: /^end chrome$/i }));
+    await screen.findByRole('status');
+
+    expect(terminateProcess).toHaveBeenNthCalledWith(1, TARGET.key, 'graceful');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(GRACE_MS);
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /force end chrome/i }));
+
+    expect(terminateProcess).toHaveBeenNthCalledWith(2, TARGET.key, 'forceful');
+
+    const [gracefulKey] = terminateProcess.mock.calls[0] as [{ pid: number; startedAt: number }];
+    const [forcefulKey] = terminateProcess.mock.calls[1] as [{ pid: number; startedAt: number }];
+    expect(forcefulKey).toEqual(gracefulKey);
+    expect(forcefulKey).toEqual({ pid: TARGET.key.pid, startedAt: TARGET.key.startedAt });
+
+    vi.useRealTimers();
+  });
+
+  it('remounts and resets when the target changes, instead of inheriting stale phase', async () => {
+    // Mirrors how App.tsx keys this component: `key={`${pid}:${startedAt}`}`
+    // on the element means a new target is a new mount. Without that key, a
+    // dialog already advanced to `force` for one process would carry that
+    // phase straight over to the next target and skip its confirmation and
+    // critical-process check entirely.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+
+    function Harness({ target }: { target: EndProcessDialogProps['target'] }) {
+      return (
+        <EndProcessDialog
+          key={`${target.key.pid}:${target.key.startedAt}`}
+          target={target}
+          onClose={() => undefined}
+        />
+      );
+    }
+
+    const { rerender } = render(<Harness target={TARGET} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^end chrome$/i }));
+    await screen.findByRole('status');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(GRACE_MS);
+    });
+
+    expect(screen.getByRole('button', { name: /force end chrome/i })).toBeInTheDocument();
+
+    rerender(<Harness target={EXPLORER} />);
+
+    expect(await screen.findByRole('dialog', { name: /end explorer\.exe/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^end explorer\.exe$/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /force end/i })).not.toBeInTheDocument();
+
+    vi.useRealTimers();
+  });
 });
