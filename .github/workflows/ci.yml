@@ -179,7 +179,7 @@ jobs:
       # This is what `just audit` runs, so a local check and CI no longer
       # differ. Exceptions live in .cargo/audit.toml, each with a reason.
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.85.4
         with:
           tool: cargo-audit
 
