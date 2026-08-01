@@ -127,10 +127,11 @@ mod tests {
 
     /// A device as `wgpu` would leave it: named, and knowing nothing else.
     ///
-    /// `_vendor` is not stored on `GpuDevice` — a PCI ID has no field there,
-    /// per the parallel-slice design — but callers use the same value to build
-    /// the matching `pci` slice they pass to `apply_to_devices`/`samples_from`.
-    fn wgpu_device(index: u32, _vendor: u32) -> GpuDevice {
+    /// `GpuDevice` carries no PCI field — a PCI ID is a matching key with no
+    /// meaning to the front end, and `GpuDevice` crosses the IPC boundary.
+    /// Callers build the matching `pci` slice they pass to
+    /// `apply_to_devices`/`samples_from` separately.
+    fn wgpu_device(index: u32) -> GpuDevice {
         GpuDevice {
             index,
             name: "Radeon RX 7800 XT".into(),
@@ -160,7 +161,7 @@ mod tests {
 
     #[test]
     fn a_reading_fills_the_gap_wgpu_left() {
-        let mut devices = vec![wgpu_device(0, 0x1002)];
+        let mut devices = vec![wgpu_device(0)];
 
         apply_to_devices(&mut devices, &[(0x1002, 0x747e)], &[reading(0x1002)]);
 
@@ -173,7 +174,7 @@ mod tests {
     fn a_wgpu_device_given_measured_memory_stops_claiming_to_be_an_estimate() {
         // The front end appends "-- estimated" from source.is_measured(). A
         // real DXGI figure under source: Wgpu would be labelled a guess.
-        let mut devices = vec![wgpu_device(0, 0x1002)];
+        let mut devices = vec![wgpu_device(0)];
 
         apply_to_devices(&mut devices, &[(0x1002, 0x747e)], &[reading(0x1002)]);
 
@@ -188,7 +189,7 @@ mod tests {
         let mut devices = vec![GpuDevice {
             vram_total: Some(8_589_934_592),
             source: GpuSource::Nvml,
-            ..wgpu_device(0, 0x10de)
+            ..wgpu_device(0)
         }];
 
         apply_to_devices(
@@ -212,7 +213,7 @@ mod tests {
 
     #[test]
     fn a_reading_for_a_different_card_is_not_applied() {
-        let mut devices = vec![wgpu_device(0, 0x1002)];
+        let mut devices = vec![wgpu_device(0)];
 
         // The device's own PCI pair is known (0x1002, ...); the reading's is
         // not (0x8086), even though the two share a name. A known PCI pair
@@ -233,7 +234,7 @@ mod tests {
         let mut devices = vec![GpuDevice {
             source: GpuSource::Nvml,
             vram_total: Some(8_589_934_592),
-            ..wgpu_device(0, 0x10de)
+            ..wgpu_device(0)
         }];
 
         apply_to_devices(&mut devices, &[(0, 0)], &[reading(0x10de)]);
@@ -253,7 +254,7 @@ mod tests {
 
     #[test]
     fn shared_source_is_set_exactly_when_shared_total_is() {
-        let mut devices = vec![wgpu_device(0, 0x1002)];
+        let mut devices = vec![wgpu_device(0)];
 
         apply_to_devices(
             &mut devices,
@@ -276,7 +277,7 @@ mod tests {
     fn a_reading_produces_a_sample_where_nvml_produced_none() {
         // The gap this feature would otherwise never reach: an AMD-only Windows
         // machine has no NVML handle at all.
-        let mut devices = vec![wgpu_device(0, 0x1002)];
+        let mut devices = vec![wgpu_device(0)];
         apply_to_devices(&mut devices, &[(0x1002, 0x747e)], &[reading(0x1002)]);
 
         let samples = samples_from(&devices, &[(0x1002, 0x747e)], &[reading(0x1002)], &[]);
@@ -291,7 +292,7 @@ mod tests {
         let mut devices = vec![GpuDevice {
             vram_total: Some(8_589_934_592),
             source: GpuSource::Nvml,
-            ..wgpu_device(0, 0x10de)
+            ..wgpu_device(0)
         }];
         apply_to_devices(&mut devices, &[(0, 0)], &[reading(0x10de)]);
 
@@ -313,7 +314,7 @@ mod tests {
 
     #[test]
     fn a_device_with_neither_source_yields_an_unmeasured_sample() {
-        let devices = vec![wgpu_device(0, 0x1002)];
+        let devices = vec![wgpu_device(0)];
 
         let samples = samples_from(&devices, &[(0, 0)], &[], &[]);
 
@@ -323,7 +324,7 @@ mod tests {
 
     #[test]
     fn samples_are_indexed_to_the_devices_they_describe() {
-        let devices = vec![wgpu_device(0, 0x1002), wgpu_device(1, 0x8086)];
+        let devices = vec![wgpu_device(0), wgpu_device(1)];
 
         let samples = samples_from(&devices, &[(0, 0), (0, 0)], &[], &[]);
 
