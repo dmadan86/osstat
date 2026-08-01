@@ -1,7 +1,7 @@
 # Shared GPU memory in the Overview
 
 **Date:** 2026-08-01
-**Status:** Designed.
+**Status:** Implemented.
 **Depends on:** ADR-003, ADR-008.
 **Amends:** ADR-008, which names three GPU sources and does not anticipate a
 second memory pool per device.
