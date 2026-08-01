@@ -2082,7 +2082,91 @@ npm run lint --workspace @osstat/ui
 
 Expected: PASS on all three.
 
-- [ ] **Step 5: Look at it**
+- [ ] **Step 5: Make `probe-gpus` show both pools**
+
+`crates/osstat-llm/examples/probe-gpus.rs` is the project's diagnostic for this
+subsystem, and it prints only `vram_total`. It _does_ exercise the new code —
+`probe.devices()` calls `osstat_platform::adapter_memory()` and
+`apply_to_devices` at `probe.rs:152-153`, and `measure()` calls it again at
+`:178` — but with nothing on screen from the shared pool, it cannot show whether
+any of it worked. Two implementers mistook that silence for the feature being
+unreachable, which is the clearest possible sign the output is misleading.
+
+Extend the per-device line to print the shared pool and each pool's usage, and to
+label each pool with its own source. Reuse the existing `vram`/`trust` locals'
+shape rather than inventing a new format:
+
+```rust
+    let samples = probe.measure().unwrap_or_default();
+
+    for device in &devices {
+        let sample = samples.iter().find(|entry| entry.index == device.index);
+
+        // Each pool is labelled from its own source: an NVIDIA card on Windows
+        // has its dedicated figure measured by NVML and its shared figure by
+        // the performance counters, and neither may borrow the other's
+        // credibility.
+        let dedicated = pool(device.vram_total, sample.and_then(|s| s.vram_used), device.source.is_measured());
+        let shared = pool(
+            device.shared_total,
+            sample.and_then(|s| s.shared_used),
+            device.shared_source.is_some_and(osstat_core::GpuSource::is_measured),
+        );
+
+        println!(
+            "[{}] {} — {:?}, backend {:?}",
+            device.index,
+            device.name,
+            device.kind,
+            device.backend.as_deref().unwrap_or("-"),
+        );
+        println!("      dedicated: {dedicated}");
+        println!("      shared:    {shared}");
+    }
+```
+
+with a helper beside `main`:
+
+```rust
+/// Renders one memory pool, or says plainly that it is unknown.
+///
+/// "unknown" and "0 bytes" are different claims — the probe normalises a
+/// reported zero to absent precisely so they cannot be confused — and this
+/// output keeps them distinct.
+fn pool(total: Option<u64>, used: Option<u64>, measured: bool) -> String {
+    let Some(total) = total else {
+        return "not reported by this source".to_owned();
+    };
+    let trust = if measured { "measured" } else { "estimated" };
+    match used {
+        Some(used) => format!(
+            "{} MiB of {} MiB ({trust})",
+            used / (1024 * 1024),
+            total / (1024 * 1024)
+        ),
+        None => format!("{} MiB total, usage unknown ({trust})", total / (1024 * 1024)),
+    }
+}
+```
+
+Adjust to whatever the file's existing imports and style require — the point is
+that both pools, both usages and both sources reach the output, not that the
+formatting matches this exactly. `probe.measure()` returns `Result`; do not
+`unwrap()` it in a way that would violate the workspace lint if this file is
+linted. Check whether `examples/` is covered by `--all-targets` before choosing
+how to handle it, and prefer a `let ... else` or `unwrap_or_default()` either way.
+
+Run it and paste the output into your report:
+
+```bash
+cargo run -p osstat-llm --example probe-gpus
+```
+
+On this machine expect the NVIDIA card to show a measured dedicated pool from
+NVML and a measured shared pool from DXGI — the two-source case this whole
+feature exists to represent.
+
+- [ ] **Step 6: Look at it**
 
 ```bash
 npm run dev
@@ -2095,10 +2179,10 @@ Open the Overview. On a machine with a GPU you should see two meters, the shared
 - nothing reads "— estimated" for a DXGI figure
 - the panel is not visibly cramped
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add ui/src/pages/Overview.tsx ui/src/App.test.tsx
+git add ui/src/pages/Overview.tsx ui/src/App.test.tsx crates/osstat-llm/examples/probe-gpus.rs
 git commit -s -m "feat(ui): show dedicated and shared GPU memory as two meters
 
 A pool with no total draws no meter: an integrated adapter reports no
