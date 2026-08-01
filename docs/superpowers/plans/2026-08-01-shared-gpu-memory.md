@@ -563,15 +563,12 @@ Prepend this above the `mod tests` block already in `adapter_memory.rs` (below t
 ```rust
 use osstat_core::{GpuDevice, GpuSample, GpuSource};
 
-#[cfg(target_os = "windows")]
-#[path = "adapter_memory/windows.rs"]
-mod imp;
-
-#[cfg(target_os = "linux")]
-#[path = "adapter_memory/linux.rs"]
-mod imp;
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+// Every platform, for now: `other.rs` is the only implementation that exists.
+// Tasks 3 and 5 add an arm each as they add a file, so the cfg always names
+// exactly the platforms that have a real implementation and the crate compiles
+// everywhere at every point in the sequence. A placeholder returning nothing
+// would be indistinguishable from `other.rs` and would ship a silent no-op if
+// a later task were dropped.
 #[path = "adapter_memory/other.rs"]
 mod imp;
 
@@ -975,7 +972,35 @@ cargo test -p osstat-llm adapter_memory 2>&1 | tail -20
 
 Expected: PASS trivially, because `other.rs` returns an empty list and the loops have nothing to iterate. That is the correct failing state for a property test over a collection — it becomes meaningful in Step 5. Confirm the loop is entered after implementation, in Step 6.
 
-- [ ] **Step 4: Write the implementation**
+- [ ] **Step 4: Widen the module dispatch**
+
+Task 2 left `adapter_memory.rs` declaring one implementation for every platform,
+because `other.rs` was the only file that existed. You are adding the second, so
+the dispatch gains an arm. Replace:
+
+```rust
+#[path = "adapter_memory/other.rs"]
+mod imp;
+```
+
+with:
+
+```rust
+#[cfg(target_os = "windows")]
+#[path = "adapter_memory/windows.rs"]
+mod imp;
+
+#[cfg(not(target_os = "windows"))]
+#[path = "adapter_memory/other.rs"]
+mod imp;
+```
+
+Keep Task 2's comment above it, amended to say Task 5 adds the Linux arm. The
+rule the comment records is what keeps the crate compiling on every platform at
+every point in the sequence: the `cfg` names exactly the platforms that have a
+real implementation, and never a placeholder standing in for one.
+
+- [ ] **Step 5: Write the implementation**
 
 Create `crates/osstat-llm/src/probe/adapter_memory/windows.rs`:
 
@@ -1073,7 +1098,7 @@ fn description_of(desc: &DXGI_ADAPTER_DESC1) -> String {
 
 Note `desc.DedicatedVideoMemory` is `usize`; the `as u64` cast is lossless on both 32- and 64-bit Windows. If clippy's pedantic `cast_possible_truncation` fires, use `u64::try_from(...).ok().and_then(non_zero)` instead of the cast.
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [ ] **Step 6: Run the test to verify it passes**
 
 ```bash
 cargo test -p osstat-llm adapter_memory 2>&1 | tail -20
@@ -1081,7 +1106,7 @@ cargo test -p osstat-llm adapter_memory 2>&1 | tail -20
 
 Expected: PASS.
 
-- [ ] **Step 6: Confirm it actually found hardware**
+- [ ] **Step 7: Confirm it actually found hardware**
 
 The property tests above pass vacuously on an empty list, so verify the list is not empty:
 
@@ -1092,7 +1117,7 @@ cargo run -p osstat-llm --example probe-gpus 2>&1 | tail -20
 
 Expected: the example prints your adapters. Compare its dedicated and shared totals against Task Manager → Performance → GPU. **They must match.** If they do not, stop and investigate before continuing — a wrong number here propagates to every later task.
 
-- [ ] **Step 7: Lint and commit**
+- [ ] **Step 8: Lint and commit**
 
 ```bash
 cargo clippy --workspace --all-targets --all-features -- -D warnings 2>&1 | tail -20
@@ -1518,7 +1543,30 @@ Expected: PASS. Task 2's `reading_for` already has the PCI arm, and these are th
 
 If any of the three fails, stop: the defect is in Task 2's merge, not in anything Linux-specific, and it would silently attribute one card's memory to another on Windows too. Fix it in `adapter_memory.rs` before continuing.
 
-- [ ] **Step 3: Write the Linux implementation**
+- [ ] **Step 3: Widen the module dispatch again**
+
+Task 3 left the dispatch naming Windows and everything-else. You are adding the
+third and final implementation, so replace it with:
+
+```rust
+#[cfg(target_os = "windows")]
+#[path = "adapter_memory/windows.rs"]
+mod imp;
+
+#[cfg(target_os = "linux")]
+#[path = "adapter_memory/linux.rs"]
+mod imp;
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[path = "adapter_memory/other.rs"]
+mod imp;
+```
+
+`other.rs` is not a leftover: it is the permanent answer for macOS and for every
+platform osstat has no GPU memory source on. Amend Task 2's comment to say so,
+and drop its note about later tasks — this is the final shape.
+
+- [ ] **Step 4: Write the Linux implementation**
 
 Create `crates/osstat-llm/src/probe/adapter_memory/linux.rs`:
 
@@ -1602,7 +1650,7 @@ fn read_pci_id(device: &Path, file: &str) -> Option<u32> {
 }
 ```
 
-- [ ] **Step 4: Verify what can be verified locally**
+- [ ] **Step 5: Verify what can be verified locally**
 
 ```bash
 cargo test -p osstat-llm adapter_memory 2>&1 | tail -20
@@ -1619,7 +1667,7 @@ cargo check -p osstat-llm --target x86_64-unknown-linux-gnu 2>&1 | tail -20
 
 Skip if the target is not installed; do not install it just for this.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add crates/osstat-llm/src/probe/adapter_memory crates/osstat-llm/src/probe.rs
