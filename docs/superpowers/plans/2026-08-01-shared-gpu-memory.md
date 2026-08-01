@@ -967,7 +967,7 @@ Append to the `mod tests` block in `crates/osstat-llm/src/probe/adapter_memory.r
     }
 ```
 
-- [ ] **Step 3: Run the test to verify it fails**
+- [ ] **Step 3: Run the test to establish the baseline**
 
 ```bash
 cargo test -p osstat-llm adapter_memory 2>&1 | tail -20
@@ -1157,7 +1157,7 @@ Append to the `mod tests` block in `adapter_memory.rs`:
     }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 2: Run the test to establish the baseline**
 
 ```bash
 cargo test -p osstat-llm adapter_memory 2>&1 | tail -20
