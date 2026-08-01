@@ -1,4 +1,4 @@
-//! Memory figures from sources the NVML and `wgpu` probes cannot supply.
+//! Merges platform memory readings into the devices the GPU probe found.
 //!
 //! ADR-008's three sources leave a gap: NVML measures only NVIDIA hardware, and
 //! `wgpu` has no memory API at all, so every AMD and Intel adapter reports no
@@ -6,108 +6,14 @@
 //! system RAM a GPU borrows when its own runs out — which Task Manager has
 //! shown users for years.
 //!
-//! All parsing and merging is here rather than in the per-OS files, for the
-//! reason `provider.rs` gives about `ProcessTree::build`: arranging data is
-//! portable logic and belongs where it can be tested without an operating
-//! system. It also means the Linux parser is covered by tests that run on a
-//! Windows development machine, which is the only place they would otherwise
-//! never run.
+//! The readings themselves come from `osstat_platform::adapter_memory`, which
+//! forbids nothing here can use: DXGI and PDH are raw FFI, and this crate
+//! forbids unsafe code outright. This module is the portable half — arranging
+//! data the per-OS modules fetched, for the reason `provider.rs` gives about
+//! `ProcessTree::build`.
 
-use osstat_core::{GpuDevice, GpuSample, GpuSource};
-
-// Every platform, for now: `other.rs` is the only implementation that exists.
-// Tasks 3 and 5 add an arm each as they add a file, so the cfg always names
-// exactly the platforms that have a real implementation and the crate compiles
-// everywhere at every point in the sequence. A placeholder returning nothing
-// would be indistinguishable from `other.rs` and would ship a silent no-op if
-// a later task were dropped.
-#[path = "adapter_memory/other.rs"]
-mod imp;
-
-/// One adapter's memory, as a platform reported it.
-///
-/// Crate-internal: this never crosses the IPC boundary. It is folded into
-/// [`GpuDevice`] and [`GpuSample`], which do.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AdapterMemory {
-    /// PCI vendor ID, for matching against `wgpu`'s `AdapterInfo::vendor`.
-    pub(crate) pci_vendor: u32,
-    /// PCI device ID, for matching against `wgpu`'s `AdapterInfo::device`.
-    pub(crate) pci_device: u32,
-    /// The adapter's name, where the platform supplies one.
-    pub(crate) name: Option<String>,
-    /// Dedicated video memory in bytes.
-    pub(crate) vram_total: Option<u64>,
-    /// Dedicated video memory in use, in bytes.
-    pub(crate) vram_used: Option<u64>,
-    /// System memory this adapter may borrow, in bytes.
-    pub(crate) shared_total: Option<u64>,
-    /// Borrowed system memory in use, in bytes.
-    pub(crate) shared_used: Option<u64>,
-    /// Which platform interface produced these figures.
-    pub(crate) source: GpuSource,
-}
-
-/// A Windows `GPU Adapter Memory` counter instance, identifying one adapter.
-#[allow(
-    dead_code,
-    reason = "constructed by parse_luid_instance, whose only caller lands in Task 3"
-)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct LuidKey {
-    /// The adapter LUID's `HighPart`.
-    pub(crate) high: u32,
-    /// The adapter LUID's `LowPart`.
-    pub(crate) low: u32,
-    /// Which physical adapter behind that LUID.
-    pub(crate) phys: u32,
-}
-
-/// Reads this platform's adapter memory, or nothing where it has no source.
-pub(crate) fn adapter_memory() -> Vec<AdapterMemory> {
-    imp::adapter_memory()
-}
-
-/// Treats a reported zero as "not known" rather than "measured as none".
-///
-/// DXGI returns `DedicatedVideoMemory: 0` for an adapter with no VRAM of its
-/// own. Both render as no meter today, but they are different claims, and the
-/// difference surfaces the moment anything divides by the total.
-#[allow(
-    dead_code,
-    reason = "called by the Windows module in Task 3 and via parse_sysfs_u64 in Task 5"
-)]
-pub(crate) const fn non_zero(value: u64) -> Option<u64> {
-    if value == 0 { None } else { Some(value) }
-}
-
-/// Parses a `GPU Adapter Memory` instance name into the adapter it identifies.
-///
-/// Instances are `luid_0xHHHHHHHH_0xLLLLLLLL_phys_N`. Anything else — an
-/// instance from a different counter set, a truncated name, a non-hex field —
-/// yields `None`. A partial parse would key a real figure to the wrong card,
-/// which is worse than not reading it at all.
-#[allow(dead_code, reason = "lands ahead of its only caller, added in Task 3")]
-pub(crate) fn parse_luid_instance(instance: &str) -> Option<LuidKey> {
-    let rest = instance.strip_prefix("luid_")?;
-    let (high, rest) = rest.split_once('_')?;
-    let (low, phys) = rest.split_once("_phys_")?;
-
-    Some(LuidKey {
-        high: u32::from_str_radix(high.strip_prefix("0x")?, 16).ok()?,
-        low: u32::from_str_radix(low.strip_prefix("0x")?, 16).ok()?,
-        phys: phys.parse().ok()?,
-    })
-}
-
-/// Parses one of amdgpu's `mem_info_*` files: a decimal byte count.
-///
-/// `None` for anything else, including the `0` these files report for a pool
-/// that exists but is empty — see [`non_zero`].
-#[allow(dead_code, reason = "lands ahead of its only caller, added in Task 5")]
-pub(crate) fn parse_sysfs_u64(contents: &str) -> Option<u64> {
-    non_zero(contents.trim().parse().ok()?)
-}
+use osstat_core::{GpuDevice, GpuSample};
+use osstat_platform::AdapterMemory;
 
 /// Finds the reading that describes a device, by PCI ID and then by name.
 ///
@@ -250,66 +156,6 @@ mod tests {
             shared_used: Some(322_961_408),
             source: GpuSource::Dxgi,
         }
-    }
-
-    #[test]
-    fn a_well_formed_luid_instance_parses() {
-        let key = parse_luid_instance("luid_0x00000000_0x0001068c_phys_0").unwrap();
-
-        assert_eq!(key.high, 0x0000_0000);
-        assert_eq!(key.low, 0x0001_068c);
-        assert_eq!(key.phys, 0);
-    }
-
-    #[test]
-    fn a_second_physical_adapter_behind_one_luid_is_distinguished() {
-        let first = parse_luid_instance("luid_0x00000000_0x0001068c_phys_0").unwrap();
-        let second = parse_luid_instance("luid_0x00000000_0x0001068c_phys_1").unwrap();
-
-        assert_ne!(first, second);
-    }
-
-    #[test]
-    fn malformed_luid_instances_yield_nothing_rather_than_a_partial_parse() {
-        // A half-read instance name would key a reading to the wrong adapter,
-        // which is worse than not reading it: the figure would be real and
-        // attributed to the wrong card.
-        for bad in [
-            "",
-            "luid_0x00000000",
-            "engtype_3D",
-            "luid_0x00000000_0x0001068c",
-            "luid_0xZZZZZZZZ_0x0001068c_phys_0",
-            "luid_0x00000000_0x0001068c_phys_x",
-            "pid_1234_luid_0x0_0x1_phys_0",
-        ] {
-            assert!(
-                parse_luid_instance(bad).is_none(),
-                "{bad:?} should not have parsed"
-            );
-        }
-    }
-
-    #[test]
-    fn a_sysfs_value_parses_past_its_trailing_newline() {
-        assert_eq!(parse_sysfs_u64("17163091968\n"), Some(17_163_091_968));
-        assert_eq!(parse_sysfs_u64("  8589934592  "), Some(8_589_934_592));
-    }
-
-    #[test]
-    fn unreadable_sysfs_contents_yield_nothing() {
-        for bad in ["", "\n", "N/A", "-1", "0x1000", "12 34"] {
-            assert!(parse_sysfs_u64(bad).is_none(), "{bad:?} should not parse");
-        }
-    }
-
-    #[test]
-    fn a_reported_zero_is_unknown_not_a_measurement_of_none() {
-        // DXGI reports DedicatedVideoMemory: 0 for an adapter with no VRAM of
-        // its own. Some(0) and None render the same today, but they mean
-        // different things and differ the moment anything divides by the total.
-        assert_eq!(non_zero(0), None);
-        assert_eq!(non_zero(1), Some(1));
     }
 
     #[test]

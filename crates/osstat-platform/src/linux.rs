@@ -72,6 +72,17 @@ pub(crate) fn terminate(
     }
 }
 
+/// Linux adapter memory. **Not implemented yet — Task 5 replaces this.**
+///
+/// Returning nothing is correct for `i915`, `xe` and NVIDIA's proprietary
+/// driver, which expose no adapter-wide memory interface. It is *not* correct
+/// for amdgpu, which reports both pools under `/sys/class/drm/card*/device`.
+/// Until that lands, a Linux machine with an AMD card reports no adapter
+/// memory and the Overview is unchanged from before this feature.
+pub(crate) fn adapter_memory() -> Vec<crate::AdapterMemory> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]

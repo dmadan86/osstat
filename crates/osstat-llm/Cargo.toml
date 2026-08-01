@@ -18,6 +18,10 @@ ts-bindings = ["dep:ts-rs", "osstat-core/ts-bindings"]
 
 [dependencies]
 osstat-core = { workspace = true }
+# The per-OS memory probes live here, not in this crate: osstat-llm forbids
+# unsafe code, and DXGI and PDH are raw FFI. ADR-003 puts per-OS work in
+# osstat-platform anyway; this crate keeps the portable merge.
+osstat-platform = { workspace = true }
 serde = { workspace = true }
 # The seed registry ships as JSON, not Rust structs (ROADMAP.md M4: "the
 # registry is data, not code"), so parsing it is a runtime dependency here,

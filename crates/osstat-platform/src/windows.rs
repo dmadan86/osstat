@@ -153,6 +153,11 @@ fn post_close_to_windows_of(pid: u32) -> u32 {
     target.posted
 }
 
+// TEMP-MOVE-COMMIT: stub, replaced by the real DXGI body in the next commit.
+pub(crate) fn adapter_memory() -> Vec<crate::AdapterMemory> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]

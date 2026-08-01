@@ -81,6 +81,23 @@ pub(crate) fn terminate(
     }
 }
 
+/// macOS reports no adapter memory, and that is the correct answer rather than
+/// a gap.
+///
+/// Apple Silicon has one memory pool, not two: the GPU probe's existing
+/// `GpuSource::UnifiedMemory` path already reports the whole of system memory
+/// as the GPU's. A shared figure here would draw a second meter describing the
+/// same bytes as the first.
+///
+/// The one figure genuinely missing is live GPU usage, reachable only through
+/// the undocumented `PerformanceStatistics` dictionary on the `IOAccelerator`
+/// `IOKit` service. ADR-008 requires every figure to carry a source the user
+/// can weigh, and an API Apple can change in a point release is a poor
+/// foundation for a number labelled "measured".
+pub(crate) fn adapter_memory() -> Vec<crate::AdapterMemory> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]

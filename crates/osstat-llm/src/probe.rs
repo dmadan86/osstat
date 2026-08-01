@@ -149,7 +149,7 @@ impl GpuProvider for HardwareProbe {
         // Enumerating adapters is done once here rather than per tick: which
         // adapters exist and how large their pools are cannot change within a
         // session. Only the usage figures move, and `measure` re-reads those.
-        let readings = adapter_memory::adapter_memory();
+        let readings = osstat_platform::adapter_memory();
         adapter_memory::apply_to_devices(&mut devices, &pci, &readings);
 
         self.devices.clone_from(&devices);
@@ -175,7 +175,7 @@ impl GpuProvider for HardwareProbe {
         Ok(adapter_memory::samples_from(
             &self.devices,
             &self.pci,
-            &adapter_memory::adapter_memory(),
+            &osstat_platform::adapter_memory(),
             &nvml,
         ))
     }
