@@ -148,4 +148,39 @@ mod tests {
         assert_eq!(non_zero(0), None);
         assert_eq!(non_zero(1), Some(1));
     }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_reports_usable_readings_or_none_at_all() {
+        // Every Windows machine with a display has a DXGI adapter; a CI runner
+        // may have only the software one, which is filtered out. Either is a
+        // pass. What must not happen is a reading that claims a figure without
+        // identifying the adapter it belongs to, or a zero masquerading as a
+        // measurement.
+        for reading in crate::adapter_memory() {
+            assert_ne!(
+                (reading.pci_vendor, reading.pci_device),
+                (0, 0),
+                "a reading that cannot be matched to a device is unusable"
+            );
+            assert_eq!(reading.source, osstat_core::GpuSource::Dxgi);
+            assert_ne!(reading.vram_total, Some(0), "zero must normalise to None");
+            assert_ne!(reading.shared_total, Some(0));
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_finds_no_software_adapter() {
+        // DXGI enumerates the Microsoft Basic Render Driver independently of
+        // wgpu, so the exclusion the GPU probe already makes has to be made
+        // again here.
+        for reading in crate::adapter_memory() {
+            let name = reading.name.unwrap_or_default().to_lowercase();
+            assert!(
+                !name.contains("basic render"),
+                "the software rasteriser reached the reading list"
+            );
+        }
+    }
 }

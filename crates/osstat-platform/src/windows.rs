@@ -153,9 +153,77 @@ fn post_close_to_windows_of(pid: u32) -> u32 {
     target.posted
 }
 
-// TEMP-MOVE-COMMIT: stub, replaced by the real DXGI body in the next commit.
+/// Reads every hardware adapter's memory totals from DXGI.
+///
+/// Deliberately *not* `IDXGIAdapter3::QueryVideoMemoryInfo`. It looks exactly
+/// right and is not: Microsoft documents its `CurrentUsage` as "the
+/// application's current video memory usage", making it a budgeting API for a
+/// process to manage its own footprint. Reading it would put osstat's own
+/// memory on screen under a label claiming to describe the machine. Live usage
+/// comes from the performance counters instead.
+#[allow(
+    unsafe_code,
+    reason = "CreateDXGIFactory1, EnumAdapters1 and GetDesc1 are raw Win32 \
+              calls with no safe wrapper. Each block below states its own \
+              invariant, and nothing borrowed from the OS outlives its call."
+)]
 pub(crate) fn adapter_memory() -> Vec<crate::AdapterMemory> {
-    Vec::new()
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIAdapter1, IDXGIFactory1,
+    };
+
+    // SAFETY: takes no arguments and returns a COM interface or an error. A
+    // machine without DXGI — Windows Server core, some containers — errors
+    // here, which is an ordinary empty answer rather than a failure.
+    let Ok(factory) = (unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }) else {
+        return Vec::new();
+    };
+
+    let mut adapters = Vec::new();
+
+    for index in 0.. {
+        // SAFETY: returns DXGI_ERROR_NOT_FOUND once `index` passes the last
+        // adapter, which is this loop's exit condition.
+        let Ok(adapter) = (unsafe { factory.EnumAdapters1(index) }) else {
+            break;
+        };
+
+        // SAFETY: GetDesc1 in windows 0.62 returns the description by value
+        // rather than filling an out-param.
+        let Ok(desc) = (unsafe { IDXGIAdapter1::GetDesc1(&adapter) }) else {
+            continue;
+        };
+
+        // The Microsoft Basic Render Driver is a CPU rasteriser Windows always
+        // enumerates. The GPU probe already excludes it from the device list;
+        // DXGI enumerates independently, so the exclusion is made again here.
+        if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
+            continue;
+        }
+
+        let end = desc
+            .Description
+            .iter()
+            .position(|unit| *unit == 0)
+            .unwrap_or(desc.Description.len());
+
+        adapters.push(crate::AdapterMemory {
+            pci_vendor: desc.VendorId,
+            pci_device: desc.DeviceId,
+            name: Some(String::from_utf16_lossy(&desc.Description[..end])),
+            vram_total: u64::try_from(desc.DedicatedVideoMemory)
+                .ok()
+                .and_then(crate::gpu_memory::non_zero),
+            vram_used: None,
+            shared_total: u64::try_from(desc.SharedSystemMemory)
+                .ok()
+                .and_then(crate::gpu_memory::non_zero),
+            shared_used: None,
+            source: osstat_core::GpuSource::Dxgi,
+        });
+    }
+
+    adapters
 }
 
 #[cfg(test)]

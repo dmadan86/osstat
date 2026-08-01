@@ -32,6 +32,12 @@ tempfile = "3"
 windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_UI_WindowsAndMessaging",
+  # DXGI describes both memory pools for every adapter, including the AMD and
+  # Intel cards NVML cannot see. PDH reads the same GPU Adapter Memory counters
+  # Task Manager does (Task 4).
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_System_Performance",
 ] }
 
 # Only used for the ESRCH errno constant, to tell "already gone" apart from a
