@@ -168,7 +168,9 @@ fn enumerate_adapters(system_memory: u64, first_index: u32) -> Vec<GpuDevice> {
                 backend: Some(info.backend.to_string()),
                 kind,
                 vram_total,
+                shared_total: None,
                 source,
+                shared_source: None,
             }
         })
         .filter(|device| is_real_hardware(device.kind))

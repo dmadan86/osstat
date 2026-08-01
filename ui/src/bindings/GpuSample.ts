@@ -21,6 +21,13 @@ utilisation: number | null,
  */
 vramUsed: number | null, 
 /**
+ * Shared system memory in use by this GPU, in bytes.
+ *
+ * `Some` only where the device's `shared_total` is `Some`: a usage figure
+ * with no denominator cannot be drawn as a meter.
+ */
+sharedUsed: number | null, 
+/**
  * Die temperature in degrees Celsius.
  */
 temperatureC: number | null, };

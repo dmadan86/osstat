@@ -511,7 +511,9 @@ mod tests {
             backend: None,
             kind: GpuKind::Discrete,
             vram_total,
+            shared_total: None,
             source: GpuSource::Wgpu,
+            shared_source: None,
         }
     }
 

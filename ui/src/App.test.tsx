@@ -91,7 +91,9 @@ const GPU: GpuDevice = {
   backend: 'NVML',
   kind: 'discrete',
   vramTotal: 8_589_934_592,
+  sharedTotal: null,
   source: 'nvml',
+  sharedSource: null,
 };
 
 /** Routes each command to its canned answer. */
