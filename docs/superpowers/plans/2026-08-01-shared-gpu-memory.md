@@ -287,7 +287,7 @@ Introduces the whole pipeline and proves it changes nothing. After this task eve
   - `pub(crate) fn parse_sysfs_u64(contents: &str) -> Option<u64>` — used by Task 5.
   - `pub(crate) const fn non_zero(value: u64) -> Option<u64>` — the §2.1 rule.
   - `pub(crate) fn apply_to_devices(devices: &mut [GpuDevice], pci: &[(u32, u32)], readings: &[AdapterMemory])`
-  - `pub(crate) fn samples_from(devices: &[GpuDevice], pci: &[(u32, u32)], readings: &[AdapterMemory], nvml: Vec<GpuSample>) -> Vec<GpuSample>`
+  - `pub(crate) fn samples_from(devices: &[GpuDevice], pci: &[(u32, u32)], readings: &[AdapterMemory], nvml: &[GpuSample]) -> Vec<GpuSample>`
 
   `pci[i]` is the PCI `(vendor, device)` pair of `devices[i]`, or `(0, 0)` for a
   device NVML supplied rather than `wgpu`. It is a parallel slice rather than a
@@ -324,7 +324,7 @@ mod tests {
     use osstat_core::{GpuDevice, GpuKind, GpuSource};
 
     /// A device as `wgpu` would leave it: named, and knowing nothing else.
-    fn wgpu_device(index: u32, vendor: u32) -> GpuDevice {
+    fn wgpu_device(index: u32) -> GpuDevice {
         GpuDevice {
             index,
             name: "Radeon RX 7800 XT".into(),
@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn a_reading_fills_the_gap_wgpu_left() {
-        let mut devices = vec![wgpu_device(0, 0x1002)];
+        let mut devices = vec![wgpu_device(0)];
 
         apply_to_devices(&mut devices, &[(0, 0)], &[reading(0x1002)]);
 
@@ -427,7 +427,7 @@ mod tests {
     fn a_wgpu_device_given_measured_memory_stops_claiming_to_be_an_estimate() {
         // The front end appends "-- estimated" from source.is_measured(). A
         // real DXGI figure under source: Wgpu would be labelled a guess.
-        let mut devices = vec![wgpu_device(0, 0x1002)];
+        let mut devices = vec![wgpu_device(0)];
 
         apply_to_devices(&mut devices, &[(0, 0)], &[reading(0x1002)]);
 
@@ -442,7 +442,7 @@ mod tests {
         let mut devices = vec![GpuDevice {
             vram_total: Some(8_589_934_592),
             source: GpuSource::Nvml,
-            ..wgpu_device(0, 0x10de)
+            ..wgpu_device(0)
         }];
 
         apply_to_devices(&mut devices, &[(0, 0)], &[AdapterMemory {
@@ -462,9 +462,9 @@ mod tests {
 
     #[test]
     fn a_reading_for_a_different_card_is_not_applied() {
-        let mut devices = vec![wgpu_device(0, 0x1002)];
+        let mut devices = vec![wgpu_device(0)];
 
-        apply_to_devices(&mut devices, &[(0, 0)], &[reading(0x8086)]);
+        apply_to_devices(&mut devices, &[(0x1002, 0x747e)], &[reading(0x8086)]);
 
         assert_eq!(devices[0].vram_total, None);
         assert_eq!(devices[0].shared_total, None);
@@ -472,7 +472,7 @@ mod tests {
 
     #[test]
     fn shared_source_is_set_exactly_when_shared_total_is() {
-        let mut devices = vec![wgpu_device(0, 0x1002)];
+        let mut devices = vec![wgpu_device(0)];
 
         apply_to_devices(&mut devices, &[(0, 0)], &[AdapterMemory {
             shared_total: None,
@@ -491,10 +491,10 @@ mod tests {
     fn a_reading_produces_a_sample_where_nvml_produced_none() {
         // The gap this feature would otherwise never reach: an AMD-only Windows
         // machine has no NVML handle at all.
-        let mut devices = vec![wgpu_device(0, 0x1002)];
+        let mut devices = vec![wgpu_device(0)];
         apply_to_devices(&mut devices, &[(0, 0)], &[reading(0x1002)]);
 
-        let samples = samples_from(&devices, &[(0, 0)], &[reading(0x1002)], Vec::new());
+        let samples = samples_from(&devices, &[(0, 0)], &[reading(0x1002)], &[]);
 
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].shared_used, Some(322_961_408));
@@ -506,7 +506,7 @@ mod tests {
         let mut devices = vec![GpuDevice {
             vram_total: Some(8_589_934_592),
             source: GpuSource::Nvml,
-            ..wgpu_device(0, 0x10de)
+            ..wgpu_device(0)
         }];
         apply_to_devices(&mut devices, &[(0, 0)], &[reading(0x10de)]);
 
@@ -518,7 +518,7 @@ mod tests {
             shared_used: None,
         }];
 
-        let samples = samples_from(&devices, &[(0, 0)], &[reading(0x10de)], nvml);
+        let samples = samples_from(&devices, &[(0, 0)], &[reading(0x10de)], &nvml);
 
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].vram_used, Some(3_328_737_280), "NVML's figure");
@@ -528,9 +528,9 @@ mod tests {
 
     #[test]
     fn a_device_with_neither_source_yields_an_unmeasured_sample() {
-        let devices = vec![wgpu_device(0, 0x1002)];
+        let devices = vec![wgpu_device(0)];
 
-        let samples = samples_from(&devices, &[(0, 0)], &[], Vec::new());
+        let samples = samples_from(&devices, &[(0, 0)], &[], &[]);
 
         assert_eq!(samples.len(), 1);
         assert!(!samples[0].has_measurements());
@@ -538,9 +538,9 @@ mod tests {
 
     #[test]
     fn samples_are_indexed_to_the_devices_they_describe() {
-        let devices = vec![wgpu_device(0, 0x1002), wgpu_device(1, 0x8086)];
+        let devices = vec![wgpu_device(0), wgpu_device(1)];
 
-        let samples = samples_from(&devices, &[(0, 0), (0, 0)], &[], Vec::new());
+        let samples = samples_from(&devices, &[(0, 0), (0, 0)], &[], &[]);
 
         assert_eq!(samples[0].index, 0);
         assert_eq!(samples[1].index, 1);
@@ -653,21 +653,26 @@ pub(crate) fn parse_sysfs_u64(contents: &str) -> Option<u64> {
 /// vendor-only comparison would attribute one card's memory to another from the
 /// same maker, which is a real configuration and not a rare one.
 ///
-/// The name fallback covers Windows, where a device found by NVML carries no
-/// PCI pair here; `normalise` is the same comparison that already dedupes NVML
-/// against `wgpu` in the parent module. Linux readings arrive nameless — DRM
-/// has no adapter name — so there the PCI match is the only one that can fire.
+/// The name branch is taken only when the pair is *unknown* — `(0, 0)`, which is
+/// how an NVML-supplied device arrives. That is the case that matters most: an
+/// NVIDIA card on Windows takes this branch to pick up its shared figure from
+/// DXGI, which is what lets one device carry two sources. `normalise` is the
+/// same comparison that already dedupes NVML against `wgpu` in the parent
+/// module. Linux readings arrive nameless — DRM has no adapter name — so there
+/// only the PCI branch can fire.
 fn reading_for<'a>(
     device: &GpuDevice,
     pci: (u32, u32),
     readings: &'a [AdapterMemory],
 ) -> Option<&'a AdapterMemory> {
-    if pci != (0, 0)
-        && let Some(reading) = readings
+    // A known pair that matches nothing means the platform did not report this
+    // adapter. Falling through to a name guess here would attribute a measured
+    // figure to a device it may not describe, which is the failure ADR-008
+    // exists to prevent -- so a known pair is terminal either way.
+    if pci != (0, 0) {
+        return readings
             .iter()
-            .find(|reading| (reading.pci_vendor, reading.pci_device) == pci)
-    {
-        return Some(reading);
+            .find(|reading| (reading.pci_vendor, reading.pci_device) == pci);
     }
 
     readings.iter().find(|reading| {
@@ -718,7 +723,7 @@ pub(crate) fn samples_from(
     devices: &[GpuDevice],
     pci: &[(u32, u32)],
     readings: &[AdapterMemory],
-    nvml: Vec<GpuSample>,
+    nvml: &[GpuSample],
 ) -> Vec<GpuSample> {
     devices
         .iter()
@@ -833,7 +838,7 @@ At the end of `devices()`, after the re-indexing loop and before `self.probed = 
         let readings = adapter_memory::adapter_memory();
         adapter_memory::apply_to_devices(&mut devices, &pci, &readings);
 
-        self.devices = devices.clone();
+        self.devices.clone_from(&devices);
         self.pci = pci;
 ```
 
@@ -857,7 +862,7 @@ Replace the body of `measure()`. The early return on `self.nvidia` must go — i
             &self.devices,
             &self.pci,
             &adapter_memory::adapter_memory(),
-            nvml,
+            &nvml,
         ))
     }
 ```
@@ -1445,7 +1450,7 @@ on a Windows development machine they are the only coverage the Linux join gets.
     fn a_nameless_reading_still_matches_by_pci_id() {
         // DRM exposes no adapter name, so Linux readings arrive nameless and
         // the PCI pair is the only join available.
-        let mut devices = vec![wgpu_device(0, 0x1002)];
+        let mut devices = vec![wgpu_device(0)];
 
         apply_to_devices(&mut devices, &[(0x1002, 0x747e)], &[AdapterMemory {
             name: None,
@@ -1466,11 +1471,11 @@ on a Windows development machine they are the only coverage the Linux join gets.
         let mut devices = vec![
             GpuDevice {
                 name: "Radeon RX 7800 XT".into(),
-                ..wgpu_device(0, 0x1002)
+                ..wgpu_device(0)
             },
             GpuDevice {
                 name: "Radeon RX 6600".into(),
-                ..wgpu_device(1, 0x1002)
+                ..wgpu_device(1)
             },
         ];
 
@@ -1499,7 +1504,7 @@ on a Windows development machine they are the only coverage the Linux join gets.
         // Two readings, one of which merely shares the device's name. The exact
         // key must win, or a virtualised adapter with a duplicated description
         // takes the wrong figures.
-        let mut devices = vec![wgpu_device(0, 0x1002)];
+        let mut devices = vec![wgpu_device(0)];
 
         apply_to_devices(
             &mut devices,
