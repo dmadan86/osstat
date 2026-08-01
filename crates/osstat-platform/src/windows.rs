@@ -426,10 +426,11 @@ fn read_counter(
                 return None;
             }
 
-            // SAFETY: `CStatus` was just checked to be `PDH_CSTATUS_VALID_DATA`,
-            // which is PDH's guarantee that the `largeValue` arm — the one
-            // `PDH_FMT_LARGE` requested in both calls above — is the arm it
-            // wrote.
+            // SAFETY: `PDH_FMT_LARGE` was the format requested in both
+            // PdhGetFormattedCounterArrayW calls above, which determines that
+            // `largeValue` is the union arm PDH populated. Separately, the
+            // `CStatus` check immediately above guarantees the value in that arm
+            // is a real measurement, not stale data from a vanished instance.
             let value = unsafe { entry.FmtValue.Anonymous.largeValue };
             u64::try_from(value).ok().map(|value| (key, value))
         })
