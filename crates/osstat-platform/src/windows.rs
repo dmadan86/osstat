@@ -182,14 +182,18 @@ pub(crate) fn adapter_memory() -> Vec<crate::AdapterMemory> {
     let mut adapters = Vec::new();
 
     for index in 0.. {
-        // SAFETY: returns DXGI_ERROR_NOT_FOUND once `index` passes the last
+        // SAFETY: `factory` is a live COM interface — CreateDXGIFactory1
+        // returned Ok above, and it is not released for the loop's duration.
+        // The call returns DXGI_ERROR_NOT_FOUND once `index` passes the last
         // adapter, which is this loop's exit condition.
         let Ok(adapter) = (unsafe { factory.EnumAdapters1(index) }) else {
             break;
         };
 
-        // SAFETY: GetDesc1 in windows 0.62 returns the description by value
-        // rather than filling an out-param.
+        // SAFETY: `adapter` is a valid interface, just returned Ok by
+        // EnumAdapters1 above and still owned here. GetDesc1 in windows 0.62
+        // returns the description by value rather than writing through a
+        // caller pointer, so there is no buffer or lifetime to get wrong.
         let Ok(desc) = (unsafe { IDXGIAdapter1::GetDesc1(&adapter) }) else {
             continue;
         };
