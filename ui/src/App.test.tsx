@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -7,6 +7,7 @@ import type { GpuDevice } from './bindings/GpuDevice';
 import type { MetricsSample } from './bindings/MetricsSample';
 import type { ProcessRecord } from './bindings/ProcessRecord';
 import type { SystemDescription } from './bindings/SystemDescription';
+import { GRACE_MS } from './lib/termination';
 
 const invoke = vi.hoisted(() => vi.fn());
 const listen = vi.hoisted(() => vi.fn());
@@ -304,13 +305,76 @@ describe('App', () => {
     expect(await screen.findByRole('status', { name: /notification area/i })).toBeInTheDocument();
   });
 
-  it('offers no way to kill a process in this phase', async () => {
+  it('offers to end a process, and ends nothing without a confirmation', async () => {
+    // Replaces "offers no way to kill a process in this phase". The absence was
+    // pinned deliberately, so what replaces it is pinned deliberately too.
     render(<App />);
     await screen.findByText('TESTBOX');
     await userEvent.click(screen.getByTitle('Processes'));
     await screen.findByText('chrome');
 
-    // Not even a disabled control: it would promise something not delivered.
-    expect(screen.queryByRole('button', { name: /kill|terminate|end task/i })).toBeNull();
+    const [endButton] = screen.getAllByRole('button', { name: /end .*chrome/i });
+    expect(endButton).toBeDefined();
+    await userEvent.click(endButton as HTMLElement);
+
+    expect(await screen.findByRole('dialog', { name: /end chrome/i })).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith('terminate_process', expect.anything());
+  });
+
+  it('resets the confirmation when a different process is chosen mid-flow', async () => {
+    // Regression guard for the missing `key` on <EndProcessDialog>: without
+    // it, switching targets reused the mounted instance and its `state`
+    // (which phase it is in) survived the swap. Advance one target to the
+    // forceful phase, then choose a different process, and the dialog must
+    // ask that process's confirmation from the start rather than jumping
+    // straight to "force end" and skipping the critical-process check.
+    respond({ critical_processes: [], terminate_process: 'signalled' });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+
+    render(<App />);
+    await screen.findByText('TESTBOX');
+    await userEvent.click(screen.getByTitle('Processes'));
+    await screen.findByText('chrome');
+    await userEvent.click(screen.getByRole('button', { name: /Expand chrome/ }));
+    await screen.findByText('renderer');
+
+    const [chromeEnd] = screen.getAllByRole('button', { name: /^end chrome$/i });
+    fireEvent.click(chromeEnd as HTMLElement);
+
+    const chromeDialog = await screen.findByRole('dialog', { name: /end chrome/i });
+    fireEvent.click(within(chromeDialog).getByRole('button', { name: /^end chrome$/i }));
+    await screen.findByRole('status');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(GRACE_MS);
+    });
+    expect(await screen.findByRole('button', { name: /force end chrome/i })).toBeInTheDocument();
+
+    const [rendererEnd] = screen.getAllByRole('button', { name: /^end renderer$/i });
+    fireEvent.click(rendererEnd as HTMLElement);
+
+    const dialog = await screen.findByRole('dialog', { name: /end renderer/i });
+    expect(within(dialog).getByRole('button', { name: /^end renderer$/i })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: /force end/i })).not.toBeInTheDocument();
+
+    vi.useRealTimers();
+  });
+
+  it('closes the confirmation on Escape without touching background focus', async () => {
+    render(<App />);
+    await screen.findByText('TESTBOX');
+    await userEvent.click(screen.getByTitle('Processes'));
+    await screen.findByText('chrome');
+
+    const [endButton] = screen.getAllByRole('button', { name: /^end chrome$/i });
+    await userEvent.click(endButton as HTMLElement);
+    await screen.findByRole('dialog', { name: /end chrome/i });
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+    expect(invoke).not.toHaveBeenCalledWith('terminate_process', expect.anything());
   });
 });

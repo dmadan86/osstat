@@ -36,9 +36,16 @@ committed Criterion benchmark.
 - [ ] "Copy as Markdown/JSON" for bug reports
 - [ ] Process tree: PPID hierarchy, cumulative CPU/RAM/IO roll-ups, virtualized for 1000+ processes
 - [ ] Search and filter by name, PID and user
-- [ ] Kill flow: SIGTERM, then escalation to SIGKILL after a 5 s timeout with a second confirmation
-- [ ] Per-OS critical-process list requiring a distinct extra confirmation
-- [ ] Integration test: spawn a child process, find it in the tree, kill it, assert exit
+- [x] Kill flow: SIGTERM, then escalation to SIGKILL after a 5 s timeout with a second confirmation
+- [x] Per-OS critical-process list requiring a distinct extra confirmation
+- [x] Integration test: spawn a child process, find it in the tree, kill it, assert exit
+
+  Elevation is deliberately absent from all of the above: osstat never shows a
+  UAC prompt, never calls `pkexec` or `osascript`, and never relaunches
+  itself. A process owned by another user is refused with a message saying so,
+  not with a "Retry elevated" affordance — ADR-006's elevation helper is
+  designed for but not yet built, and the ticked boxes above describe ending a
+  process osstat's own user already owns, not another user's.
 
 ---
 
@@ -49,7 +56,14 @@ committed Criterion benchmark.
 - [ ] `SocketProvider` trait with a `netstat2` implementation, joined to the process table
 - [ ] Table of protocol, local address, port, state, PID, process name and path
 - [ ] Filter by port and process; listening sockets highlighted
-- [ ] "Kill owning process" reusing the M1 kill flow, including the elevation path
+- [x] "Kill owning process" reusing the M1 kill flow
+
+  "Including the elevation path" is not yet true — see the M1 note above.
+  `Ports.tsx` resolves a real `ProcessKey` from the process tree by PID before
+  ending anything, rather than trusting the port table's PID alone, because a
+  PID recycled between the socket read and the process read is an acceptable
+  display fault but not an acceptable one to end a process against.
+
 - [ ] Integration test: bind a listener in-test, assert it appears with the right PID, kill it, assert the port frees
 
 ---

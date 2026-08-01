@@ -18,6 +18,7 @@ import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart';
 
 import type { AppInfo } from '../bindings/AppInfo';
 import type { CloseBehaviour } from '../bindings/CloseBehaviour';
+import type { CriticalProcess } from '../bindings/CriticalProcess';
 import type { GpuDevice } from '../bindings/GpuDevice';
 import type { LlmAdvice } from '../bindings/LlmAdvice';
 import type { MetricsSample } from '../bindings/MetricsSample';
@@ -25,7 +26,10 @@ import type { InstalledRuntimeInfo } from '../bindings/InstalledRuntimeInfo';
 import type { ModelRegistry } from '../bindings/ModelRegistry';
 import type { PortRecord } from '../bindings/PortRecord';
 import type { ProcessDiff } from '../bindings/ProcessDiff';
+import type { ProcessKey } from '../bindings/ProcessKey';
 import type { ProcessRecord } from '../bindings/ProcessRecord';
+import type { Termination } from '../bindings/Termination';
+import type { TerminationMode } from '../bindings/TerminationMode';
 import type { RuntimeFailure } from '../bindings/RuntimeFailure';
 import type { RuntimeProgress } from '../bindings/RuntimeProgress';
 import type { RuntimeStatus } from '../bindings/RuntimeStatus';
@@ -47,6 +51,8 @@ export const COMMANDS = {
   setSampleInterval: 'set_sample_interval',
   setSamplingPaused: 'set_sampling_paused',
   setCloseBehaviour: 'set_close_behaviour',
+  terminateProcess: 'terminate_process',
+  criticalProcesses: 'critical_processes',
 } as const;
 
 /** Names of every event the Rust side emits. */
@@ -223,6 +229,26 @@ export async function setSampleInterval(millis: number): Promise<void> {
  */
 export async function setCloseBehaviour(behaviour: CloseBehaviour): Promise<void> {
   await invoke(COMMANDS.setCloseBehaviour, { behaviour });
+}
+
+/**
+ * Ends a process the current user owns.
+ *
+ * Takes the whole {@link ProcessKey}, not a PID. Several seconds pass between
+ * the graceful and forceful steps and a PID freed in that window can be
+ * reused, so the start time is what stops the second call landing on a
+ * process nobody selected.
+ *
+ * @param key Which process, identified by PID *and* start time.
+ * @param mode Whether to ask it to exit or end it outright.
+ */
+export function terminateProcess(key: ProcessKey, mode: TerminationMode): Promise<Termination> {
+  return invoke<Termination>(COMMANDS.terminateProcess, { key, mode });
+}
+
+/** Returns the processes on this platform that need a second confirmation. */
+export function fetchCriticalProcesses(): Promise<CriticalProcess[]> {
+  return invoke<CriticalProcess[]>(COMMANDS.criticalProcesses);
 }
 
 /**

@@ -10,10 +10,12 @@ import { useEffect, useState } from 'react';
 import type { GpuDevice } from './bindings/GpuDevice';
 import type { MetricsSample } from './bindings/MetricsSample';
 import type { SystemDescription } from './bindings/SystemDescription';
+import { EndProcessDialog } from './components/EndProcessDialog';
 import { Navigation } from './components/Navigation';
 import { setCloseBehaviour, setSampleInterval } from './lib/ipc';
 import { samplesInWindow, usePreferences, type Preferences } from './lib/preferences';
 import type { ProcessTree } from './lib/processTree';
+import type { EndProcessTarget } from './lib/termination';
 import {
   useGpuDevices,
   useMetrics,
@@ -41,6 +43,7 @@ export function App(): React.JSX.Element {
   const { tree, loaded } = useProcesses();
   const gpus = useGpuDevices();
   const hiddenToTray = useTrayHidden();
+  const [endTarget, setEndTarget] = useState<EndProcessTarget | null>(null);
 
   // Push the chosen tick rate to the sampler. The backend clamps anything it
   // cannot honour, so a stale stored preference cannot produce a busy loop.
@@ -61,36 +64,65 @@ export function App(): React.JSX.Element {
 
   return (
     <div className={`flex h-full ${stacked ? 'flex-col' : 'flex-row'}`}>
-      <Navigation current={route} onNavigate={setRoute} style={preferences.navigation} />
+      {/* `inert` while the dialog is open, rather than relying on the overlay
+          alone: the overlay blocks the mouse but not Tab, and without this a
+          user could tab to another row's "End" button behind the dialog and
+          reach it with the keyboard. */}
+      <div className="contents" inert={endTarget !== null}>
+        <Navigation current={route} onNavigate={setRoute} style={preferences.navigation} />
 
-      <main className="min-w-0 flex-1 overflow-auto px-5 py-4">
-        {system.status === 'error' && (
-          <p role="alert" className="text-sm text-red-400">
-            Could not reach the osstat backend: {system.message}
-          </p>
-        )}
+        <main className="min-w-0 flex-1 overflow-auto px-5 py-4">
+          {system.status === 'error' && (
+            <p role="alert" className="text-sm text-red-400">
+              Could not reach the osstat backend: {system.message}
+            </p>
+          )}
 
-        {system.status === 'loading' && (
-          <p role="status" className="text-sm text-neutral-400">
-            Reading system information…
-          </p>
-        )}
+          {system.status === 'loading' && (
+            <p role="status" className="text-sm text-neutral-400">
+              Reading system information…
+            </p>
+          )}
 
-        {system.status === 'ready' && (
-          <Page
-            route={route}
-            system={system.value}
-            samples={samples}
-            latest={latest}
-            gpus={gpus}
-            tree={tree}
-            processesLoaded={loaded}
-            preferences={preferences}
-            onPreferenceChange={updatePreferences}
-            hiddenToTray={hiddenToTray}
-          />
-        )}
-      </main>
+          {system.status === 'ready' && (
+            <Page
+              route={route}
+              system={system.value}
+              samples={samples}
+              latest={latest}
+              gpus={gpus}
+              tree={tree}
+              processesLoaded={loaded}
+              preferences={preferences}
+              onPreferenceChange={updatePreferences}
+              hiddenToTray={hiddenToTray}
+              onEndProcess={setEndTarget}
+            />
+          )}
+        </main>
+      </div>
+
+      {/* Rendered here rather than inside a page: it subscribes to
+          processes:tick for its own reasons regardless of which page is
+          visible, and a user who switches pages mid-confirmation should not
+          lose it.
+
+          Keyed on the target's identity so that switching targets — e.g.
+          tabbing to a different row's "End" button while a confirmation is
+          open — remounts the dialog's state machine instead of reusing it.
+          Without the key, `state` (which phase the dialog is in) survives a
+          `target` change, so a dialog already advanced to `force` for one
+          process would carry that phase over to a newly selected one and
+          skip its confirmation and critical-process check entirely. */}
+      {endTarget !== null && (
+        <EndProcessDialog
+          key={`${endTarget.key.pid}:${endTarget.key.startedAt}`}
+          target={endTarget}
+          onClose={() => {
+            setEndTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -117,6 +149,8 @@ interface PageProps {
   onPreferenceChange: (update: Partial<Preferences>) => void;
   /** Whether the window has been hidden to the tray this session. */
   hiddenToTray: boolean;
+  /** Opens the confirmation dialog for a process the user wants ended. */
+  onEndProcess: (target: EndProcessTarget) => void;
 }
 
 /** Chooses the page for the current route. */
@@ -131,6 +165,7 @@ function Page({
   preferences,
   onPreferenceChange,
   hiddenToTray,
+  onEndProcess,
 }: PageProps): React.JSX.Element {
   switch (route) {
     case 'overview':
@@ -153,10 +188,10 @@ function Page({
       );
 
     case 'processes':
-      return <Processes tree={tree} loaded={processesLoaded} />;
+      return <Processes tree={tree} loaded={processesLoaded} onEndProcess={onEndProcess} />;
 
     case 'ports':
-      return <Ports />;
+      return <Ports tree={tree} onEndProcess={onEndProcess} />;
 
     case 'llm':
       return <Llm />;

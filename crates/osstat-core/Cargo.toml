@@ -18,11 +18,14 @@ ts-bindings = ["dep:ts-rs"]
 
 [dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
+# Validates the critical-process list against its own schema in a test, the
+# same convention osstat-llm and osstat-inference use for their data files.
+jsonschema = "0.49"
 
 [lints]
 workspace = true

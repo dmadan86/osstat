@@ -3314,6 +3314,7 @@ dependencies = [
 name = "osstat-core"
 version = "0.1.0"
 dependencies = [
+ "jsonschema",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -3359,6 +3360,7 @@ name = "osstat-platform"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "libc",
  "netstat2",
  "osstat-core",
  "serde",
@@ -3366,6 +3368,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "ts-rs",
+ "windows 0.62.2",
 ]
 
 [[package]]

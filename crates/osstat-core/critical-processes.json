@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "processes": [
+    {
+      "platform": "windows",
+      "name": "explorer.exe",
+      "paths": ["\\Windows\\explorer.exe"],
+      "breaks": "the taskbar, the Start menu and the desktop"
+    },
+    {
+      "platform": "windows",
+      "name": "csrss.exe",
+      "paths": ["\\Windows\\System32\\csrss.exe"],
+      "breaks": "Windows itself — the machine will stop responding"
+    },
+    {
+      "platform": "windows",
+      "name": "wininit.exe",
+      "paths": ["\\Windows\\System32\\wininit.exe"],
+      "breaks": "Windows itself — the machine will stop responding"
+    },
+    {
+      "platform": "windows",
+      "name": "lsass.exe",
+      "paths": ["\\Windows\\System32\\lsass.exe"],
+      "breaks": "sign-in and every credential on the machine"
+    },
+    {
+      "platform": "windows",
+      "name": "services.exe",
+      "paths": ["\\Windows\\System32\\services.exe"],
+      "breaks": "every Windows service"
+    },
+    {
+      "platform": "windows",
+      "name": "dwm.exe",
+      "paths": ["\\Windows\\System32\\dwm.exe"],
+      "breaks": "everything drawn on screen"
+    },
+    {
+      "platform": "linux",
+      "name": "systemd",
+      "paths": ["/lib/systemd/systemd", "/usr/lib/systemd/systemd", "/sbin/init"],
+      "breaks": "every service on the machine"
+    },
+    {
+      "platform": "linux",
+      "name": "init",
+      "paths": ["/sbin/init", "/usr/sbin/init"],
+      "breaks": "every service on the machine"
+    },
+    {
+      "platform": "linux",
+      "name": "dbus-daemon",
+      "paths": ["/usr/bin/dbus-daemon", "/bin/dbus-daemon"],
+      "breaks": "communication between desktop applications"
+    },
+    {
+      "platform": "linux",
+      "name": "Xorg",
+      "paths": ["/usr/bin/Xorg", "/usr/lib/xorg/Xorg"],
+      "breaks": "the graphical session — you will be signed out"
+    },
+    {
+      "platform": "linux",
+      "name": "gnome-shell",
+      "paths": ["/usr/bin/gnome-shell"],
+      "breaks": "the desktop shell — windows stay open but lose their frames"
+    },
+    {
+      "platform": "macos",
+      "name": "launchd",
+      "paths": ["/sbin/launchd"],
+      "breaks": "every service on the machine"
+    },
+    {
+      "platform": "macos",
+      "name": "WindowServer",
+      "paths": ["/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer"],
+      "breaks": "everything drawn on screen — you will be signed out"
+    },
+    {
+      "platform": "macos",
+      "name": "loginwindow",
+      "paths": ["/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow"],
+      "breaks": "your session — you will be signed out"
+    },
+    {
+      "platform": "macos",
+      "name": "Finder",
+      "paths": ["/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder"],
+      "breaks": "the desktop and every Finder window"
+    }
+  ]
+}

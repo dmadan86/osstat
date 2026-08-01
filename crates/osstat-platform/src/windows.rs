@@ -43,6 +43,116 @@ pub(crate) fn mark_executable(_path: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Ends a process that has already been identity-checked.
+///
+/// Windows has no signals. The graceful equivalent is posting `WM_CLOSE` to the
+/// process's top-level windows, which is what Task Manager's "End task" does and
+/// what gives an application the chance to prompt about unsaved work.
+/// `sysinfo::Process::kill` shells out to `taskkill.exe /PID <pid> /F` rather
+/// than calling `TerminateProcess` directly, so using it for both steps would
+/// make them identical while the UI claimed otherwise.
+pub(crate) fn terminate(
+    process: &sysinfo::Process,
+    mode: osstat_core::TerminationMode,
+) -> osstat_core::Result<osstat_core::Termination> {
+    match mode {
+        osstat_core::TerminationMode::Graceful => {
+            if post_close_to_windows_of(process.pid().as_u32()) == 0 {
+                Ok(osstat_core::Termination::NoWindowToClose)
+            } else {
+                Ok(osstat_core::Termination::Signalled)
+            }
+        }
+        osstat_core::TerminationMode::Forceful => {
+            if process.kill() {
+                Ok(osstat_core::Termination::Signalled)
+            } else {
+                // `kill()` shells out to `taskkill.exe /PID <pid> /F`, which exits
+                // nonzero both when it lacks permission and when the process is
+                // simply no longer there — by far the more common case, since five
+                // seconds separate the graceful attempt from this one. Re-check
+                // existence the same way `Terminator` does before signalling, so
+                // "already gone" is not misreported as "not permitted" (ADR-006
+                // needs `PermissionDenied` to stay the sole "elevation might help"
+                // signal).
+                let key = osstat_core::ProcessKey {
+                    pid: process.pid().as_u32(),
+                    started_at: process.start_time(),
+                };
+                let mut system = sysinfo::System::new();
+                match crate::identity::verify(&mut system, key) {
+                    Ok(crate::identity::Identity::Gone)
+                    | Err(osstat_core::Error::IdentityMismatch { .. }) => {
+                        Ok(osstat_core::Termination::AlreadyGone)
+                    }
+                    Ok(crate::identity::Identity::Matches) => {
+                        Err(osstat_core::Error::PermissionDenied(format!(
+                            "cannot end pid {}",
+                            process.pid().as_u32()
+                        )))
+                    }
+                    Err(other) => Err(other),
+                }
+            }
+        }
+    }
+}
+
+/// What `EnumWindows` accumulates as it runs.
+struct CloseTarget {
+    /// The process whose windows are wanted.
+    pid: u32,
+    /// How many windows were posted to.
+    posted: u32,
+}
+
+/// Posts `WM_CLOSE` to every visible top-level window owned by `pid`.
+///
+/// Returns how many windows were posted to; zero means the process has none.
+#[allow(
+    unsafe_code,
+    reason = "EnumWindows, GetWindowThreadProcessId and PostMessageW are raw \
+              Win32 calls with no safe wrapper in the ecosystem. This is the \
+              only unsafe in the crate and it neither dereferences a pointer \
+              the OS did not give it nor outlives the enumeration."
+)]
+fn post_close_to_windows_of(pid: u32) -> u32 {
+    use windows::Win32::Foundation::{HWND, LPARAM, TRUE, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_CLOSE,
+    };
+    use windows::core::BOOL;
+
+    unsafe extern "system" fn visit(window: HWND, state: LPARAM) -> BOOL {
+        // SAFETY: `state` is the &mut CloseTarget handed to EnumWindows below,
+        // which outlives the enumeration because EnumWindows is synchronous.
+        let target = unsafe { &mut *(state.0 as *mut CloseTarget) };
+
+        let mut owner = 0_u32;
+        unsafe { GetWindowThreadProcessId(window, Some(&raw mut owner)) };
+
+        if owner == target.pid && unsafe { IsWindowVisible(window) }.as_bool() {
+            // A window that refuses the post is not worth failing over; the
+            // forceful step is one confirmation away.
+            if unsafe { PostMessageW(Some(window), WM_CLOSE, WPARAM(0), LPARAM(0)) }.is_ok() {
+                target.posted = target.posted.saturating_add(1);
+            }
+        }
+
+        TRUE
+    }
+
+    let mut target = CloseTarget { pid, posted: 0 };
+    let _ = unsafe {
+        EnumWindows(
+            Some(visit),
+            LPARAM(std::ptr::from_mut(&mut target) as isize),
+        )
+    };
+
+    target.posted
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -67,5 +177,94 @@ mod tests {
     #[test]
     fn a_mount_point_that_is_only_a_separator_survives() {
         assert!(!disk_display_name("", "\\").is_empty());
+    }
+
+    #[test]
+    #[allow(
+        clippy::zombie_processes,
+        reason = "the child is what terminate() is exercising; it is ended by the forceful \
+                  call below rather than by Child::wait, which is the point of the test"
+    )]
+    fn a_process_with_no_window_reports_that_rather_than_failing() {
+        // A console process has no top-level window, so there is nothing to
+        // post WM_CLOSE to. That is information for the UI, not an error: it
+        // means offer the forceful step now instead of waiting five seconds
+        // for an outcome already known.
+        let child = std::process::Command::new("cmd")
+            .args(["/C", "ping -n 20 127.0.0.1 > NUL"])
+            .spawn()
+            .unwrap();
+        let pid = sysinfo::Pid::from_u32(child.id());
+
+        let mut system = sysinfo::System::new();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[pid]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing(),
+        );
+        let process = system.process(pid).unwrap();
+
+        let outcome = terminate(process, osstat_core::TerminationMode::Graceful).unwrap();
+        assert_eq!(outcome, osstat_core::Termination::NoWindowToClose);
+
+        // Clean up regardless of what the assertion did.
+        let _ = terminate(process, osstat_core::TerminationMode::Forceful);
+    }
+
+    #[test]
+    fn a_process_already_gone_by_the_forceful_call_is_reported_as_gone_not_denied() {
+        // Ends the child directly, bypassing taskkill, so it is already gone by
+        // the time `terminate` shells out to check on it — the same situation as
+        // a process that exits on its own during the five-second grace period.
+        // `kill()` returning false here must not be read as a permission
+        // failure, or a vanished process reports as belonging to another user.
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "ping -n 20 127.0.0.1 > NUL"])
+            .spawn()
+            .unwrap();
+        let pid = sysinfo::Pid::from_u32(child.id());
+
+        let mut system = sysinfo::System::new();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[pid]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing(),
+        );
+        let process = system.process(pid).unwrap();
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        let outcome = terminate(process, osstat_core::TerminationMode::Forceful).unwrap();
+        assert_eq!(outcome, osstat_core::Termination::AlreadyGone);
+    }
+
+    #[test]
+    #[allow(
+        clippy::zombie_processes,
+        reason = "the child is what terminate() is exercising; it is ended by the forceful \
+                  call being tested rather than by Child::wait"
+    )]
+    fn forceful_termination_ends_a_child() {
+        let child = std::process::Command::new("cmd")
+            .args(["/C", "ping -n 20 127.0.0.1 > NUL"])
+            .spawn()
+            .unwrap();
+        let pid = sysinfo::Pid::from_u32(child.id());
+
+        let mut system = sysinfo::System::new();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[pid]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing(),
+        );
+
+        let outcome = terminate(
+            system.process(pid).unwrap(),
+            osstat_core::TerminationMode::Forceful,
+        )
+        .unwrap();
+
+        assert_eq!(outcome, osstat_core::Termination::Signalled);
     }
 }

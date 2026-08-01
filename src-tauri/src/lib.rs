@@ -176,6 +176,8 @@ pub fn run() -> tauri::Result<()> {
             commands::set_sample_interval,
             commands::set_sampling_paused,
             commands::set_close_behaviour,
+            commands::terminate_process,
+            commands::critical_processes,
         ])
         .run(tauri::generate_context!())
 }

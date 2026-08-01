@@ -1,9 +1,10 @@
 /**
  * The process tree.
  *
- * Read-only in this phase. There is deliberately no kill affordance at all —
- * not even a disabled one, which would promise something this phase does not
- * deliver and invite a bug report instead of setting an expectation.
+ * Ending a process lives in `EndProcessDialog`, not here: this page only
+ * offers the button and hands off a `ProcessKey` built from the row's own
+ * PID and start time. Identity is checked again immediately before anything
+ * is signalled, and nothing here elevates.
  */
 
 import { useMemo, useRef, useState } from 'react';
@@ -17,6 +18,7 @@ import {
   type Sort,
   type SortColumn,
 } from '../lib/processTree';
+import type { EndProcessTarget } from '../lib/termination';
 
 /** What the Processes page needs. */
 export interface ProcessesProps {
@@ -24,6 +26,8 @@ export interface ProcessesProps {
   tree: ProcessTree;
   /** Whether the first snapshot has arrived. */
   loaded: boolean;
+  /** Opens the confirmation dialog for a process the user wants ended. */
+  onEndProcess: (target: EndProcessTarget) => void;
 }
 
 /** Height of one row in pixels; the windowing maths depends on it being fixed. */
@@ -47,7 +51,7 @@ const COLUMNS: { id: SortColumn; label: string; width: string; numeric: boolean 
  *
  * @param props The tree and whether it has loaded.
  */
-export function Processes({ tree, loaded }: ProcessesProps): React.JSX.Element {
+export function Processes({ tree, loaded, onEndProcess }: ProcessesProps): React.JSX.Element {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [search, setSearch] = useState('');
   const [flat, setFlat] = useState(false);
@@ -143,6 +147,9 @@ export function Processes({ tree, loaded }: ProcessesProps): React.JSX.Element {
               )}
             </button>
           ))}
+          {/* Not a `columnheader`: nothing here sorts, so it is not part of
+              the keyboard/aria-sort contract the buttons above share. */}
+          <span className="w-16 text-left">End</span>
         </div>
 
         {!loaded ? (
@@ -167,7 +174,7 @@ export function Processes({ tree, loaded }: ProcessesProps): React.JSX.Element {
             <div style={{ height: rows.length * ROW_HEIGHT, position: 'relative' }}>
               <div style={{ transform: `translateY(${first * ROW_HEIGHT}px)` }}>
                 {visible.map((row) => (
-                  <Row key={row.node.key} row={row} onToggle={toggle} />
+                  <Row key={row.node.key} row={row} onToggle={toggle} onEndProcess={onEndProcess} />
                 ))}
               </div>
             </div>
@@ -192,9 +199,11 @@ export function Processes({ tree, loaded }: ProcessesProps): React.JSX.Element {
 function Row({
   row,
   onToggle,
+  onEndProcess,
 }: {
   row: ProcessRow;
   onToggle: (key: string) => void;
+  onEndProcess: (target: EndProcessTarget) => void;
 }): React.JSX.Element {
   const { node, depth, expandable, expanded } = row;
   // The roll-up, not the process's own figure: a collapsed parent must account
@@ -271,6 +280,22 @@ function Row({
       </span>
       <span data-selectable className="w-20 text-right font-mono text-neutral-500">
         {io > 0 ? formatRate(io) : '—'}
+      </span>
+      <span className="w-16 shrink-0">
+        <button
+          type="button"
+          aria-label={`End ${node.record.name}`}
+          onClick={() => {
+            onEndProcess({
+              key: { pid: node.record.pid, startedAt: node.record.startedAt },
+              name: node.record.name,
+              exe: node.record.exe,
+            });
+          }}
+          className="rounded-md border border-edge px-2 py-0.5 text-[10px] text-neutral-400 hover:bg-white/[0.04]"
+        >
+          End
+        </button>
       </span>
     </div>
   );

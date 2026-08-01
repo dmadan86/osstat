@@ -21,6 +21,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod control;
+pub mod critical;
 pub mod error;
 pub mod gpu;
 pub mod meta;
@@ -29,6 +31,8 @@ pub mod process;
 pub mod provider;
 pub mod socket;
 
+pub use control::{ProcessController, Termination, TerminationMode};
+pub use critical::{CriticalList, CriticalProcess, critical_list};
 pub use error::{Error, Result};
 pub use gpu::{GpuDevice, GpuKind, GpuSample, GpuSource};
 pub use meta::{BuildInfo, BuildProfile};

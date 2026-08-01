@@ -16,8 +16,12 @@ use serde::{Deserialize, Serialize};
 pub mod netstat_source;
 pub mod sysinfo_source;
 
+mod identity;
+pub mod terminate;
+
 pub use netstat_source::NetstatSource;
 pub use sysinfo_source::SysinfoSource;
+pub use terminate::Terminator;
 
 #[cfg(target_os = "windows")]
 #[path = "windows.rs"]

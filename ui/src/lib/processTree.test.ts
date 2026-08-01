@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ProcessRecord } from '../bindings/ProcessRecord';
-import { applyDiff, buildTree, flattenTree, keyOf, type ProcessNode } from './processTree';
+import {
+  applyDiff,
+  buildTree,
+  flattenTree,
+  keyOf,
+  recordsByPid,
+  type ProcessNode,
+} from './processTree';
 
 function record(pid: number, parentPid: number | null, overrides: Partial<ProcessRecord> = {}) {
   return {
@@ -227,6 +234,23 @@ describe('flattenTree', () => {
 
     expect(rows.find((row) => row.node.record.name === 'code')?.expandable).toBe(false);
     expect(rows.find((row) => row.node.record.name === 'chrome')?.expandable).toBe(true);
+  });
+});
+
+describe('recordsByPid', () => {
+  it('finds a process at any depth', () => {
+    const tree = buildTree([record(1, null), record(2, 1), record(3, 2)]);
+
+    const byPid = recordsByPid(tree);
+
+    expect(byPid.get(3)?.pid).toBe(3);
+    expect(byPid.size).toBe(3);
+  });
+
+  it('has nothing for a PID the tree does not hold', () => {
+    const tree = buildTree([record(1, null)]);
+
+    expect(recordsByPid(tree).get(404)).toBeUndefined();
   });
 });
 

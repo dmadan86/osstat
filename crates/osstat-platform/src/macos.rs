@@ -42,6 +42,45 @@ pub(crate) fn mark_executable(path: &std::path::Path) -> std::io::Result<()> {
     std::fs::set_permissions(path, permissions)
 }
 
+/// Ends a process that has already been identity-checked.
+///
+/// Uses `sysinfo`'s signal API rather than `libc::kill` so this crate keeps its
+/// `#![deny(unsafe_code)]`. `kill_with` returns `None` when the platform cannot
+/// send the signal at all, which on Unix means the signal is unsupported rather
+/// than that the process refused it.
+pub(crate) fn terminate(
+    process: &sysinfo::Process,
+    mode: osstat_core::TerminationMode,
+) -> osstat_core::Result<osstat_core::Termination> {
+    let signal = match mode {
+        osstat_core::TerminationMode::Graceful => sysinfo::Signal::Term,
+        osstat_core::TerminationMode::Forceful => sysinfo::Signal::Kill,
+    };
+
+    match process.kill_with(signal) {
+        // `kill(2)` failing is not one thing. `kill_with` collapses both ESRCH
+        // (the process ended in the gap between our identity check and this
+        // call — gone is what the caller wanted) and EPERM (a real refusal,
+        // overwhelmingly because the process belongs to someone else) into the
+        // same `false`. ADR-006 needs those distinct, so the errno is read back
+        // here rather than trusted to `kill_with`'s boolean.
+        Some(false) => {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                Ok(osstat_core::Termination::AlreadyGone)
+            } else {
+                Err(osstat_core::Error::PermissionDenied(format!(
+                    "cannot signal pid {}",
+                    process.pid().as_u32()
+                )))
+            }
+        }
+        Some(true) => Ok(osstat_core::Termination::Signalled),
+        None => Err(osstat_core::Error::Unsupported(format!(
+            "{signal:?} is not supported on this platform"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
