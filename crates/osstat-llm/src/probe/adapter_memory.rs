@@ -75,7 +75,7 @@ pub(crate) fn adapter_memory() -> Vec<AdapterMemory> {
 /// difference surfaces the moment anything divides by the total.
 #[allow(
     dead_code,
-    reason = "used by parse_sysfs_u64, whose only caller lands in Task 5"
+    reason = "called by the Windows module in Task 3 and via parse_sysfs_u64 in Task 5"
 )]
 pub(crate) const fn non_zero(value: u64) -> Option<u64> {
     if value == 0 { None } else { Some(value) }
@@ -347,7 +347,7 @@ mod tests {
 
         apply_to_devices(
             &mut devices,
-            &[(0x10de, 0x747e)],
+            &[(0, 0)],
             &[AdapterMemory {
                 pci_vendor: 0x10de,
                 vram_total: Some(1),
@@ -375,6 +375,34 @@ mod tests {
 
         assert_eq!(devices[0].vram_total, None);
         assert_eq!(devices[0].shared_total, None);
+    }
+
+    #[test]
+    fn a_device_with_no_pci_pair_matches_by_name() {
+        // An NVML-supplied device reaches the merge with no PCI pair -- see
+        // `probe.rs`, which seeds those entries with (0, 0). The name branch is
+        // what lets such a device pick up a shared figure from a source that
+        // never measured its dedicated one, which is why `shared_source` exists
+        // as a separate field.
+        let mut devices = vec![GpuDevice {
+            source: GpuSource::Nvml,
+            vram_total: Some(8_589_934_592),
+            ..wgpu_device(0, 0x10de)
+        }];
+
+        apply_to_devices(&mut devices, &[(0, 0)], &[reading(0x10de)]);
+
+        assert_eq!(
+            devices[0].shared_total,
+            Some(17_179_869_184),
+            "the name branch did not fire for a device with no PCI pair"
+        );
+        assert_eq!(devices[0].shared_source, Some(GpuSource::Dxgi));
+        assert_eq!(
+            devices[0].vram_total,
+            Some(8_589_934_592),
+            "NVML's own figure must survive"
+        );
     }
 
     #[test]
@@ -419,7 +447,7 @@ mod tests {
             source: GpuSource::Nvml,
             ..wgpu_device(0, 0x10de)
         }];
-        apply_to_devices(&mut devices, &[(0x10de, 0x747e)], &[reading(0x10de)]);
+        apply_to_devices(&mut devices, &[(0, 0)], &[reading(0x10de)]);
 
         let nvml = vec![GpuSample {
             index: 0,
@@ -429,7 +457,7 @@ mod tests {
             shared_used: None,
         }];
 
-        let samples = samples_from(&devices, &[(0x10de, 0x747e)], &[reading(0x10de)], &nvml);
+        let samples = samples_from(&devices, &[(0, 0)], &[reading(0x10de)], &nvml);
 
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].vram_used, Some(3_328_737_280), "NVML's figure");
