@@ -72,15 +72,68 @@ pub(crate) fn terminate(
     }
 }
 
-/// Linux adapter memory. **Not implemented yet — Task 5 replaces this.**
+/// Reads every DRM card that reports its memory.
 ///
-/// Returning nothing is correct for `i915`, `xe` and NVIDIA's proprietary
-/// driver, which expose no adapter-wide memory interface. It is *not* correct
-/// for amdgpu, which reports both pools under `/sys/class/drm/card*/device`.
-/// Until that lands, a Linux machine with an AMD card reports no adapter
-/// memory and the Overview is unchanged from before this feature.
+/// GTT — the graphics translation table — is the aperture through which a GPU
+/// addresses system memory, and is the Linux equivalent of the shared pool
+/// Windows calls "shared GPU memory".
+///
+/// amdgpu only. `i915`, `xe` and NVIDIA's proprietary driver expose no
+/// adapter-wide equivalent, so on those cards this reports nothing. Borrowing
+/// amdgpu's numbers for a card that did not report them would be a
+/// fabrication, which ADR-008 forbids outright.
 pub(crate) fn adapter_memory() -> Vec<crate::AdapterMemory> {
-    Vec::new()
+    let Ok(entries) = std::fs::read_dir("/sys/class/drm") else {
+        return Vec::new();
+    };
+
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry.file_name().to_str().is_some_and(|name| {
+                // `card0`, but not `card0-DP-1`, which is a connector.
+                name.strip_prefix("card").is_some_and(|rest| {
+                    !rest.is_empty() && rest.chars().all(|unit| unit.is_ascii_digit())
+                })
+            })
+        })
+        .filter_map(|entry| describe_card(&entry.path().join("device")))
+        .collect()
+}
+
+/// Reads one card's memory, or skips it if the driver reports none.
+fn describe_card(device: &std::path::Path) -> Option<crate::AdapterMemory> {
+    let vram_total = read_mem_info(device, "mem_info_vram_total");
+    let shared_total = read_mem_info(device, "mem_info_gtt_total");
+
+    // A card whose driver exposes neither file is not an error and not a zero;
+    // it is a card this module has nothing to say about.
+    if vram_total.is_none() && shared_total.is_none() {
+        return None;
+    }
+
+    Some(crate::AdapterMemory {
+        pci_vendor: read_pci_id(device, "vendor")?,
+        pci_device: read_pci_id(device, "device")?,
+        // DRM has no adapter name; the PCI pair is the join.
+        name: None,
+        vram_total,
+        vram_used: vram_total.and(read_mem_info(device, "mem_info_vram_used")),
+        shared_total,
+        shared_used: shared_total.and(read_mem_info(device, "mem_info_gtt_used")),
+        source: osstat_core::GpuSource::DrmSysfs,
+    })
+}
+
+/// Reads one `mem_info_*` file as a byte count.
+fn read_mem_info(device: &std::path::Path, file: &str) -> Option<u64> {
+    crate::gpu_memory::parse_sysfs_u64(&std::fs::read_to_string(device.join(file)).ok()?)
+}
+
+/// Reads a PCI `vendor` or `device` file, which sysfs writes as `0x1002`.
+fn read_pci_id(device: &std::path::Path, file: &str) -> Option<u32> {
+    let contents = std::fs::read_to_string(device.join(file)).ok()?;
+    u32::from_str_radix(contents.trim().strip_prefix("0x")?, 16).ok()
 }
 
 #[cfg(test)]

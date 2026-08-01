@@ -141,6 +141,18 @@ mod tests {
     }
 
     #[test]
+    fn amdgpu_mem_info_files_parse() {
+        // The four files are plain decimal byte counts with a trailing newline.
+        assert_eq!(parse_sysfs_u64("17163091968\n"), Some(17_163_091_968));
+        assert_eq!(parse_sysfs_u64("  8589934592  "), Some(8_589_934_592));
+    }
+
+    #[test]
+    fn an_amdgpu_pool_reporting_zero_is_unknown_not_empty() {
+        assert_eq!(parse_sysfs_u64("0\n"), None);
+    }
+
+    #[test]
     fn a_reported_zero_is_unknown_not_a_measurement_of_none() {
         // DXGI reports DedicatedVideoMemory: 0 for an adapter with no VRAM of
         // its own. Some(0) and None render the same today, but they mean

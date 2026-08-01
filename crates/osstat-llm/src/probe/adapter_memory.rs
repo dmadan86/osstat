@@ -274,6 +274,63 @@ mod tests {
     }
 
     #[test]
+    fn a_nameless_reading_still_matches_by_pci_id() {
+        // DRM exposes no adapter name, so Linux readings arrive nameless and
+        // the PCI pair is the only join available.
+        let mut devices = vec![wgpu_device(0)];
+
+        apply_to_devices(
+            &mut devices,
+            &[(0x1002, 0x747e)],
+            &[AdapterMemory {
+                name: None,
+                pci_vendor: 0x1002,
+                pci_device: 0x747e,
+                source: GpuSource::DrmSysfs,
+                ..reading(0x1002)
+            }],
+        );
+
+        assert_eq!(devices[0].shared_total, Some(17_179_869_184));
+        assert_eq!(devices[0].shared_source, Some(GpuSource::DrmSysfs));
+    }
+
+    #[test]
+    fn two_cards_from_one_vendor_do_not_swap_readings() {
+        // A vendor-only comparison would attribute one card's memory to the
+        // other. Both halves of the pair have to match.
+        let mut devices = vec![
+            GpuDevice {
+                name: "Radeon RX 7800 XT".into(),
+                ..wgpu_device(0)
+            },
+            GpuDevice {
+                name: "Radeon RX 6600".into(),
+                ..wgpu_device(1)
+            },
+        ];
+
+        apply_to_devices(
+            &mut devices,
+            &[(0x1002, 0x747e), (0x1002, 0x73ff)],
+            &[AdapterMemory {
+                name: None,
+                pci_vendor: 0x1002,
+                pci_device: 0x73ff,
+                shared_total: Some(4_294_967_296),
+                source: GpuSource::DrmSysfs,
+                ..reading(0x1002)
+            }],
+        );
+
+        assert_eq!(
+            devices[0].shared_total, None,
+            "the RX 6600's reading landed on the RX 7800 XT"
+        );
+        assert_eq!(devices[1].shared_total, Some(4_294_967_296));
+    }
+
+    #[test]
     fn a_reading_produces_a_sample_where_nvml_produced_none() {
         // The gap this feature would otherwise never reach: an AMD-only Windows
         // machine has no NVML handle at all.
