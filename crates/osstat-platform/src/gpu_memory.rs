@@ -35,7 +35,7 @@ pub struct AdapterMemory {
 }
 
 /// A Windows `GPU Adapter Memory` counter instance, identifying one adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LuidKey {
     /// The adapter LUID's `HighPart`.
     pub high: u32,
@@ -181,6 +181,36 @@ mod tests {
                 !name.contains("basic render"),
                 "the software rasteriser reached the reading list"
             );
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_reports_usage_within_the_totals_it_reported() {
+        // The load-bearing sanity check: a usage figure larger than its own
+        // total would draw a meter past 100% and means the counter was keyed
+        // to the wrong adapter.
+        for reading in crate::adapter_memory() {
+            if let (Some(total), Some(used)) = (reading.vram_total, reading.vram_used) {
+                assert!(used <= total, "dedicated {used} exceeds total {total}");
+            }
+            if let (Some(total), Some(used)) = (reading.shared_total, reading.shared_used) {
+                assert!(used <= total, "shared {used} exceeds total {total}");
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_never_reports_usage_without_a_total() {
+        // A usage figure with no denominator cannot be drawn as a meter.
+        for reading in crate::adapter_memory() {
+            if reading.shared_used.is_some() {
+                assert!(reading.shared_total.is_some());
+            }
+            if reading.vram_used.is_some() {
+                assert!(reading.vram_total.is_some());
+            }
         }
     }
 }
