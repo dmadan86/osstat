@@ -27,40 +27,71 @@ fn main() {
         return;
     }
 
+    let samples = probe.measure().unwrap_or_default();
+
     for device in &devices {
-        let vram = device.vram_total.map_or_else(
-            || "unknown".to_owned(),
-            |bytes| format!("{} MiB", bytes / (1024 * 1024)),
+        let sample = samples.iter().find(|entry| entry.index == device.index);
+
+        // Each pool is labelled from its own source: an NVIDIA card on Windows
+        // has its dedicated figure measured by NVML and its shared figure by
+        // the performance counters, and neither may borrow the other's
+        // credibility.
+        let dedicated = pool(
+            device.vram_total,
+            sample.and_then(|s| s.vram_used),
+            device.source.is_measured(),
         );
-        let trust = if device.source.is_measured() {
-            "measured"
-        } else {
-            "estimated / unreported"
-        };
+        let shared = pool(
+            device.shared_total,
+            sample.and_then(|s| s.shared_used),
+            device
+                .shared_source
+                .is_some_and(osstat_core::GpuSource::is_measured),
+        );
 
         println!(
-            "[{}] {} — {:?}, backend {:?}, VRAM {vram} ({trust}, source {:?})",
+            "[{}] {} — {:?}, backend {:?}",
             device.index,
             device.name,
             device.kind,
             device.backend.as_deref().unwrap_or("-"),
-            device.source,
         );
+        println!("      dedicated: {dedicated}");
+        println!("      shared:    {shared}");
     }
 
-    match probe.measure() {
-        Ok(samples) if samples.is_empty() => {
-            println!("\nNo device can be measured live (no NVML-capable GPU).");
+    if samples.is_empty() {
+        println!("\nNo device can be measured live (no NVML-capable GPU).");
+    } else {
+        println!();
+        for sample in &samples {
+            println!(
+                "[{}] utilisation {:?}%, {:?} C",
+                sample.index, sample.utilisation, sample.temperature_c
+            );
         }
-        Ok(samples) => {
-            println!();
-            for sample in &samples {
-                println!(
-                    "[{}] utilisation {:?}%, VRAM used {:?}, {:?} C",
-                    sample.index, sample.utilisation, sample.vram_used, sample.temperature_c
-                );
-            }
-        }
-        Err(error) => eprintln!("measurement failed: {error}"),
+    }
+}
+
+/// Renders one memory pool, or says plainly that it is unknown.
+///
+/// "unknown" and "0 bytes" are different claims — the probe normalises a
+/// reported zero to absent precisely so they cannot be confused — and this
+/// output keeps them distinct.
+fn pool(total: Option<u64>, used: Option<u64>, measured: bool) -> String {
+    let Some(total) = total else {
+        return "not reported by this source".to_owned();
+    };
+    let trust = if measured { "measured" } else { "estimated" };
+    match used {
+        Some(used) => format!(
+            "{} MiB of {} MiB ({trust})",
+            used / (1024 * 1024),
+            total / (1024 * 1024)
+        ),
+        None => format!(
+            "{} MiB total, usage unknown ({trust})",
+            total / (1024 * 1024)
+        ),
     }
 }

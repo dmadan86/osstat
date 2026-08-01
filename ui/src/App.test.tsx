@@ -290,6 +290,92 @@ describe('App', () => {
     expect(await screen.findByText(/No GPU was found/)).toBeInTheDocument();
   });
 
+  it('shows both pools when both are known', async () => {
+    respond({
+      gpu_devices: [
+        {
+          ...GPU,
+          vramTotal: 8_589_934_592,
+          sharedTotal: 17_179_869_184,
+          source: 'nvml',
+          sharedSource: 'dxgi',
+        },
+      ],
+    });
+    render(<App />);
+    await screen.findByText('TESTBOX');
+
+    expect(await screen.findByRole('meter', { name: 'Dedicated memory' })).toBeInTheDocument();
+    expect(await screen.findByRole('meter', { name: 'Shared memory' })).toBeInTheDocument();
+  });
+
+  it('draws no dedicated meter for an adapter with no video memory of its own', async () => {
+    // An integrated GPU on Windows: DXGI reports DedicatedVideoMemory 0, which
+    // the probe normalises to absent. A meter reading "0 GB of 0 GB" says
+    // nothing and implies a pool that does not exist.
+    respond({
+      gpu_devices: [
+        {
+          ...GPU,
+          name: 'Intel(R) UHD Graphics 770',
+          kind: 'integrated',
+          vramTotal: null,
+          sharedTotal: 17_179_869_184,
+          source: 'dxgi',
+          sharedSource: 'dxgi',
+        },
+      ],
+    });
+    render(<App />);
+    await screen.findByText('TESTBOX');
+
+    expect(await screen.findByRole('meter', { name: 'Shared memory' })).toBeInTheDocument();
+    expect(screen.queryByRole('meter', { name: 'Dedicated memory' })).not.toBeInTheDocument();
+  });
+
+  it('marks each pool estimated according to its own source', async () => {
+    // The front-end half of carrying two sources: an NVML dedicated figure and
+    // a DXGI shared one are both measurements, and neither may be labelled a
+    // guess because the other exists.
+    respond({
+      gpu_devices: [
+        {
+          ...GPU,
+          vramTotal: 8_589_934_592,
+          sharedTotal: 17_179_869_184,
+          source: 'nvml',
+          sharedSource: 'dxgi',
+        },
+      ],
+    });
+    render(<App />);
+    await screen.findByText('TESTBOX');
+
+    await screen.findByRole('meter', { name: 'Dedicated memory' });
+    expect(screen.queryByText(/estimated/)).not.toBeInTheDocument();
+  });
+
+  it('still says nothing when neither pool is known', async () => {
+    respond({
+      gpu_devices: [
+        {
+          ...GPU,
+          source: 'wgpu',
+          vramTotal: null,
+          sharedTotal: null,
+          sharedSource: null,
+          backend: 'Vulkan',
+        },
+      ],
+    });
+    render(<App />);
+    await screen.findByText('TESTBOX');
+
+    expect(
+      await screen.findByText(/Video memory is not reported by this source/)
+    ).toBeInTheDocument();
+  });
+
   it('explains the tray only after a hide actually happens, not on a fresh launch', async () => {
     render(<App />);
     await screen.findByText('TESTBOX');

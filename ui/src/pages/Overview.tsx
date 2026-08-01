@@ -277,6 +277,46 @@ function sectionsFor(props: OverviewProps): SectionSpec[] {
   ];
 }
 
+/** One memory pool as a meter, or nothing when the pool is unknown. */
+function PoolMeter({
+  label,
+  total,
+  used,
+  measured,
+}: {
+  label: string;
+  total: number | null;
+  used: number | null | undefined;
+  measured: boolean;
+}): React.JSX.Element | null {
+  // A pool with no total cannot be drawn as a meter, and a meter reading
+  // "0 GB of 0 GB" implies a pool that does not exist. The probe normalises a
+  // reported zero to absent for exactly this reason.
+  if (total === null || total <= 0) return null;
+
+  const suffix = measured ? '' : ' — estimated';
+
+  return (
+    <Meter
+      fraction={used == null ? 0 : used / total}
+      label={label}
+      detail={
+        used == null
+          ? `${formatBytes(total)} total${suffix}`
+          : `${formatBytes(used)} of ${formatBytes(total)}${suffix}`
+      }
+    />
+  );
+}
+
+/** Whether a source measured its figures or merely advertised them. */
+function isMeasured(source: GpuDevice['source'] | null): boolean {
+  // Mirrors GpuSource::is_measured in crates/osstat-core/src/gpu.rs. Kept as a
+  // list of what *is* trusted rather than what is not, so a source added on the
+  // Rust side defaults to "estimated" here until it is deliberately added.
+  return source === 'nvml' || source === 'dxgi' || source === 'drmSysfs';
+}
+
 /** The GPU section body. */
 function GpuContent({
   gpus,
@@ -294,13 +334,12 @@ function GpuContent({
     <div className="flex flex-col gap-4">
       {gpus.map((gpu) => {
         const sample = latest?.gpus.find((entry) => entry.index === gpu.index);
-        const measured = gpu.source === 'nvml';
 
         return (
           // Constrained: a fact row stretched across a wide window puts its
           // label and its value at opposite ends of the screen, which is
           // unreadable and, past a certain width, pushes the value out of view.
-          <div key={gpu.index} className="flex max-w-xl flex-col gap-2">
+          <div key={gpu.index} className="flex max-w-xl flex-col gap-3">
             <div className="flex items-baseline justify-between gap-3">
               <span data-selectable className="text-sm">
                 {gpu.name}
@@ -311,9 +350,10 @@ function GpuContent({
               </span>
             </div>
 
-            {gpu.vramTotal === null ? (
-              // wgpu has no API that reports video memory. Saying so is better
-              // than a number invented from a device limit -- ADR-008 names
+            {gpu.vramTotal === null && gpu.sharedTotal === null ? (
+              // Neither pool is known. wgpu has no memory API, and on this
+              // machine nothing else could answer either. Saying so is better
+              // than a number invented from a device limit — ADR-008 names
               // presenting a heuristic as a measurement the worst thing this
               // feature could do.
               <p className="text-xs text-neutral-500">
@@ -321,25 +361,24 @@ function GpuContent({
                 {gpu.backend === null ? '' : ` (${gpu.backend})`}.
               </p>
             ) : (
-              <Meter
-                fraction={
-                  sample?.vramUsed != null && gpu.vramTotal > 0
-                    ? sample.vramUsed / gpu.vramTotal
-                    : 0
-                }
-                label={
-                  gpu.source === 'unifiedMemory'
-                    ? 'Unified memory (shared with the system)'
-                    : 'Video memory'
-                }
-                detail={
-                  sample?.vramUsed == null
-                    ? `${formatBytes(gpu.vramTotal)} total${measured ? '' : ' — estimated'}`
-                    : `${formatBytes(sample.vramUsed)} of ${formatBytes(gpu.vramTotal)}${
-                        measured ? '' : ' — estimated'
-                      }`
-                }
-              />
+              <>
+                <PoolMeter
+                  label={
+                    gpu.source === 'unifiedMemory'
+                      ? 'Unified memory (shared with the system)'
+                      : 'Dedicated memory'
+                  }
+                  total={gpu.vramTotal}
+                  used={sample?.vramUsed}
+                  measured={isMeasured(gpu.source)}
+                />
+                <PoolMeter
+                  label="Shared memory"
+                  total={gpu.sharedTotal}
+                  used={sample?.sharedUsed}
+                  measured={isMeasured(gpu.sharedSource)}
+                />
+              </>
             )}
 
             <div className="grid grid-cols-2 gap-x-6">
