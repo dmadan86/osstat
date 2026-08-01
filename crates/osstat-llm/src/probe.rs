@@ -38,6 +38,8 @@ mod nvml {
     }
 }
 
+mod adapter_memory;
+
 /// Finds the GPUs in this machine and measures the ones it can.
 ///
 /// Construction does no probing; call [`GpuProvider::devices`] for that.
@@ -48,6 +50,15 @@ pub struct HardwareProbe {
     nvidia: Option<nvml::Nvidia>,
     /// `(device index, NVML index)` for every device NVML can measure.
     measurable: Vec<(u32, u32)>,
+    /// The devices `devices()` returned, so samples can be indexed to them.
+    devices: Vec<GpuDevice>,
+    /// The PCI `(vendor, device)` pair of each entry in `devices`, or `(0, 0)`
+    /// where NVML supplied the device and no pair was seen.
+    ///
+    /// Parallel to `devices` rather than a field on `GpuDevice`: a PCI ID is a
+    /// matching key with no meaning to the front end, and `GpuDevice` crosses
+    /// the IPC boundary.
+    pci: Vec<(u32, u32)>,
     /// Whether [`GpuProvider::devices`] has already run.
     probed: bool,
 }
@@ -64,6 +75,8 @@ impl HardwareProbe {
             system_memory,
             nvidia: None,
             measurable: Vec::new(),
+            devices: Vec::new(),
+            pci: Vec::new(),
             probed: false,
         }
     }
@@ -113,18 +126,34 @@ impl GpuProvider for HardwareProbe {
             .collect();
 
         let next_index = u32::try_from(devices.len()).unwrap_or(u32::MAX);
-        for adapter in enumerate_adapters(self.system_memory, next_index) {
+        // NVML devices carry no PCI pair; they are matched by name instead.
+        let mut pci = vec![(0_u32, 0_u32); devices.len()];
+
+        for (adapter, ids) in enumerate_adapters(self.system_memory, next_index) {
             if claimed.contains(&normalise(&adapter.name)) {
                 // The same card NVML already described, and better.
                 continue;
             }
             devices.push(adapter);
+            pci.push(ids);
         }
 
         // Re-index so the list is contiguous whatever the sources contributed.
         for (position, device) in devices.iter_mut().enumerate() {
             device.index = u32::try_from(position).unwrap_or(u32::MAX);
         }
+
+        // Fill what NVML and wgpu could not: shared memory everywhere, and
+        // dedicated memory on every adapter NVML does not cover.
+        //
+        // Enumerating adapters is done once here rather than per tick: which
+        // adapters exist and how large their pools are cannot change within a
+        // session. Only the usage figures move, and `measure` re-reads those.
+        let readings = adapter_memory::adapter_memory();
+        adapter_memory::apply_to_devices(&mut devices, &pci, &readings);
+
+        self.devices.clone_from(&devices);
+        self.pci = pci;
 
         self.probed = true;
         Ok(devices)
@@ -137,11 +166,18 @@ impl GpuProvider for HardwareProbe {
             return Ok(Vec::new());
         }
 
-        let Some(nvidia) = &self.nvidia else {
-            return Ok(Vec::new());
-        };
+        let nvml = self
+            .nvidia
+            .as_ref()
+            .map(|nvidia| nvidia.measure(&self.measurable))
+            .unwrap_or_default();
 
-        Ok(nvidia.measure(&self.measurable))
+        Ok(adapter_memory::samples_from(
+            &self.devices,
+            &self.pci,
+            &adapter_memory::adapter_memory(),
+            &nvml,
+        ))
     }
 }
 
@@ -150,7 +186,7 @@ impl GpuProvider for HardwareProbe {
 /// Returns an empty list rather than failing when there is no usable graphics
 /// backend at all — which is the normal state of a CI runner and a headless
 /// server, and which ADR-008 requires to degrade rather than error.
-fn enumerate_adapters(system_memory: u64, first_index: u32) -> Vec<GpuDevice> {
+fn enumerate_adapters(system_memory: u64, first_index: u32) -> Vec<(GpuDevice, (u32, u32))> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
 
     instance
@@ -161,7 +197,7 @@ fn enumerate_adapters(system_memory: u64, first_index: u32) -> Vec<GpuDevice> {
             let kind = map_device_type(info.device_type);
             let (source, vram_total) = classify_memory(kind, system_memory);
 
-            GpuDevice {
+            let device = GpuDevice {
                 index: 0, // assigned below, once the list is filtered
                 name: info.name.clone(),
                 vendor: vendor_name(info.vendor),
@@ -171,13 +207,20 @@ fn enumerate_adapters(system_memory: u64, first_index: u32) -> Vec<GpuDevice> {
                 shared_total: None,
                 source,
                 shared_source: None,
-            }
+            };
+
+            (device, (info.vendor, info.device))
         })
-        .filter(|device| is_real_hardware(device.kind))
+        .filter(|(device, _)| is_real_hardware(device.kind))
         .enumerate()
-        .map(|(offset, device)| GpuDevice {
-            index: first_index.saturating_add(u32::try_from(offset).unwrap_or(0)),
-            ..device
+        .map(|(offset, (device, ids))| {
+            (
+                GpuDevice {
+                    index: first_index.saturating_add(u32::try_from(offset).unwrap_or(0)),
+                    ..device
+                },
+                ids,
+            )
         })
         .collect()
 }
@@ -241,7 +284,7 @@ fn vendor_name(vendor_id: u32) -> Option<String> {
 /// NVML and `wgpu` describe the same card with the same words but not always
 /// the same spacing or case, and a duplicate GPU on screen is worse than a
 /// slightly over-eager match.
-fn normalise(name: &str) -> String {
+pub(super) fn normalise(name: &str) -> String {
     name.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
