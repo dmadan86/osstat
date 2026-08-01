@@ -330,8 +330,8 @@ fn read_counter(
 ) -> Vec<(crate::gpu_memory::LuidKey, u64)> {
     use windows::Win32::Foundation::ERROR_SUCCESS;
     use windows::Win32::System::Performance::{
-        PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_LARGE, PDH_HCOUNTER, PdhAddEnglishCounterW,
-        PdhCollectQueryData, PdhGetFormattedCounterArrayW,
+        PDH_CSTATUS_VALID_DATA, PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_LARGE, PDH_HCOUNTER,
+        PdhAddEnglishCounterW, PdhCollectQueryData, PdhGetFormattedCounterArrayW,
     };
     use windows::core::PCWSTR;
 
@@ -416,10 +416,20 @@ fn read_counter(
             // reading up to that terminator stays inside the allocation.
             let name = unsafe { entry.szName.to_string() }.ok()?;
             let key = crate::gpu_memory::parse_luid_instance(&name)?;
-            // SAFETY: the union's `largeValue` arm is the one PDH wrote,
-            // because `PDH_FMT_LARGE` was the format requested in both calls
-            // above — the same value that selects this arm is what makes
-            // reading it valid.
+
+            // PDH's contract: FmtValue means nothing unless CStatus says the
+            // item carries valid data. An instance that disappeared between
+            // the sizing pass and the fill pass comes back with a non-valid
+            // status and whatever happened to be in the union, which must
+            // not be read as a measurement.
+            if entry.FmtValue.CStatus != PDH_CSTATUS_VALID_DATA {
+                return None;
+            }
+
+            // SAFETY: `CStatus` was just checked to be `PDH_CSTATUS_VALID_DATA`,
+            // which is PDH's guarantee that the `largeValue` arm — the one
+            // `PDH_FMT_LARGE` requested in both calls above — is the arm it
+            // wrote.
             let value = unsafe { entry.FmtValue.Anonymous.largeValue };
             u64::try_from(value).ok().map(|value| (key, value))
         })
