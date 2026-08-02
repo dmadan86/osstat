@@ -211,6 +211,13 @@ pub(crate) fn adapter_memory() -> Vec<crate::AdapterMemory> {
             .position(|unit| *unit == 0)
             .unwrap_or(desc.Description.len());
 
+        // `phys: 0` because DXGI describes the adapter, not the physical cards
+        // behind it. A linked pair — the counters emit `phys_0` and `phys_1`
+        // under one LUID — therefore reports only the first card's usage
+        // against the pair's shared total, which under-reads. Summing them is
+        // the obvious alternative and is not obviously right: the totals come
+        // from DXGI's single description, so a sum could exceed them. Left as
+        // the conservative read until a machine exists to check it against.
         let luid = crate::gpu_memory::LuidKey {
             high: crate::gpu_memory::luid_high(desc.AdapterLuid.HighPart),
             low: desc.AdapterLuid.LowPart,
