@@ -23,6 +23,7 @@ import {
   useSystemDescription,
   useTrayHidden,
 } from './lib/useLiveData';
+import { Chat } from './pages/Chat';
 import { Llm } from './pages/Llm';
 import { Overview } from './pages/Overview';
 import { Planned } from './pages/Planned';
@@ -195,6 +196,9 @@ function Page({
 
     case 'llm':
       return <Llm />;
+
+    case 'chat':
+      return <Chat />;
 
     case 'settings':
       return <Settings preferences={preferences} onChange={onPreferenceChange} />;

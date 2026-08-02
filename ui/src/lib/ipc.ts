@@ -17,13 +17,18 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart';
 
 import type { AppInfo } from '../bindings/AppInfo';
+import type { ChatComplete } from '../bindings/ChatComplete';
+import type { ChatFailure } from '../bindings/ChatFailure';
+import type { ChatToken } from '../bindings/ChatToken';
 import type { CloseBehaviour } from '../bindings/CloseBehaviour';
+import type { Conversation } from '../bindings/Conversation';
 import type { CriticalProcess } from '../bindings/CriticalProcess';
 import type { GpuDevice } from '../bindings/GpuDevice';
 import type { LlmAdvice } from '../bindings/LlmAdvice';
 import type { MetricsSample } from '../bindings/MetricsSample';
 import type { InstalledRuntimeInfo } from '../bindings/InstalledRuntimeInfo';
 import type { ModelRegistry } from '../bindings/ModelRegistry';
+import type { ModelSession } from '../bindings/ModelSession';
 import type { PortRecord } from '../bindings/PortRecord';
 import type { ProcessDiff } from '../bindings/ProcessDiff';
 import type { ProcessKey } from '../bindings/ProcessKey';
@@ -53,6 +58,13 @@ export const COMMANDS = {
   setCloseBehaviour: 'set_close_behaviour',
   terminateProcess: 'terminate_process',
   criticalProcesses: 'critical_processes',
+  chatOpenModel: 'chat_open_model',
+  chatSend: 'chat_send',
+  chatStop: 'chat_stop',
+  chatClose: 'chat_close',
+  chatList: 'chat_list',
+  chatLoad: 'chat_load',
+  chatDelete: 'chat_delete',
 } as const;
 
 /** Names of every event the Rust side emits. */
@@ -64,6 +76,9 @@ export const EVENTS = {
   runtimeProgress: 'runtime:progress',
   runtimeReady: 'runtime:ready',
   runtimeFailed: 'runtime:failed',
+  chatToken: 'chat:token',
+  chatComplete: 'chat:complete',
+  chatFailed: 'chat:failed',
 } as const;
 
 /**
@@ -202,6 +217,94 @@ export function onRuntimeReady(
  */
 export function onRuntimeFailed(handler: (failure: RuntimeFailure) => void): Promise<UnlistenFn> {
   return listen<RuntimeFailure>(EVENTS.runtimeFailed, (event) => {
+    handler(event.payload);
+  });
+}
+
+/**
+ * Opens a model file and starts a server for it.
+ *
+ * The result describes the model and what the launch settled on — never the
+ * port, the base URL or the session key. Those stay in Rust, which is the whole
+ * of ADR-012's argument: a compromised webview has no address to reach and no
+ * key to reach it with.
+ *
+ * @param path An absolute path to a GGUF file.
+ */
+export function chatOpenModel(path: string): Promise<ModelSession> {
+  return invoke<ModelSession>(COMMANDS.chatOpenModel, { path });
+}
+
+/**
+ * Sends one message and starts a reply.
+ *
+ * Resolves as soon as the work is spawned, not when the reply finishes: a long
+ * answer takes tens of seconds and would otherwise hold the command channel the
+ * rest of the app shares. The reply arrives on {@link onChatToken},
+ * {@link onChatComplete} and {@link onChatFailed}.
+ *
+ * @param conversationId Which conversation the message belongs to.
+ * @param text What the user typed.
+ */
+export async function chatSend(conversationId: string, text: string): Promise<void> {
+  await invoke(COMMANDS.chatSend, { conversationId, text });
+}
+
+/** Stops the reply currently streaming. The partial text is kept. */
+export async function chatStop(): Promise<void> {
+  await invoke(COMMANDS.chatStop);
+}
+
+/** Closes the open model and ends its server. Closing nothing succeeds. */
+export async function chatClose(): Promise<void> {
+  await invoke(COMMANDS.chatClose);
+}
+
+/** Every stored conversation, oldest first. */
+export function chatList(): Promise<Conversation[]> {
+  return invoke<Conversation[]>(COMMANDS.chatList);
+}
+
+/**
+ * Reads one stored conversation.
+ *
+ * @param id The conversation's identifier.
+ */
+export function chatLoad(id: string): Promise<Conversation> {
+  return invoke<Conversation>(COMMANDS.chatLoad, { id });
+}
+
+/**
+ * Deletes one stored conversation, removing its file.
+ *
+ * @param id The conversation's identifier.
+ */
+export async function chatDelete(id: string): Promise<void> {
+  await invoke(COMMANDS.chatDelete, { id });
+}
+
+/** Subscribes to each piece of text the model produces. */
+export function onChatToken(handler: (token: ChatToken) => void): Promise<UnlistenFn> {
+  return listen<ChatToken>(EVENTS.chatToken, (event) => {
+    handler(event.payload);
+  });
+}
+
+/** Subscribes to the end of a reply, however it ended. */
+export function onChatComplete(handler: (complete: ChatComplete) => void): Promise<UnlistenFn> {
+  return listen<ChatComplete>(EVENTS.chatComplete, (event) => {
+    handler(event.payload);
+  });
+}
+
+/**
+ * Subscribes to a reply that could not be finished.
+ *
+ * The payload carries the server's own words where it left any — an
+ * out-of-memory message is written to stderr and nowhere else.
+ */
+export function onChatFailed(handler: (failure: ChatFailure) => void): Promise<UnlistenFn> {
+  return listen<ChatFailure>(EVENTS.chatFailed, (event) => {
     handler(event.payload);
   });
 }

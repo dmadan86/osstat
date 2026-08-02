@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   formatBytes,
+  formatCount,
   formatDuration,
   formatFraction,
   formatFrequency,
@@ -54,6 +55,19 @@ describe('formatFraction', () => {
   it('renders a ratio as whole percent', () => {
     expect(formatFraction(0.66)).toBe('66%');
     expect(formatFraction(1)).toBe('100%');
+  });
+});
+
+describe('formatCount', () => {
+  it('groups thousands', () => {
+    expect(formatCount(44)).toBe('44');
+    expect(formatCount(1048)).toBe('1,048');
+    expect(formatCount(4096)).toBe('4,096');
+    expect(formatCount(131_072)).toBe('131,072');
+  });
+
+  it('reports a dash rather than NaN for nonsense input', () => {
+    expect(formatCount(Number.NaN)).toBe('—');
   });
 });
 
