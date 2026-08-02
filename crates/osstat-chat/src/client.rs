@@ -21,7 +21,12 @@ pub struct Message {
 }
 
 /// Token counts for one exchange.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+///
+/// `Serialize` as well as `Deserialize`: these counts are read off the wire,
+/// then stored with the message they belong to and shown in the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 pub struct Usage {
     /// Tokens in the prompt, including the whole conversation so far.
     pub prompt_tokens: u32,

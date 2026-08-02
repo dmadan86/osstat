@@ -9,6 +9,13 @@ homepage.workspace = true
 authors.workspace = true
 description = "Running a local llama.cpp server and talking to it"
 
+[features]
+default = []
+# Derives `ts_rs::TS` on the stored conversation types so `cargo test
+# --features ts-bindings` regenerates ui/src/bindings/ (ADR-002), the same
+# convention osstat-llm and osstat-inference use.
+ts-bindings = ["dep:ts-rs"]
+
 [dependencies]
 osstat-core = { workspace = true }
 osstat-llm = { workspace = true }
@@ -17,6 +24,7 @@ osstat-inference = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+ts-rs = { workspace = true, optional = true }
 # Already in Cargo.lock through Tauri and osstat-inference; no new HTTP stack.
 reqwest = { version = "0.13", default-features = false, features = [
   "rustls",
