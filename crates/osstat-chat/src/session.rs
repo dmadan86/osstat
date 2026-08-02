@@ -21,6 +21,13 @@ pub struct Launch {
     pub model: PathBuf,
     /// What the arithmetic in [`crate::plan`] chose.
     pub plan: LaunchPlan,
+    /// Where to record the child's [`ProcessKey`] so a later run can reap it.
+    ///
+    /// Passed in rather than derived, because this crate has no business
+    /// knowing where an application keeps its data — `src-tauri` resolves the
+    /// app-data directory and hands the file down. `None` writes nothing, which
+    /// is what the tests want: they own their children already.
+    pub record: Option<PathBuf>,
 }
 
 /// A running server.
@@ -33,6 +40,7 @@ pub struct Session {
     child: tokio::process::Child,
     stderr: Arc<Mutex<String>>,
     key: ProcessKey,
+    record: Option<PathBuf>,
 }
 
 /// A port nothing is listening on.
@@ -153,8 +161,29 @@ pub async fn start(launch: Launch) -> Result<Session, ChatError> {
             .map_or(0, |since| since.as_secs()),
     };
 
+    // Recorded before the health wait rather than after it. Loading a 30 GB
+    // model takes minutes, and a crash during those minutes is exactly when an
+    // orphaned server is most likely and most expensive — it would sit holding
+    // every byte of VRAM the weights occupy with nothing left to stop it.
+    // Waiting until `start` returns would leave that whole window unrecorded.
+    //
+    // A failed write is not fatal. Reaping is a safety net; refusing to run a
+    // model because the net could not be strung up would be the worse outcome.
+    if let Some(path) = &launch.record {
+        write_record(path, key);
+    }
+
     let base = format!("http://127.0.0.1:{port}");
-    wait_until_healthy(&base, &mut child, &stderr).await?;
+    if let Err(error) = wait_until_healthy(&base, &mut child, &stderr).await {
+        // The only way out of the wait is the child having died, so the record
+        // now names a corpse. `reap` would survive it — it re-reads the start
+        // time and refuses on a mismatch — but leaving the file would have the
+        // next launch chase a PID that is already gone for no reason.
+        if let Some(path) = &launch.record {
+            let _ = std::fs::remove_file(path);
+        }
+        return Err(error);
+    }
 
     Ok(Session {
         base,
@@ -162,7 +191,18 @@ pub async fn start(launch: Launch) -> Result<Session, ChatError> {
         child,
         stderr,
         key,
+        record: launch.record,
     })
+}
+
+/// Writes the child's identity where a later run will look for it.
+fn write_record(path: &std::path::Path, key: ProcessKey) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(text) = serde_json::to_string(&key) {
+        let _ = std::fs::write(path, text);
+    }
 }
 
 /// Polls `/health` until the model is loaded, or the child dies trying.
@@ -229,6 +269,14 @@ impl Session {
     pub async fn stop(mut self) -> Result<(), ChatError> {
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
+
+        // Removed only once the child is confirmed gone. Removing it first
+        // would open a window in which osstat has forgotten a process that is
+        // still running — the exact state the record exists to prevent.
+        if let Some(path) = &self.record {
+            let _ = std::fs::remove_file(path);
+        }
+
         Ok(())
     }
 }

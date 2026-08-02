@@ -24,22 +24,38 @@ pub struct Message {
 ///
 /// `Serialize` as well as `Deserialize`: these counts are read off the wire,
 /// then stored with the message they belong to and shown in the UI.
+/// Written in camelCase and read in either case. Everything crossing the IPC
+/// boundary is camelCase (ADR-002), but `llama-server` writes `snake_case` on the
+/// wire — so the alias accepts the server's spelling without making the webview
+/// the one type that speaks differently from every other payload. The aliases
+/// also mean conversations stored before this rename still load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts-bindings", ts(export))]
+#[serde(rename_all = "camelCase")]
 pub struct Usage {
     /// Tokens in the prompt, including the whole conversation so far.
+    #[serde(alias = "prompt_tokens")]
     pub prompt_tokens: u32,
     /// Tokens generated in reply.
+    #[serde(alias = "completion_tokens")]
     pub completion_tokens: u32,
 }
 
 /// Generation speeds, as `llama-server` reports them.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+///
+/// Same two-spelling arrangement as [`Usage`], and for the same reason: these
+/// figures are read off the wire and shown in the UI.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
+#[serde(rename_all = "camelCase")]
 pub struct Timings {
     /// Prompt processing rate. Absent until the prompt has been evaluated.
+    #[serde(alias = "prompt_per_second")]
     pub prompt_per_second: Option<f64>,
     /// Generation rate. Absent until at least one token has been produced.
+    #[serde(alias = "predicted_per_second")]
     pub predicted_per_second: Option<f64>,
 }
 
@@ -447,6 +463,38 @@ mod tests {
         assert!(
             reported.is_some_and(|message| message.contains("context is full")),
             "the server's own words were lost: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn figures_are_read_in_the_servers_spelling_and_written_in_the_webviews() {
+        // Two audiences, two spellings, one type. `llama-server` writes
+        // snake_case; every payload the webview sees is camelCase (ADR-002).
+        // Losing either direction is silent -- a renamed field deserialises to
+        // a default or serialises to a key the UI never reads.
+        let from_wire: Usage =
+            serde_json::from_str(r#"{"prompt_tokens":44,"completion_tokens":48}"#).unwrap();
+        assert_eq!(from_wire.prompt_tokens, 44);
+
+        let to_webview = serde_json::to_value(from_wire).unwrap();
+        let object = to_webview.as_object().unwrap();
+        assert!(object.contains_key("promptTokens"));
+        assert!(object.contains_key("completionTokens"));
+
+        // And back again, so a conversation stored today reloads tomorrow.
+        let round_trip: Usage = serde_json::from_value(to_webview).unwrap();
+        assert_eq!(round_trip, from_wire);
+
+        let timings: Timings =
+            serde_json::from_str(r#"{"prompt_per_second":32.3,"predicted_per_second":52.9}"#)
+                .unwrap();
+        assert_eq!(timings.predicted_per_second, Some(52.9));
+        assert!(
+            serde_json::to_value(timings)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("predictedPerSecond")
         );
     }
 }

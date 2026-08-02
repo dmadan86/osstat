@@ -8,6 +8,7 @@
 use osstat_chat::plan::LaunchPlan;
 use osstat_chat::session::{Launch, free_port, start};
 use osstat_chat::{ChatClient, ChatError, Message};
+use osstat_core::ProcessKey;
 use std::path::PathBuf;
 
 /// The stub binary Cargo just built, beside the test executable.
@@ -35,6 +36,7 @@ fn launch() -> Launch {
             context_length: 4096,
             fits: true,
         },
+        record: None,
     }
 }
 
@@ -166,6 +168,39 @@ fn a_child_that_dies_mid_stream_does_not_take_the_process_with_it() {
     assert_eq!(2 + 2, 4);
 
     runtime.block_on(session.stop()).unwrap();
+}
+
+#[test]
+fn a_started_session_records_its_child_and_forgets_it_on_stop() {
+    // The record is what survives a crash: without it, an osstat that died
+    // mid-session would leave a server holding VRAM with nothing left on the
+    // machine that knows to stop it. It has to exist while the child does and
+    // be gone once it is not, or the next launch reaps a stranger's PID.
+    let directory = tempfile::tempdir().unwrap();
+    let record = directory.path().join("session.json");
+
+    let runtime = runtime();
+    let session = runtime
+        .block_on(start(Launch {
+            record: Some(record.clone()),
+            ..launch()
+        }))
+        .unwrap();
+
+    let written = std::fs::read_to_string(&record).expect("no record was written");
+    let recorded: ProcessKey = serde_json::from_str(&written).unwrap();
+    assert_eq!(
+        recorded,
+        session.record(),
+        "the recorded identity is not this child's"
+    );
+
+    runtime.block_on(session.stop()).unwrap();
+
+    assert!(
+        !record.exists(),
+        "the record outlived the process it described"
+    );
 }
 
 #[test]

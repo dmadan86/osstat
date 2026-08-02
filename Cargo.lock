@@ -3296,6 +3296,7 @@ dependencies = [
 name = "osstat"
 version = "0.1.0"
 dependencies = [
+ "osstat-chat",
  "osstat-core",
  "osstat-inference",
  "osstat-llm",
@@ -3307,6 +3308,8 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-autostart",
  "tauri-plugin-single-instance",
+ "tempfile",
+ "tokio",
  "ts-rs",
 ]
 
