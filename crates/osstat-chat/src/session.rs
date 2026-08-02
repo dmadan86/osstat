@@ -134,9 +134,16 @@ pub async fn start(launch: Launch) -> Result<Session, ChatError> {
         .map_err(|error| ChatError::SpawnFailed(error.to_string()))?;
 
     let stderr = Arc::new(Mutex::new(String::new()));
+    // Kept so a failure can wait for the pipe to drain rather than racing it.
+    // Reading `stderr` the instant `try_wait` reports an exit returns whatever
+    // the reader happened to have copied by then, which on a fast exit is
+    // nothing at all — the child writes its reason and dies in the same breath.
+    // Linux lost that race consistently where Windows won it, and an empty
+    // `SpawnFailed("")` is precisely the shrug this design exists to prevent.
+    let mut drained = None;
     if let Some(pipe) = child.stderr.take() {
         let sink = Arc::clone(&stderr);
-        tokio::spawn(async move {
+        drained = Some(tokio::spawn(async move {
             use tokio::io::AsyncBufReadExt as _;
             let mut lines = tokio::io::BufReader::new(pipe).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -151,7 +158,7 @@ pub async fn start(launch: Launch) -> Result<Session, ChatError> {
                     }
                 }
             }
-        });
+        }));
     }
 
     let key = ProcessKey {
@@ -174,7 +181,7 @@ pub async fn start(launch: Launch) -> Result<Session, ChatError> {
     }
 
     let base = format!("http://127.0.0.1:{port}");
-    if let Err(error) = wait_until_healthy(&base, &mut child, &stderr).await {
+    if let Err(error) = wait_until_healthy(&base, &mut child, &stderr, drained).await {
         // The only way out of the wait is the child having died, so the record
         // now names a corpse. `reap` would survive it — it re-reads the start
         // time and refuses on a mismatch — but leaving the file would have the
@@ -215,21 +222,36 @@ async fn wait_until_healthy(
     base: &str,
     child: &mut tokio::process::Child,
     stderr: &Arc<Mutex<String>>,
+    drained: Option<tokio::task::JoinHandle<()>>,
 ) -> Result<(), ChatError> {
     let http = reqwest::Client::new();
 
     loop {
         if let Ok(Some(_)) = child.try_wait() {
-            // The pump reads to EOF, which happens when the child exits, but
-            // the task may not have been scheduled yet. Yielding once gives it
-            // the chance to drain rather than losing the message that explains
-            // the failure.
-            tokio::task::yield_now().await;
+            // Wait for the reader to finish rather than hoping it has run. It
+            // ends when the pipe reaches EOF, and the pipe reaches EOF because
+            // the child just exited — so this returns promptly and, unlike a
+            // yield or a sleep, it cannot return early. A single yield is what
+            // was here before, and Linux lost that race every time while
+            // Windows won it, producing `SpawnFailed("")`: an error whose whole
+            // job is to carry the reason, arriving with the reason missing.
+            if let Some(handle) = drained {
+                let _ = handle.await;
+            }
+
             let tail = stderr.lock().map_or_else(
                 |_| String::from("(stderr unavailable)"),
                 |held| held.clone(),
             );
-            return Err(ChatError::SpawnFailed(tail));
+
+            // Even a drained pipe can be empty — a child killed by a signal
+            // writes nothing. Say which happened rather than returning an empty
+            // string the UI would render as a blank error.
+            return Err(ChatError::SpawnFailed(if tail.trim().is_empty() {
+                String::from("the process exited without writing a reason")
+            } else {
+                tail
+            }));
         }
 
         if let Ok(response) = http.get(format!("{base}/health")).send().await
