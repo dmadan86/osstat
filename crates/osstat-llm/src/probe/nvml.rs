@@ -49,7 +49,9 @@ impl Nvidia {
                     backend: Some("NVML".to_owned()),
                     kind: GpuKind::Discrete,
                     vram_total: device.memory_info().ok().map(|memory| memory.total),
+                    shared_total: None,
                     source: GpuSource::Nvml,
+                    shared_source: None,
                 })
             })
             .collect()
@@ -90,6 +92,7 @@ impl Nvidia {
                         .ok()
                         .map(|rates| rates.gpu as f32),
                     vram_used: device.memory_info().ok().map(|memory| memory.used),
+                    shared_used: None,
                     #[allow(
                         clippy::cast_precision_loss,
                         reason = "temperature is a small integer in degrees Celsius"

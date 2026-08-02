@@ -13,12 +13,14 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod gpu_memory;
 pub mod netstat_source;
 pub mod sysinfo_source;
 
 mod identity;
 pub mod terminate;
 
+pub use gpu_memory::AdapterMemory;
 pub use netstat_source::NetstatSource;
 pub use sysinfo_source::SysinfoSource;
 pub use terminate::Terminator;
@@ -89,6 +91,16 @@ pub const fn current() -> PlatformId {
 #[must_use]
 pub const fn display_name() -> &'static str {
     imp::DISPLAY_NAME
+}
+
+/// Reads every adapter's memory pools, or nothing where the platform has no
+/// source for them.
+///
+/// An empty list is a success, not a failure — the same convention
+/// `GpuProvider::devices` uses for a machine with no GPU.
+#[must_use]
+pub fn adapter_memory() -> Vec<AdapterMemory> {
+    imp::adapter_memory()
 }
 
 /// Makes a file runnable by its owner.

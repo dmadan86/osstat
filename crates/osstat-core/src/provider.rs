@@ -140,7 +140,9 @@ mod tests {
                 backend: Some("Vulkan".into()),
                 kind: GpuKind::Discrete,
                 vram_total: None,
+                shared_total: None,
                 source: GpuSource::Wgpu,
+                shared_source: None,
             }])
         }
 

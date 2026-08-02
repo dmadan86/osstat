@@ -3349,6 +3349,7 @@ dependencies = [
  "jsonschema",
  "nvml-wrapper",
  "osstat-core",
+ "osstat-platform",
  "serde",
  "serde_json",
  "ts-rs",

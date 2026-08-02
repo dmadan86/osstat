@@ -511,7 +511,9 @@ mod tests {
             backend: None,
             kind: GpuKind::Discrete,
             vram_total,
+            shared_total: None,
             source: GpuSource::Wgpu,
+            shared_source: None,
         }
     }
 
@@ -884,5 +886,51 @@ mod tests {
         let breakdown = json["breakdown"].as_object().unwrap();
         assert!(breakdown.contains_key("quantizedWeightBytes"));
         assert!(breakdown.contains_key("totalRequiredBytes"));
+    }
+
+    // -- shared memory isolation --------------------------------------------------
+
+    #[test]
+    fn shared_memory_never_counts_as_vram() {
+        // Shared memory is system RAM reached across PCIe -- roughly 30-80 GB/s
+        // against 400-1000 GB/s for on-card VRAM. A model that "fits" by
+        // spilling into it does not fit in any sense the user means.
+        //
+        // The calculator already has the honest verdict for this: system memory
+        // is weighed separately and the outcome is CpuOffload, with an estimate
+        // of layers moved. Letting shared memory inflate vram_bytes would turn
+        // that into a false "fits in VRAM" -- which ADR-008 names as the most
+        // damaging thing this feature could do.
+        let devices = vec![GpuDevice {
+            vram_total: None,
+            shared_total: Some(17_179_869_184),
+            shared_source: Some(GpuSource::Dxgi),
+            ..device(None)
+        }];
+
+        let budget = select_gpu_budget(&devices);
+
+        assert_eq!(
+            budget.vram_bytes, None,
+            "a 16 GB shared pool is not 16 GB of VRAM"
+        );
+        assert!(
+            budget.present,
+            "the GPU is still there; only its VRAM is unknown"
+        );
+    }
+
+    #[test]
+    fn a_shared_pool_does_not_inflate_a_real_vram_figure() {
+        let devices = vec![GpuDevice {
+            vram_total: Some(8_589_934_592),
+            shared_total: Some(17_179_869_184),
+            shared_source: Some(GpuSource::Dxgi),
+            ..device(Some(8_589_934_592))
+        }];
+
+        let budget = select_gpu_budget(&devices);
+
+        assert_eq!(budget.vram_bytes, Some(8_589_934_592));
     }
 }

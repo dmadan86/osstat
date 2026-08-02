@@ -153,6 +153,297 @@ fn post_close_to_windows_of(pid: u32) -> u32 {
     target.posted
 }
 
+/// Reads every hardware adapter's memory totals from DXGI.
+///
+/// Deliberately *not* `IDXGIAdapter3::QueryVideoMemoryInfo`. It looks exactly
+/// right and is not: Microsoft documents its `CurrentUsage` as "the
+/// application's current video memory usage", making it a budgeting API for a
+/// process to manage its own footprint. Reading it would put osstat's own
+/// memory on screen under a label claiming to describe the machine. Live usage
+/// comes from the performance counters instead.
+#[allow(
+    unsafe_code,
+    reason = "CreateDXGIFactory1, EnumAdapters1 and GetDesc1 are raw Win32 \
+              calls with no safe wrapper. Each block below states its own \
+              invariant, and nothing borrowed from the OS outlives its call."
+)]
+pub(crate) fn adapter_memory() -> Vec<crate::AdapterMemory> {
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIAdapter1, IDXGIFactory1,
+    };
+
+    // SAFETY: takes no arguments and returns a COM interface or an error. A
+    // machine without DXGI — Windows Server core, some containers — errors
+    // here, which is an ordinary empty answer rather than a failure.
+    let Ok(factory) = (unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }) else {
+        return Vec::new();
+    };
+
+    let mut adapters = Vec::new();
+
+    for index in 0.. {
+        // SAFETY: `factory` is a live COM interface — CreateDXGIFactory1
+        // returned Ok above, and it is not released for the loop's duration.
+        // The call returns DXGI_ERROR_NOT_FOUND once `index` passes the last
+        // adapter, which is this loop's exit condition.
+        let Ok(adapter) = (unsafe { factory.EnumAdapters1(index) }) else {
+            break;
+        };
+
+        // SAFETY: `adapter` is a valid interface, just returned Ok by
+        // EnumAdapters1 above and still owned here. GetDesc1 in windows 0.62
+        // returns the description by value rather than writing through a
+        // caller pointer, so there is no buffer or lifetime to get wrong.
+        let Ok(desc) = (unsafe { IDXGIAdapter1::GetDesc1(&adapter) }) else {
+            continue;
+        };
+
+        // The Microsoft Basic Render Driver is a CPU rasteriser Windows always
+        // enumerates. The GPU probe already excludes it from the device list;
+        // DXGI enumerates independently, so the exclusion is made again here.
+        if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
+            continue;
+        }
+
+        let end = desc
+            .Description
+            .iter()
+            .position(|unit| *unit == 0)
+            .unwrap_or(desc.Description.len());
+
+        // `phys: 0` because DXGI describes the adapter, not the physical cards
+        // behind it. A linked pair — the counters emit `phys_0` and `phys_1`
+        // under one LUID — therefore reports only the first card's usage
+        // against the pair's shared total, which under-reads. Summing them is
+        // the obvious alternative and is not obviously right: the totals come
+        // from DXGI's single description, so a sum could exceed them. Left as
+        // the conservative read until a machine exists to check it against.
+        let luid = crate::gpu_memory::LuidKey {
+            high: crate::gpu_memory::luid_high(desc.AdapterLuid.HighPart),
+            low: desc.AdapterLuid.LowPart,
+            phys: 0,
+        };
+
+        adapters.push((
+            luid,
+            crate::AdapterMemory {
+                pci_vendor: desc.VendorId,
+                pci_device: desc.DeviceId,
+                name: Some(String::from_utf16_lossy(&desc.Description[..end])),
+                vram_total: u64::try_from(desc.DedicatedVideoMemory)
+                    .ok()
+                    .and_then(crate::gpu_memory::non_zero),
+                vram_used: None,
+                shared_total: u64::try_from(desc.SharedSystemMemory)
+                    .ok()
+                    .and_then(crate::gpu_memory::non_zero),
+                shared_used: None,
+                source: osstat_core::GpuSource::Dxgi,
+            },
+        ));
+    }
+
+    let usage = usage_by_adapter();
+
+    adapters
+        .into_iter()
+        .map(|(luid, mut reading)| {
+            if let Some(measured) = usage.get(&luid) {
+                // A usage figure with no total cannot be drawn as a meter, so
+                // it is taken only where the total came through.
+                reading.vram_used = reading.vram_total.and(measured.dedicated);
+                reading.shared_used = reading.shared_total.and(measured.shared);
+            }
+            reading
+        })
+        .collect()
+}
+
+/// Both `GPU Adapter Memory` counters for one adapter.
+#[derive(Debug, Default, Clone, Copy)]
+struct Usage {
+    /// Dedicated video memory in use, in bytes.
+    dedicated: Option<u64>,
+    /// Borrowed system memory in use, in bytes.
+    shared: Option<u64>,
+}
+
+/// The counter path for dedicated usage, in locale-invariant English.
+const DEDICATED_USAGE: &str = r"\GPU Adapter Memory(*)\Dedicated Usage";
+/// The counter path for shared usage, in locale-invariant English.
+const SHARED_USAGE: &str = r"\GPU Adapter Memory(*)\Shared Usage";
+
+/// Reads both counters for every adapter, keyed by LUID.
+///
+/// An empty map means the counter set is unavailable — a container, a stripped
+/// install, or a machine whose performance counters are disabled. That is an
+/// absent figure, never a zero.
+#[allow(
+    unsafe_code,
+    reason = "the Pdh* family is raw Win32 with no safe wrapper; each block \
+              states its own invariant and the query handle is closed on \
+              every path out"
+)]
+fn usage_by_adapter() -> std::collections::HashMap<crate::gpu_memory::LuidKey, Usage> {
+    use std::collections::HashMap;
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::System::Performance::{PDH_HQUERY, PdhCloseQuery, PdhOpenQueryW};
+
+    let mut query = PDH_HQUERY::default();
+
+    // SAFETY: `query` is a valid out-param — a local `PDH_HQUERY::default()`
+    // — and `None` is a documented valid `szDataSource` meaning "the local
+    // machine's real-time counters". PdhOpenQueryW writes a handle into
+    // `query` only when it returns success, which is checked below.
+    if unsafe { PdhOpenQueryW(None, 0, &raw mut query) } != ERROR_SUCCESS.0 {
+        return HashMap::new();
+    }
+
+    let mut usage: HashMap<crate::gpu_memory::LuidKey, Usage> = HashMap::new();
+
+    for (path, is_dedicated) in [(DEDICATED_USAGE, true), (SHARED_USAGE, false)] {
+        for (key, value) in read_counter(query, path) {
+            let entry = usage.entry(key).or_default();
+            if is_dedicated {
+                entry.dedicated = crate::gpu_memory::non_zero(value);
+            } else {
+                entry.shared = crate::gpu_memory::non_zero(value);
+            }
+        }
+    }
+
+    // SAFETY: `query` was successfully opened by PdhOpenQueryW above, is not
+    // shared with any other thread, and is not read again after this call.
+    let _ = unsafe { PdhCloseQuery(query) };
+
+    usage
+}
+
+/// Adds one wildcard counter to an open query and reads every instance.
+///
+/// The counter is added by its **English** name. PDH resolves counter paths
+/// against the installed display language, so `PdhAddCounterW` with an English
+/// path returns `PDH_CSTATUS_NO_OBJECT` on a German or Japanese Windows — a
+/// defect that passes every test on an English machine and fails silently for
+/// a whole class of users.
+#[allow(
+    unsafe_code,
+    reason = "the Pdh* family is raw Win32 with no safe wrapper; the two-pass \
+              buffer protocol is PDH's own documented contract"
+)]
+fn read_counter(
+    query: windows::Win32::System::Performance::PDH_HQUERY,
+    path: &str,
+) -> Vec<(crate::gpu_memory::LuidKey, u64)> {
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::System::Performance::{
+        PDH_CSTATUS_VALID_DATA, PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_LARGE, PDH_HCOUNTER,
+        PdhAddEnglishCounterW, PdhCollectQueryData, PdhGetFormattedCounterArrayW,
+    };
+    use windows::core::PCWSTR;
+
+    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut counter = PDH_HCOUNTER::default();
+
+    // SAFETY: `wide` is NUL-terminated, as PCWSTR requires, and it is not
+    // dropped until after the call returns, so the pointer stays valid for
+    // the read PDH performs. `counter` is a local out-param.
+    if unsafe { PdhAddEnglishCounterW(query, PCWSTR(wide.as_ptr()), 0, &raw mut counter) }
+        != ERROR_SUCCESS.0
+    {
+        return Vec::new();
+    }
+
+    // Both counters are raw gauges, not rates, so one collection yields a
+    // value — unlike a rate counter, which needs two separated in time.
+    // SAFETY: `query` was opened by the caller and still owns `counter`,
+    // just added to it above; neither is used from another thread.
+    if unsafe { PdhCollectQueryData(query) } != ERROR_SUCCESS.0 {
+        return Vec::new();
+    }
+
+    let mut bytes = 0_u32;
+    let mut items = 0_u32;
+
+    // Sizing pass: with no buffer, PDH reports how large one must be. This
+    // "fails" with PDH_MORE_DATA, which is the documented success path here.
+    // SAFETY: `bytes` and `items` are owned local out-params PDH writes
+    // through; passing `None` for the buffer is the documented way to ask
+    // for the required size instead of dereferencing anything.
+    let _ = unsafe {
+        PdhGetFormattedCounterArrayW(counter, PDH_FMT_LARGE, &raw mut bytes, &raw mut items, None)
+    };
+
+    if items == 0 || bytes == 0 {
+        return Vec::new();
+    }
+
+    // PDH's reported `bytes` covers the fixed-size struct array *and* the
+    // counter-instance-name strings it packs in after that array, so it is
+    // not simply `items * size_of::<PDH_FMT_COUNTERVALUE_ITEM_W>()`. Rounding
+    // up guarantees at least that many bytes of backing storage. Allocating
+    // the buffer as `Vec<PDH_FMT_COUNTERVALUE_ITEM_W>` rather than
+    // `Vec<u8>` gives it the struct's own alignment instead of `u8`'s, which
+    // is what makes writing typed structs into it, and reading them back
+    // without a raw cast, sound.
+    let item_size = std::mem::size_of::<PDH_FMT_COUNTERVALUE_ITEM_W>().max(1);
+    let capacity = (bytes as usize).div_ceil(item_size);
+    let mut buffer = vec![PDH_FMT_COUNTERVALUE_ITEM_W::default(); capacity];
+
+    // SAFETY: `buffer` holds `capacity * item_size` bytes, at least the
+    // `bytes` PDH itself reported in the sizing pass immediately above, and
+    // is aligned to `PDH_FMT_COUNTERVALUE_ITEM_W` rather than to `u8`, so
+    // PDH's write — the struct array followed by the packed instance-name
+    // strings — lands on valid, correctly aligned memory. It outlives the
+    // call.
+    let status = unsafe {
+        PdhGetFormattedCounterArrayW(
+            counter,
+            PDH_FMT_LARGE,
+            &raw mut bytes,
+            &raw mut items,
+            Some(buffer.as_mut_ptr()),
+        )
+    };
+
+    if status != ERROR_SUCCESS.0 {
+        return Vec::new();
+    }
+
+    // Clamped defensively: `items` is reported by the same call that just
+    // filled `buffer`, so it should already fit, but nothing prevents
+    // indexing past the end of a `Vec` from panicking if it somehow did not.
+    let count = (items as usize).min(buffer.len());
+
+    buffer[..count]
+        .iter()
+        .filter_map(|entry| {
+            // SAFETY: `szName` points into `buffer`, which is still alive
+            // here, and PDH NUL-terminates every instance name it writes, so
+            // reading up to that terminator stays inside the allocation.
+            let name = unsafe { entry.szName.to_string() }.ok()?;
+            let key = crate::gpu_memory::parse_luid_instance(&name)?;
+
+            // PDH's contract: FmtValue means nothing unless CStatus says the
+            // item carries valid data. An instance that disappeared between
+            // the sizing pass and the fill pass comes back with a non-valid
+            // status and whatever happened to be in the union, which must
+            // not be read as a measurement.
+            if entry.FmtValue.CStatus != PDH_CSTATUS_VALID_DATA {
+                return None;
+            }
+
+            // SAFETY: `PDH_FMT_LARGE` was the format requested in both
+            // PdhGetFormattedCounterArrayW calls above, which determines that
+            // `largeValue` is the union arm PDH populated. Separately, the
+            // `CStatus` check immediately above guarantees the value in that arm
+            // is a real measurement, not stale data from a vanished instance.
+            let value = unsafe { entry.FmtValue.Anonymous.largeValue };
+            u64::try_from(value).ok().map(|value| (key, value))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]

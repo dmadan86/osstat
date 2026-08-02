@@ -3,4 +3,4 @@
 /**
  * Where a GPU figure came from, and therefore how much it can be trusted.
  */
-export type GpuSource = "nvml" | "wgpu" | "unifiedMemory";
+export type GpuSource = "nvml" | "dxgi" | "drmSysfs" | "wgpu" | "unifiedMemory";

@@ -91,7 +91,9 @@ const GPU: GpuDevice = {
   backend: 'NVML',
   kind: 'discrete',
   vramTotal: 8_589_934_592,
+  sharedTotal: null,
   source: 'nvml',
+  sharedSource: null,
 };
 
 /** Routes each command to its canned answer. */
@@ -286,6 +288,137 @@ describe('App', () => {
     await screen.findByText('TESTBOX');
 
     expect(await screen.findByText(/No GPU was found/)).toBeInTheDocument();
+  });
+
+  it('shows both pools when both are known', async () => {
+    // Distinct magnitudes and a matching sample: a swap between the two
+    // PoolMeter calls (dedicated fed sharedUsed, shared fed vramUsed) would
+    // leave both meters present and correctly labelled, so presence and
+    // label alone cannot catch it. aria-valuenow reads the fraction each
+    // meter actually renders, which a swap would visibly invert.
+    respond({
+      gpu_devices: [
+        {
+          ...GPU,
+          vramTotal: 8_000_000_000,
+          sharedTotal: 16_000_000_000,
+          source: 'nvml',
+          sharedSource: 'dxgi',
+        },
+      ],
+      metrics_history: [
+        {
+          ...SAMPLE,
+          gpus: [
+            {
+              index: 0,
+              utilisation: null,
+              vramUsed: 2_000_000_000, // 25% of the dedicated pool
+              sharedUsed: 800_000_000, // 5% of the shared pool
+              temperatureC: null,
+            },
+          ],
+        },
+      ],
+    });
+    render(<App />);
+    await screen.findByText('TESTBOX');
+
+    const dedicated = await screen.findByRole('meter', { name: 'Dedicated memory' });
+    expect(dedicated).toHaveAttribute('aria-valuenow', '25');
+    const shared = await screen.findByRole('meter', { name: 'Shared memory' });
+    expect(shared).toHaveAttribute('aria-valuenow', '5');
+  });
+
+  it('draws no dedicated meter for an adapter with no video memory of its own', async () => {
+    // An integrated GPU on Windows: DXGI reports DedicatedVideoMemory 0, which
+    // the probe normalises to absent. A meter reading "0 GB of 0 GB" says
+    // nothing and implies a pool that does not exist.
+    respond({
+      gpu_devices: [
+        {
+          ...GPU,
+          name: 'Intel(R) UHD Graphics 770',
+          kind: 'integrated',
+          vramTotal: null,
+          sharedTotal: 17_179_869_184,
+          source: 'dxgi',
+          sharedSource: 'dxgi',
+        },
+      ],
+    });
+    render(<App />);
+    await screen.findByText('TESTBOX');
+
+    expect(await screen.findByRole('meter', { name: 'Shared memory' })).toBeInTheDocument();
+    expect(screen.queryByRole('meter', { name: 'Dedicated memory' })).not.toBeInTheDocument();
+  });
+
+  it('marks each pool estimated according to its own source', async () => {
+    // The front-end half of carrying two sources: an NVML dedicated figure and
+    // a DXGI shared one are both measurements, and neither may be labelled a
+    // guess because the other exists.
+    respond({
+      gpu_devices: [
+        {
+          ...GPU,
+          vramTotal: 8_589_934_592,
+          sharedTotal: 17_179_869_184,
+          source: 'nvml',
+          sharedSource: 'dxgi',
+        },
+      ],
+    });
+    render(<App />);
+    await screen.findByText('TESTBOX');
+
+    await screen.findByRole('meter', { name: 'Dedicated memory' });
+    expect(screen.queryByText(/estimated/)).not.toBeInTheDocument();
+  });
+
+  it('does not let a measured pool lend its credibility to an estimated one', async () => {
+    // The case sharedSource exists for: two pools, two sources, disagreeing.
+    // If the shared meter read gpu.source instead of gpu.sharedSource, it
+    // would inherit NVML's "measured" and silently drop the caveat.
+    respond({
+      gpu_devices: [
+        {
+          ...GPU,
+          vramTotal: 8_589_934_592,
+          sharedTotal: 17_179_869_184,
+          source: 'nvml',
+          sharedSource: 'wgpu',
+        },
+      ],
+    });
+    render(<App />);
+    await screen.findByText('TESTBOX');
+
+    await screen.findByRole('meter', { name: 'Shared memory' });
+    // Exactly one "estimated" caveat: the shared pool's. The dedicated pool
+    // is measured and must not gain one.
+    expect(screen.getAllByText(/estimated/)).toHaveLength(1);
+  });
+
+  it('still says nothing when neither pool is known', async () => {
+    respond({
+      gpu_devices: [
+        {
+          ...GPU,
+          source: 'wgpu',
+          vramTotal: null,
+          sharedTotal: null,
+          sharedSource: null,
+          backend: 'Vulkan',
+        },
+      ],
+    });
+    render(<App />);
+    await screen.findByText('TESTBOX');
+
+    expect(
+      await screen.findByText(/Video memory is not reported by this source/)
+    ).toBeInTheDocument();
   });
 
   it('explains the tray only after a hide actually happens, not on a fresh launch', async () => {

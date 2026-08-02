@@ -34,6 +34,27 @@ kind: GpuKind,
  */
 vramTotal: number | null, 
 /**
+ * System memory this GPU may borrow when its own is exhausted, in bytes.
+ *
+ * `None` where the platform has no such pool — Apple unified memory is one
+ * pool, not two — or where it has one that cannot be measured. Never
+ * synthesised from system RAM: a figure that resembles the true answer is
+ * indistinguishable from a measurement until it is wrong.
+ */
+sharedTotal: number | null, 
+/**
  * Which probe produced this device, and how far to trust its numbers.
  */
-source: GpuSource, };
+source: GpuSource, 
+/**
+ * Where the shared figures came from, when that is not [`GpuDevice::source`].
+ *
+ * An NVIDIA card on Windows carries two sources at once: NVML measures the
+ * dedicated pool, and only the performance counters measure the shared
+ * one. One field cannot say that, and collapsing it would label one
+ * figure with another figure's provenance — which is what ADR-008 exists
+ * to prevent.
+ *
+ * `Some` if and only if [`GpuDevice::shared_total`] is `Some`.
+ */
+sharedSource: GpuSource | null, };
