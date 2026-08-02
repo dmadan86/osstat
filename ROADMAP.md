@@ -123,12 +123,18 @@ executable behind.
 
 ### M4.2–M4.4 — Running a model
 
-- [ ] **M4.2** Model acquisition: Hugging Face search, resumable GGUF download,
-      local file import, GGUF header parsing reconciled against the registry
-- [ ] **M4.3** Inference session: spawn with the advisor's `gpu_layers`,
-      supervise, stream, cancel, tear down without orphaning the process
-- [ ] **M4.4** Chat: conversation store, streaming UI, markdown, system prompt
-      and sampling controls, live tokens/sec and context meters
+- [ ] **M4.2** Model acquisition: Hugging Face search and resumable GGUF
+      download. Local file import and GGUF header parsing landed with M4.3,
+      so this now adds downloading to a chat that already works.
+- [x] **M4.3** Inference session: spawn with layer and context counts computed
+      from the model file, supervise, stream, cancel, tear down without
+      orphaning the process ([ADR-013](docs/adr/ADR-013-inference-session.md))
+- [x] **M4.4** Chat: conversation store, streaming UI, system prompt, live
+      tokens/sec and context meters. Output is plain text with fenced code
+      blocks rather than rendered markdown, so no HTML is built from model
+      output; sampling controls are deferred until a use case asks for them.
+- [ ] **M4.5** Verified by hand on Linux and macOS. Only Windows has been
+      exercised against a real model.
 
 ---
 
