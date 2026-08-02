@@ -10,10 +10,12 @@
 
 #![forbid(unsafe_code)]
 
+pub mod client;
 pub mod error;
 pub mod gguf;
 pub mod plan;
 
+pub use client::{ChatClient, Message, StreamEvent, Timings, Usage};
 pub use error::ChatError;
 pub use gguf::{ModelFile, parse};
 pub use plan::{DEFAULT_CONTEXT_CEILING, LaunchPlan, plan_launch};
