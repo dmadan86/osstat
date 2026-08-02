@@ -55,6 +55,19 @@ pub const fn non_zero(value: u64) -> Option<u64> {
     if value == 0 { None } else { Some(value) }
 }
 
+/// Carries a LUID's `HighPart` into the unsigned half of a [`LuidKey`].
+///
+/// `LUID::HighPart` is an `i32`, but the counter instance name spells the same
+/// 32 bits as eight hex digits, which [`parse_luid_instance`] reads straight
+/// into a `u32`. The two sides have to agree for every bit pattern, not only
+/// the ones that happen to be positive, so the conversion preserves bits rather
+/// than range: `u32::try_from` would reject a negative `HighPart`, and any
+/// value substituted for it keys a real usage figure to no adapter at all.
+#[must_use]
+pub const fn luid_high(high_part: i32) -> u32 {
+    high_part.cast_unsigned()
+}
+
 /// Parses a `GPU Adapter Memory` instance name into the adapter it identifies.
 ///
 /// Instances are `luid_0xHHHHHHHH_0xLLLLLLLL_phys_N`. Anything else — an
@@ -125,6 +138,21 @@ mod tests {
                 "{bad:?} should not have parsed"
             );
         }
+    }
+
+    #[test]
+    fn a_luid_high_part_reaches_the_key_as_the_instance_name_spells_it() {
+        // The DXGI side and the counter side have to agree on every bit
+        // pattern. A negative HighPart is the case where a range-checked
+        // conversion would give up and substitute something -- and a
+        // substituted key matches no instance, so the adapter would keep its
+        // totals and silently lose both usage figures.
+        assert_eq!(luid_high(0), 0);
+        assert_eq!(luid_high(0x0001_068c), 0x0001_068c);
+        assert_eq!(luid_high(-1), 0xffff_ffff);
+
+        let key = parse_luid_instance("luid_0xffffffff_0x0001068c_phys_0").unwrap();
+        assert_eq!(key.high, luid_high(-1));
     }
 
     #[test]

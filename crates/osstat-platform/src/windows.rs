@@ -212,7 +212,7 @@ pub(crate) fn adapter_memory() -> Vec<crate::AdapterMemory> {
             .unwrap_or(desc.Description.len());
 
         let luid = crate::gpu_memory::LuidKey {
-            high: u32::try_from(desc.AdapterLuid.HighPart).unwrap_or(0),
+            high: crate::gpu_memory::luid_high(desc.AdapterLuid.HighPart),
             low: desc.AdapterLuid.LowPart,
             phys: 0,
         };
