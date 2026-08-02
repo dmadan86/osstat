@@ -1848,6 +1848,18 @@ fn a_child_that_dies_mid_stream_does_not_take_the_process_with_it() {
 }
 
 #[test]
+fn two_sessions_do_not_share_an_api_key() {
+    // A key derived from the clock would repeat across two sessions started
+    // in the same instant, which is exactly when two sessions are started.
+    use osstat_chat::session::random_api_key;
+
+    let keys: std::collections::HashSet<String> = (0..16).map(|_| random_api_key()).collect();
+
+    assert_eq!(keys.len(), 16, "keys repeated: {keys:?}");
+    assert!(keys.iter().all(|key| key.len() >= 32));
+}
+
+#[test]
 fn free_port_hands_out_a_port_that_can_actually_be_bound() {
     let port = free_port().unwrap();
 
@@ -1955,17 +1967,26 @@ pub fn free_port() -> Result<u16, ChatError> {
 }
 
 /// A key for one session, never written to disk and never sent to the webview.
+///
+/// Seeded from `RandomState`, which the standard library seeds from the
+/// operating system. Reading the clock instead — the obvious no-dependency
+/// approach — would be worse than it looks: four reads in a tight loop differ
+/// only in their last digits, so the "key" would be largely predictable from
+/// the moment the session started.
+///
+/// This is not a secret against a determined local attacker with the ability
+/// to read this process's memory. It stops other software on the machine from
+/// stumbling onto an open inference endpoint, which is the actual risk of
+/// binding a port.
 #[must_use]
 pub fn random_api_key() -> String {
-    // Not a cryptographic secret against a determined local attacker -- it
-    // stops other software on the machine from stumbling onto an open
-    // inference endpoint, which is the actual risk of binding a port.
-    let mut key = String::with_capacity(32);
-    for _ in 0..4 {
-        let slice = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.subsec_nanos());
-        key.push_str(&format!("{slice:08x}"));
+    use std::hash::{BuildHasher as _, Hasher as _};
+
+    let mut key = String::with_capacity(48);
+    for counter in 0..3_u64 {
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_u64(counter);
+        key.push_str(&format!("{:016x}", hasher.finish()));
     }
     key
 }
