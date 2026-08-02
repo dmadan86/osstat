@@ -106,6 +106,50 @@ A way to make osstat execute a binary that does not match its pinned hash is a
 critical vulnerability. So is a way to make an archive write outside its
 directory, or to reach the runtime's HTTP port from off the machine.
 
+### 6. Running a model, and what the chat keeps
+
+Threat 5 covers acquiring the runtime. Running it adds two surfaces: a live
+local HTTP server, and conversations stored on disk (ADR-013).
+
+The server osstat starts:
+
+- Binds `127.0.0.1` on an OS-allocated port, never a fixed one and never
+  `0.0.0.0`.
+- Carries a random per-session key, seeded from the OS. Nothing else on the
+  machine can drive the model through that port without it. The key is never
+  written to disk and never sent to the webview.
+- Runs with `--no-webui`. `llama-server` serves its own chat application by
+  default; osstat does not put an unrequested web app on a local port.
+- Is **never** given `--tools` or `--agent`, which enable built-in tools
+  including `exec_shell_command` and `write_file`.
+- Dies when you leave the chat page, and is reaped on next launch if osstat was
+  killed before it could. Reaping re-reads the recorded PID's start time and
+  refuses on a mismatch, so a recycled PID is never signalled (threat 1's
+  identity check, reused).
+
+What the chat stores:
+
+- **Conversations are written to disk**, one JSON file each, under osstat's
+  app-data directory (`%APPDATA%\dev.osstat.app\conversations` on Windows,
+  `~/.local/share/dev.osstat.app/conversations` on Linux,
+  `~/Library/Application Support/dev.osstat.app/conversations` on macOS).
+- **They are not encrypted.** Anything you type into the chat, and anything the
+  model replies, is readable by any process running as you.
+- **Deleting a conversation deletes its file.** There is no tombstone and no
+  recycle bin inside osstat.
+- **Uninstalling does not remove them.** The app-data directory outlives the
+  application, as it does for every other setting; delete it by hand if you want
+  the conversations gone.
+- Conversation identifiers arrive from the front end and are validated before
+  they reach a path, so a crafted identifier cannot read or delete a file
+  elsewhere on disk — the same rule threat 2 applies to cleaning paths.
+
+A way to reach the inference port from off the machine is a critical
+vulnerability, as is a way to make a conversation identifier escape its
+directory. Conversations being readable by the user who wrote them is not a
+vulnerability; it is what "stored on your computer, unencrypted" means, and it
+is documented here so the choice is visible rather than discovered.
+
 ## Not vulnerabilities
 
 - **Deleting files you told it to delete.** Preview-and-confirm is the control;
@@ -125,3 +169,9 @@ runtime from Settings, which happens only when you press the button (ADR-012).
 There is no background polling, no prefetch, and no check for a newer upstream
 build. All of it happens in Rust — the webview's Content Security Policy allows
 it no network access at all, and this feature did not change that.
+
+Chatting with a model makes HTTP requests to `127.0.0.1`, and those are not an
+exception to the claim above. They reach a process osstat itself started, on a
+loopback port; nothing leaves the machine, and no prompt or reply is sent
+anywhere. Those requests are made from Rust too, so the webview still has no
+network access of any kind (ADR-013).
