@@ -14,8 +14,10 @@ pub mod client;
 pub mod error;
 pub mod gguf;
 pub mod plan;
+pub mod session;
 
 pub use client::{ChatClient, Message, StreamEvent, Timings, Usage};
 pub use error::ChatError;
 pub use gguf::{ModelFile, parse};
 pub use plan::{DEFAULT_CONTEXT_CEILING, LaunchPlan, plan_launch};
+pub use session::{Launch, Session, free_port, reap, start};
