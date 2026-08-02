@@ -28,3 +28,4 @@ other decision that would be expensive to reverse.
 | [010](ADR-010-licensing-and-governance.md)       | Dual MIT/Apache-2.0 licensing and governance         | Accepted |
 | [011](ADR-011-code-quality-gates.md)             | Code quality gates and the review process            | Accepted |
 | [012](ADR-012-local-inference-runtime.md)        | Fetching and verifying the llama.cpp runtime         | Accepted |
+| [013](ADR-013-inference-session.md)              | Running a model, and chatting with it                | Accepted |
