@@ -871,3 +871,55 @@ describe('Chat', () => {
     expect(chooser()).toHaveValue('');
   });
 });
+
+describe('where the cursor is after a reply', () => {
+  /** A completion for the resumed conversation, with nothing else to say. */
+  const FINISHED: ChatComplete = {
+    conversationId: 'c1',
+    usage: null,
+    timings: null,
+    stopped: false,
+    elapsedSeconds: 1.5,
+  };
+
+  it('puts the cursor back in the message box when a reply finishes', async () => {
+    // So the next question can be typed straight away. The box is disabled
+    // while the reply streams, which is why this cannot be done from the event
+    // handler -- focusing an element the same render is about to enable does
+    // nothing at all.
+    await renderChat();
+    const box = await screen.findByLabelText('Message');
+
+    await emit(token, { conversationId: 'c1', delta: 'Hello', timings: null });
+    await emit(complete, FINISHED);
+
+    expect(box).toHaveFocus();
+  });
+
+  it('leaves the cursor alone while the reply is still streaming', async () => {
+    // The half that would make the feature a nuisance rather than a courtesy.
+    // Tokens arrive several times a second; a page that grabbed focus on each
+    // one would take the caret out of whatever the user was doing, at that
+    // rate, for the whole length of the answer.
+    await renderChat();
+    const box = await screen.findByLabelText('Message');
+    const elsewhere = screen.getByRole('button', { name: /new conversation/i });
+    elsewhere.focus();
+
+    await emit(token, { conversationId: 'c1', delta: 'Hel', timings: null });
+    await emit(token, { conversationId: 'c1', delta: 'lo ', timings: null });
+    await emit(token, { conversationId: 'c1', delta: 'there', timings: null });
+
+    expect(elsewhere).toHaveFocus();
+    expect(box).not.toHaveFocus();
+  });
+
+  it('does not grab the cursor on arriving at the page', async () => {
+    // Nothing has finished yet, so nothing has asked for the cursor. A page
+    // that focused its composer on mount would move the caret every time the
+    // user came back to look at a transcript.
+    await renderChat();
+
+    expect(await screen.findByLabelText('Message')).not.toHaveFocus();
+  });
+});

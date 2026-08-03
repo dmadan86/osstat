@@ -536,6 +536,16 @@ export function Chat({ opened = null, onSessionChange }: ChatProps = {}): React.
   const [models, setModels] = useState<readonly Downloaded[]>([]);
   /** The model a switch is loading, or `null` when none is. */
   const [switchingTo, setSwitchingTo] = useState<string | null>(null);
+  /**
+   * How many replies have finished, which is the cue to focus the composer.
+   *
+   * A count rather than a flag because two replies in a row have to be two
+   * events: a boolean set to `true` twice does not change, so the second reply
+   * would leave the cursor wherever the user's last click put it.
+   */
+  const [finished, setFinished] = useState(0);
+  /** The message box, so a finished reply can put the cursor back in it. */
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   // Whether this page has opened or closed a model itself since it mounted.
   // The adoption below is a question asked on mount and answered a tick later,
   // and an answer that arrived after the user had already acted would undo what
@@ -660,6 +670,11 @@ export function Chat({ opened = null, onSessionChange }: ChatProps = {}): React.
       // The reply has been written by the time this arrives, so the list is
       // one entry or one title out of date until it is read again.
       refresh();
+      // Counted rather than focused from here. The composer is disabled while a
+      // reply streams, and focusing an element the same render is about to
+      // enable does nothing at all -- so the focus has to wait for a render,
+      // which is what the effect below is.
+      setFinished((count) => count + 1);
     });
 
     return () => {
@@ -708,6 +723,21 @@ export function Chat({ opened = null, onSessionChange }: ChatProps = {}): React.
   useEffect(() => {
     onSessionChange?.(session);
   }, [session, onSessionChange]);
+
+  // The cursor goes back in the message box when a reply finishes, so the next
+  // question can be typed without reaching for the mouse. **On completion only.**
+  // Doing it per token would be the opposite of a courtesy: tokens arrive
+  // several times a second, and a page that grabbed focus on each one would take
+  // the caret out of whatever the user was doing, several times a second.
+  //
+  // `finished` starts at zero and is only ever incremented by the completion
+  // handler, so this cannot fire on mount and steal focus from a page the user
+  // has only just opened.
+  useEffect(() => {
+    if (finished === 0) return;
+
+    composerRef.current?.focus();
+  }, [finished]);
 
   const streaming = state.pending !== null;
   const switching = switchingTo !== null;
@@ -945,6 +975,7 @@ export function Chat({ opened = null, onSessionChange }: ChatProps = {}): React.
           draft={draft}
           streaming={streaming}
           switching={switching}
+          inputRef={composerRef}
           onDraftChange={setDraft}
           onSend={send}
         />
@@ -1456,6 +1487,7 @@ function Composer({
   draft,
   streaming,
   switching,
+  inputRef,
   onDraftChange,
   onSend,
 }: {
@@ -1463,6 +1495,8 @@ function Composer({
   streaming: boolean;
   /** Whether a model switch is loading, which is also nothing to talk to. */
   switching: boolean;
+  /** The page's handle on the box, for putting the cursor back in it. */
+  inputRef: React.RefObject<HTMLTextAreaElement | null>;
   onDraftChange: (value: string) => void;
   onSend: () => void;
 }): React.JSX.Element {
@@ -1488,6 +1522,7 @@ function Composer({
       </label>
       <textarea
         id="chat-message"
+        ref={inputRef}
         rows={2}
         value={draft}
         disabled={busy}
