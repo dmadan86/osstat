@@ -435,12 +435,21 @@ pub fn models_download(
 
     // Before any request, as `acquire.rs` does. A refusal that arrives after
     // 20 GB have been fetched is not a refusal, it is a waste.
-    require_space(&folder, outstanding).map_err(|error| error.to_string())?;
+    require_space(&folder, outstanding).map_err(|error| {
+        crate::log::download_failed(error.kind());
+        error.to_string()
+    })?;
 
     state.claim(Busy {
         key: Some(key.clone()),
         what: download.file.clone(),
     })?;
+
+    // The size, never the file. Which of two downloads a later line refers to
+    // is not recoverable from the log, and that is the accepted cost of the
+    // design's §2 rather than an oversight.
+    crate::log::download_started(download.size_bytes);
+    let started = std::time::Instant::now();
 
     let (sender, receiver) = tokio::sync::oneshot::channel();
     if let Ok(mut held) = state.cancel.lock() {
@@ -455,6 +464,8 @@ pub fn models_download(
 
         match outcome {
             Ok(()) => {
+                crate::log::download_finished(download.size_bytes, started.elapsed().as_secs());
+
                 let recorded = store.record(ModelRecord {
                     key: key.clone(),
                     path: destination.clone(),
@@ -475,7 +486,13 @@ pub fn models_download(
                             path: shown(&destination),
                         },
                     ),
-                    Err(error) => app.emit(MODEL_FAILED_EVENT, ModelFailure::of(Some(key), &error)),
+                    Err(error) => {
+                        // A verified file the index does not know about is the
+                        // one failure here that leaves gigabytes on disk the
+                        // user cannot find, so it is logged as well as emitted.
+                        crate::log::download_failed(error.kind());
+                        app.emit(MODEL_FAILED_EVENT, ModelFailure::of(Some(key), &error))
+                    }
                 };
             }
             Err(failure) => {
@@ -531,14 +548,26 @@ async fn fetch(
     );
 
     tokio::select! {
-        finished = downloading => finished.map_err(|error| ModelFailure::of(Some(key.clone()), &error)),
+        finished = downloading => finished.map_err(|error| {
+            // By kind, never by `Display`: every `AcquireError` variant names a
+            // file, a path or a URL, which is the point of the message the user
+            // is shown and exactly what must not reach the log.
+            crate::log::download_failed(error.kind());
+            ModelFailure::of(Some(key.clone()), &error)
+        }),
         // The sender being dropped means nothing can ever stop this download,
         // which is not the same as being stopped. Answering `Ok` there would
         // abandon the transfer and then record a file that never landed, so
         // that branch never resolves and lets the other one decide -- the same
         // arrangement `chat.rs` uses for a reply nothing can cancel.
         stopped = cancel => match stopped {
-            Ok(()) => Err(ModelFailure::cancelled(key.clone())),
+            Ok(()) => {
+                // Its own line rather than a failure: the partial file is kept
+                // on purpose, and a log that reported the two the same way
+                // would have someone chasing a network problem that never was.
+                crate::log::download_cancelled();
+                Err(ModelFailure::cancelled(key.clone()))
+            }
             Err(_) => downloading_forever().await,
         },
     }
@@ -653,6 +682,12 @@ pub fn models_move(
 
     let mut store = state.store();
 
+    // Asked before the move so the finished line can say how much moved. The
+    // plan is metadata reads over files already indexed, not a walk of the
+    // destination, so this is cheap next to the move it describes.
+    let planned = plan_move(&store, &destination);
+    let started = std::time::Instant::now();
+
     tauri::async_runtime::spawn(async move {
         let emitter = app.clone();
         let mut on_progress = move |progress: Progress| {
@@ -668,14 +703,22 @@ pub fn models_move(
         };
 
         let _ = match move_library(&mut store, &destination, &mut on_progress).await {
-            Ok(()) => app.emit(
-                MODEL_DONE_EVENT,
-                ModelDone {
-                    key: None,
-                    path: shown(&destination),
-                },
-            ),
-            Err(error) => app.emit(MODEL_FAILED_EVENT, ModelFailure::of(None, &error)),
+            Ok(()) => {
+                // Neither folder is named: how much moved and how long it took
+                // is the whole of what a log can usefully say about a move.
+                crate::log::library_moved(planned.bytes, started.elapsed().as_secs());
+                app.emit(
+                    MODEL_DONE_EVENT,
+                    ModelDone {
+                        key: None,
+                        path: shown(&destination),
+                    },
+                )
+            }
+            Err(error) => {
+                crate::log::library_move_failed(error.kind());
+                app.emit(MODEL_FAILED_EVENT, ModelFailure::of(None, &error))
+            }
         };
 
         if let Some(state) = app.try_state::<ModelState>() {

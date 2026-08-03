@@ -133,16 +133,21 @@ fn setup(
             // will ever be in a position to end it.
             chat::reap_orphan(app.handle());
         }
-        Err(error) => {
-            eprintln!("osstat: chat is unavailable, no app data directory: {error}");
-        }
+        // The error is dropped rather than logged: it comes from Tauri's path
+        // resolver and its message names the directory it could not resolve.
+        Err(_) => log::app_data_unavailable(),
     }
 
     // A tray that could not be created is logged and moved past. An app
     // without a tray icon still works; an app that refuses to start does not.
-    if let Err(error) = tray::create(app.handle()) {
-        eprintln!("osstat: could not create the tray icon: {error}");
+    if tray::create(app.handle()).is_err() {
+        log::tray_unavailable();
     }
+
+    // Last, so it means what it says. Everything above can degrade, and a line
+    // claiming the app had started before the sampler was running would be the
+    // one line in the file that could not be trusted.
+    log::app_started();
 
     // The window is configured invisible so a sign-in launch paints nothing.
     // An ordinary launch has to ask for it, which also costs the old flash of

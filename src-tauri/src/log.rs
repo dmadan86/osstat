@@ -141,6 +141,36 @@ impl UiEventKind {
     }
 }
 
+/// What the user chose from the tray, as a fixed vocabulary.
+///
+/// An enum for the same reason [`UiEventKind`] is one. No `serde` or `ts-rs`
+/// here, unlike that type: the tray menu is built and handled entirely in Rust,
+/// so this never crosses the IPC boundary and a binding for it would be a
+/// TypeScript type nothing could produce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayAction {
+    /// The window was brought back, from the icon or the menu.
+    Show,
+    /// Start-at-sign-in was toggled from the menu.
+    Autostart,
+    /// Quit was chosen.
+    Quit,
+}
+
+impl TrayAction {
+    /// The name written to the log for this action.
+    ///
+    /// No wildcard arm, for the same reason the error kinds have none.
+    #[must_use]
+    pub const fn kind(self) -> &'static str {
+        match self {
+            Self::Show => "show",
+            Self::Autostart => "autostart",
+            Self::Quit => "quit",
+        }
+    }
+}
+
 /// The `EnvFilter` directive for a setting.
 ///
 /// Two things are happening here, and both are load-bearing.
@@ -413,6 +443,10 @@ pub fn log_directory(state: State<'_, LogState>) -> String {
 #[tauri::command]
 pub fn log_save(state: State<'_, LogState>, path: String) -> Result<u32, String> {
     save(state.directory(), Path::new(&path))
+        // This is the one place in the module an error is formatted, and it is
+        // deliberately not a log line: it is the sentence returned to the user
+        // who just asked for this, in a folder they just typed. `grep` for
+        // `{error}` in this file finds this and nothing else.
         .map_err(|error| format!("the logs could not be copied: {error}"))
 }
 
@@ -427,10 +461,20 @@ pub fn ui_log(kind: UiEventKind) {
     ui_event(kind);
 }
 
-/// The app finished starting. `probe_gpus` is how many GPUs were found — the
-/// count, never what they are.
-pub fn app_started(probe_gpus: usize) {
-    info!(gpus = probe_gpus, "app started");
+/// The app finished starting.
+///
+/// No GPU count here, although the plan sketched one: the probe is the slowest
+/// thing the sampler does and deliberately runs *after* startup so it does not
+/// delay the window, so a count on this line would be a number invented to fill
+/// a field. It arrives on its own line — see [`gpus_probed`].
+pub fn app_started() {
+    info!("app started");
+}
+
+/// The GPU probe finished. `found` is how many devices there are — the count,
+/// never what they are.
+pub fn gpus_probed(found: usize) {
+    info!(gpus = found, "gpus probed");
 }
 
 /// App data could not be resolved, so chat and downloads are unavailable.
@@ -489,6 +533,37 @@ pub fn download_failed(kind: &'static str) {
     warn!(kind, "download failed");
 }
 
+/// The user stopped a download.
+///
+/// Its own line rather than a [`download_failed`] with a `cancelled` kind,
+/// because it is not a failure: the partial file is kept on purpose and the
+/// next attempt resumes from it. A log that reported the two the same way would
+/// have someone investigating a network problem that never happened.
+pub fn download_cancelled() {
+    info!("download cancelled");
+}
+
+/// An inference runtime is being fetched.
+///
+/// `cuda` is the only interesting fact about which one: it is the difference
+/// between a 34 MB download and a 642 MB one, so a slow acquisition is
+/// explained by this line or is worth looking into.
+pub fn runtime_acquiring(cuda: bool) {
+    info!(cuda, "acquiring runtime");
+}
+
+/// An inference runtime was installed.
+pub fn runtime_acquired(bytes: u64, seconds: u64) {
+    info!(megabytes = bytes / MIB, seconds, "runtime acquired");
+}
+
+/// An inference runtime could not be installed.
+///
+/// `kind` is [`AcquireError::kind`](osstat_inference::AcquireError::kind).
+pub fn runtime_acquire_failed(kind: &'static str) {
+    warn!(kind, "runtime acquisition failed");
+}
+
 /// The model library finished moving to another folder.
 pub fn library_moved(bytes: u64, seconds: u64) {
     info!(megabytes = bytes / MIB, seconds, "library moved");
@@ -512,12 +587,22 @@ pub fn ui_event(kind: UiEventKind) {
     debug!(kind = kind.kind(), "ui event");
 }
 
-/// One sampler tick, as two counts.
+/// Something the user chose from the tray menu or its icon.
+pub fn tray_action(action: TrayAction) {
+    debug!(action = action.kind(), "tray action");
+}
+
+/// One sampler tick, and how many processes it read.
+///
+/// Zero on a background tick, which does not read the process table at all —
+/// the expensive half of a tick, and nothing a hidden window shows depends on
+/// it. A run of zeroes in a log is therefore the window having been hidden,
+/// which is worth being able to see.
 ///
 /// At `trace`, so it is only written under Verbose. osstat ticks every two
 /// seconds all day; at `info` this line alone would be most of the log.
-pub fn sampler_tick(processes: usize, sockets: usize) {
-    trace!(processes, sockets, "sampled");
+pub fn sampler_tick(processes: usize) {
+    trace!(processes, "sampled");
 }
 
 #[cfg(test)]
@@ -597,13 +682,18 @@ mod tests {
     /// thousand-process machine — because a scan run on toy numbers would pass
     /// while the real log lines failed.
     fn emit_every_event() {
-        app_started(2);
+        app_started();
+        gpus_probed(2);
         session_started(35, 131_072);
         session_stopped(4_215);
         session_failed("spawn_failed");
         download_started(4_683_074_240);
         download_finished(4_683_074_240, 612);
         download_failed("checksum_mismatch");
+        download_cancelled();
+        runtime_acquiring(true);
+        runtime_acquired(537_835_790, 94);
+        runtime_acquire_failed("http_status");
         library_moved(9_663_676_416, 128);
         library_move_failed("not_enough_space");
         conversation_save_failed("io");
@@ -613,7 +703,10 @@ mod tests {
         ui_event(UiEventKind::PageChanged);
         ui_event(UiEventKind::SettingChanged);
         ui_event(UiEventKind::CommandFailed);
-        sampler_tick(1_284, 96);
+        tray_action(TrayAction::Show);
+        tray_action(TrayAction::Autostart);
+        tray_action(TrayAction::Quit);
+        sampler_tick(1_284);
     }
 
     #[test]
@@ -641,9 +734,9 @@ mod tests {
     #[test]
     fn a_higher_setting_does_not_leak_into_a_lower_one() {
         let lines = capture(LogLevel::Info, || {
-            app_started(2);
+            app_started();
             ui_event(UiEventKind::Ready);
-            sampler_tick(1_284, 96);
+            sampler_tick(1_284);
         });
 
         assert!(
@@ -664,7 +757,7 @@ mod tests {
     fn debug_admits_debug_but_still_not_verbose() {
         let lines = capture(LogLevel::Debug, || {
             ui_event(UiEventKind::Ready);
-            sampler_tick(1_284, 96);
+            sampler_tick(1_284);
         });
 
         assert!(
@@ -679,7 +772,7 @@ mod tests {
 
     #[test]
     fn verbose_admits_the_sampler_ticks_nothing_else_does() {
-        let lines = capture(LogLevel::Verbose, || sampler_tick(1_284, 96));
+        let lines = capture(LogLevel::Verbose, || sampler_tick(1_284));
 
         assert!(
             lines.iter().any(|line| line.contains("TRACE")),
@@ -925,6 +1018,23 @@ mod tests {
             UiEventKind::PageChanged.kind(),
             UiEventKind::SettingChanged.kind(),
             UiEventKind::CommandFailed.kind(),
+        ];
+        let mut seen: Vec<&str> = Vec::new();
+        for kind in kinds {
+            assert!(!seen.contains(&kind), "duplicate kind {kind}");
+            assert!(!kind.is_empty());
+            seen.push(kind);
+        }
+    }
+
+    #[test]
+    fn every_tray_action_has_a_distinct_name() {
+        // Same reason as the error kinds: a copied-and-not-edited string makes
+        // two different actions look identical in a log.
+        let kinds = [
+            TrayAction::Show.kind(),
+            TrayAction::Autostart.kind(),
+            TrayAction::Quit.kind(),
         ];
         let mut seen: Vec<&str> = Vec::new();
         for kind in kinds {

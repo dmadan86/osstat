@@ -65,6 +65,12 @@ pub struct ChatState {
     /// [`chat_send`] has only the session to ask. Set and cleared in the same
     /// two places the session is, so the pair cannot drift apart.
     model_name: Mutex<Option<String>>,
+    /// When the open session started, for the duration on its stop line.
+    ///
+    /// Set and cleared in the same two places the session is, for the same
+    /// reason the name is: a start time left behind by a closed session would
+    /// report the next one as having run for hours.
+    opened_at: Mutex<Option<std::time::Instant>>,
     store: ConversationStore,
     cancel: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
@@ -151,6 +157,7 @@ impl ChatState {
         Self {
             session: Mutex::new(None),
             model_name: Mutex::new(None),
+            opened_at: Mutex::new(None),
             store: ConversationStore::new(root),
             cancel: Mutex::new(None),
         }
@@ -186,11 +193,27 @@ impl ChatState {
     }
 
     /// Takes the open session out of state, leaving none behind.
+    ///
+    /// The one place a session ends — both closing and opening a second model
+    /// go through here — which is why the log line for a session ending lives
+    /// here rather than at either caller.
     fn take_session(&self) -> Option<Session> {
         if let Ok(mut held) = self.model_name.lock() {
             *held = None;
         }
-        self.session.lock().ok().and_then(|mut held| held.take())
+        let started = self
+            .opened_at
+            .lock()
+            .ok()
+            .and_then(|mut held| held.take())
+            .map(|at| at.elapsed().as_secs());
+        let session = self.session.lock().ok().and_then(|mut held| held.take());
+
+        if session.is_some() {
+            crate::log::session_stopped(started.unwrap_or(0));
+        }
+
+        session
     }
 }
 
@@ -282,17 +305,23 @@ pub async fn chat_open_model(
     path: String,
 ) -> Result<ModelSession, String> {
     let path = PathBuf::from(path);
-    let (model, file_size) = read_header(&path).map_err(|error| error.to_string())?;
+    // Every refusal below is logged by kind and never by `Display`: the
+    // messages here name the model file, which is the user's data.
+    let (model, file_size) = read_header(&path).map_err(|error| {
+        crate::log::session_failed(error.kind());
+        error.to_string()
+    })?;
 
     // Same convention as `llm_advice` and `runtime_status`: nothing is decided
     // before the probe answers, because planning a launch against "no GPU" on
     // a machine that has one is a confident wrong answer.
-    let devices = sampler
-        .devices()
-        .ok_or_else(|| "the GPU probe has not finished yet".to_owned())?;
+    let devices = sampler.devices().ok_or_else(|| {
+        crate::log::session_failed("probe_unfinished");
+        "the GPU probe has not finished yet".to_owned()
+    })?;
     let plan = plan_launch(&model, file_size, select_gpu_budget(&devices));
 
-    let root = app_root(&app)?;
+    let root = app_root(&app).inspect_err(|_| crate::log::session_failed("no_app_data"))?;
     let runtime = RuntimeStore::new(root.clone())
         .installed()
         .into_iter()
@@ -300,7 +329,10 @@ pub async fn chat_open_model(
         // newest release on disk. Acquiring a runtime and then having osstat
         // keep using the older one would be baffling.
         .next_back()
-        .ok_or_else(|| ChatError::NoRuntime.to_string())?;
+        .ok_or_else(|| {
+            crate::log::session_failed(ChatError::NoRuntime.kind());
+            ChatError::NoRuntime.to_string()
+        })?;
 
     // Opening a second model must not leave the first server running. It would
     // hold every byte of VRAM the old weights occupy, which is the memory the
@@ -316,7 +348,10 @@ pub async fn chat_open_model(
         record: Some(root.join(SESSION_RECORD)),
     })
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| {
+        crate::log::session_failed(error.kind());
+        error.to_string()
+    })?;
 
     // Asked of the server rather than assumed from the plan: it may round or
     // clamp what it was given, and a context meter whose denominator is a
@@ -333,6 +368,13 @@ pub async fn chat_open_model(
     if let Ok(mut held) = state.model_name.lock() {
         *held = Some(model_name.clone());
     }
+    if let Ok(mut held) = state.opened_at.lock() {
+        *held = Some(std::time::Instant::now());
+    }
+
+    // The two figures that explain a slow or failing session, and neither
+    // names the model: how much was offloaded, and how wide the window is.
+    crate::log::session_started(plan.gpu_layers, context_length);
 
     Ok(ModelSession {
         model_name,
@@ -380,10 +422,10 @@ pub fn chat_send(
     });
     // Saved before the reply is asked for, so a crash mid-generation loses the
     // answer rather than the question.
-    state
-        .store
-        .save(&conversation)
-        .map_err(|error| error.to_string())?;
+    state.store.save(&conversation).map_err(|error| {
+        crate::log::conversation_save_failed(error.kind());
+        error.to_string()
+    })?;
 
     let history: Vec<Message> = conversation.messages.iter().map(wire_message).collect();
 
@@ -476,7 +518,7 @@ async fn stream_reply(
                 usage,
                 stopped,
             });
-            let _ = store.save(&conversation);
+            save_or_report(&store, &conversation);
             let _ = app.emit(
                 CHAT_COMPLETE_EVENT,
                 ChatComplete {
@@ -498,7 +540,7 @@ async fn stream_reply(
                     usage,
                     stopped: true,
                 });
-                let _ = store.save(&conversation);
+                save_or_report(&store, &conversation);
             }
             let _ = app.emit(
                 CHAT_FAILED_EVENT,
@@ -508,6 +550,18 @@ async fn stream_reply(
                 },
             );
         }
+    }
+}
+
+/// Saves a conversation, logging by kind if it could not be written.
+///
+/// The reply has already been generated by the time this runs, so there is
+/// nobody left to return an error to — which is exactly why it is logged. This
+/// is the one thing in the app whose failure loses something the user typed,
+/// and the kind is all that is written: [`ChatError::Io`] renders the path.
+fn save_or_report(store: &ConversationStore, conversation: &Conversation) {
+    if let Err(error) = store.save(conversation) {
+        crate::log::conversation_save_failed(error.kind());
     }
 }
 
