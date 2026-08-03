@@ -51,6 +51,25 @@ pub enum Error {
 }
 
 impl Error {
+    /// A stable, user-data-free name for this variant, safe to write to a log.
+    ///
+    /// [`Display`](std::fmt::Display) is not: `Unsupported` and
+    /// `PermissionDenied` carry an operation description built from a process
+    /// name, and `NotFound` carries a path. Logging code takes this instead.
+    ///
+    /// The match has no wildcard arm on purpose. A new variant must fail to
+    /// compile rather than quietly logging as something it is not.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Unsupported(_) => "unsupported",
+            Self::PermissionDenied(_) => "permission_denied",
+            Self::NotFound { .. } => "not_found",
+            Self::IdentityMismatch { .. } => "identity_mismatch",
+            Self::Io(_) => "io",
+        }
+    }
+
     /// Whether this failure could plausibly succeed if retried with elevated
     /// privileges.
     ///
@@ -118,5 +137,49 @@ mod tests {
         let error = Error::IdentityMismatch { pid: 4321 };
 
         assert!(error.to_string().contains("4321"));
+    }
+
+    #[test]
+    fn every_variant_has_a_distinct_kind() {
+        // A copied-and-not-edited string makes two different failures look
+        // identical in a log, which is worse than no log line.
+        let kinds = [
+            Error::Unsupported(String::new()).kind(),
+            Error::PermissionDenied(String::new()).kind(),
+            Error::NotFound {
+                path: PathBuf::new(),
+            }
+            .kind(),
+            Error::IdentityMismatch { pid: 1 }.kind(),
+            Error::from(std::io::Error::other("x")).kind(),
+        ];
+        let mut seen: Vec<&str> = Vec::new();
+        for kind in kinds {
+            assert!(!seen.contains(&kind), "duplicate kind {kind}");
+            assert!(!kind.is_empty());
+            seen.push(kind);
+        }
+    }
+
+    #[test]
+    fn a_kind_carries_no_user_data() {
+        // The whole reason kind() exists: the Display of this variant contains
+        // a path, and the kind must not.
+        let error = Error::NotFound {
+            path: PathBuf::from("/home/someone/secret.gguf"),
+        };
+
+        assert_eq!(error.kind(), "not_found");
+        assert!(!error.kind().contains('/'));
+    }
+
+    #[test]
+    fn a_permission_denial_kind_drops_the_operation_description() {
+        // PermissionDenied(String) carries an operation description built from
+        // a process name; only the variant may reach a log line.
+        let error = Error::PermissionDenied("terminate chrome (pid 4321)".to_owned());
+
+        assert_eq!(error.kind(), "permission_denied");
+        assert!(!error.kind().contains("chrome"));
     }
 }
