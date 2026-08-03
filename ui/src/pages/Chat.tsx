@@ -1,8 +1,9 @@
 /**
  * Chatting with a model this machine is running.
  *
- * Three parts, top to bottom: a model bar carrying the session's identity and
- * the context meter, the transcript, and a composer. The meter is the same
+ * Three parts, top to bottom: a model bar carrying the session's identity, the
+ * chooser that swaps one model for another, and the context meter; then the
+ * transcript; then a composer. The meter is the same
  * `Meter` the Overview draws CPU and RAM with, and that reuse is the point —
  * osstat is a monitoring application, and the context window is the resource
  * governing whether the model still remembers the start of the conversation.
@@ -27,7 +28,9 @@ import type { ChatFailure } from '../bindings/ChatFailure';
 import type { ChatToken } from '../bindings/ChatToken';
 import type { Conversation } from '../bindings/Conversation';
 import type { Message } from '../bindings/Message';
+import type { ModelCatalogueEntry } from '../bindings/ModelCatalogueEntry';
 import type { ModelSession } from '../bindings/ModelSession';
+import type { Provenance } from '../bindings/Provenance';
 import type { Role } from '../bindings/Role';
 import type { Timings } from '../bindings/Timings';
 import type { Usage } from '../bindings/Usage';
@@ -41,10 +44,12 @@ import {
   chatOpenModel,
   chatSend,
   chatStop,
+  fetchModelCatalogue,
   onChatComplete,
   onChatFailed,
   onChatToken,
 } from '../lib/ipc';
+import { UNREVIEWED } from '../lib/provenance';
 
 /** The reply currently streaming, which is not yet a stored message. */
 interface Pending {
@@ -120,6 +125,74 @@ function titleOf(text: string): string {
 /** Renders an unknown thrown value as a message. */
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** One downloaded model the header can switch to. */
+interface Downloaded {
+  /**
+   * What the model will be called once it is open.
+   *
+   * Derived the same way Rust derives it, so the name in the dropdown and the
+   * name in the model bar are the same string rather than two spellings of the
+   * same file that happen to agree on the models anyone has tried.
+   */
+  name: string;
+  /**
+   * The record's own absolute path, which is what `chat_open_model` is given.
+   *
+   * Nothing here reconstructs a path from a folder and a file name — the same
+   * rule the LLM tab's Run control follows.
+   */
+  path: string;
+  /** Which verification tier fetched it. */
+  provenance: Provenance;
+}
+
+/**
+ * A model file's name, the way `chat_open_model` reports it back.
+ *
+ * The Rust side names a session from the file stem, so this drops the directory
+ * and the extension to match. Both separators are handled because a Windows
+ * path is what this application mostly sees and a POSIX one is what its tests
+ * and its Linux builds mostly see.
+ */
+function stemOf(path: string): string {
+  const name = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1);
+  const dot = name.lastIndexOf('.');
+
+  // `dot <= 0` rather than `=== -1`: a name that is nothing but an extension
+  // keeps it, which is what `Path::file_stem` does with the same input.
+  return dot <= 0 ? name : name.slice(0, dot);
+}
+
+/**
+ * The catalogue entries that can actually be opened.
+ *
+ * Downloaded *and* holding a path: a model that is not on disk cannot be
+ * loaded, so offering it would be offering a control whose only outcome is an
+ * error. The `path === null` half is not defensive — the catalogue carries
+ * pinned cells nobody has fetched, and those are exactly the rows with no file
+ * behind them.
+ */
+function downloadedFrom(entries: readonly ModelCatalogueEntry[]): Downloaded[] {
+  return entries.flatMap((entry) =>
+    entry.state === 'downloaded' && entry.path !== null
+      ? [{ name: stemOf(entry.path), path: entry.path, provenance: entry.provenance }]
+      : []
+  );
+}
+
+/**
+ * How one model reads in the dropdown.
+ *
+ * A searched model carries the unreviewed marker here exactly as it does in the
+ * LLM tab's list. The two tiers are a security distinction, not a detail of the
+ * page that happened to introduce them, so a model must not become
+ * indistinguishable from a reviewed one by being reached through a different
+ * control.
+ */
+function labelOf(model: Downloaded): string {
+  return model.provenance === 'searched' ? `${model.name} — ${UNREVIEWED}` : model.name;
 }
 
 /**
@@ -444,6 +517,9 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
   const [openError, setOpenError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [conversations, setConversations] = useState<readonly Conversation[]>([]);
+  const [models, setModels] = useState<readonly Downloaded[]>([]);
+  /** The model a switch is loading, or `null` when none is. */
+  const [switchingTo, setSwitchingTo] = useState<string | null>(null);
 
   // Re-reads the stored list. Called wherever the store has just changed --
   // after a message is accepted, after a reply is saved, after a delete --
@@ -470,6 +546,30 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
       () => {
         // A store that cannot be listed is no reason to refuse a new
         // conversation; the page starts empty instead.
+      }
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // What the header's dropdown offers. Read once on mount, which is enough:
+  // the shell unmounts this page when the user leaves it, so a model downloaded
+  // on the LLM tab is picked up by the remount on the way back.
+  useEffect(() => {
+    let cancelled = false;
+
+    fetchModelCatalogue().then(
+      (entries) => {
+        if (cancelled) return;
+        setModels(downloadedFrom(entries));
+      },
+      () => {
+        // A catalogue that cannot be read leaves the header saying nothing is
+        // downloaded. That is the wrong reason for the right advice — the LLM
+        // tab is where both a missing library and a broken index are visible —
+        // and it is better than a dropdown listing models it cannot open.
       }
     );
 
@@ -561,6 +661,7 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
   );
 
   const streaming = state.pending !== null;
+  const switching = switchingTo !== null;
   // Keyed on the streamed text and the turn count, which between them change
   // on every token and on every finished turn -- the two moments the transcript
   // grows. Switching conversations changes the count too, so opening one lands
@@ -588,9 +689,57 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
     );
   }
 
+  /**
+   * Swaps the open model for another downloaded one.
+   *
+   * **`chat_close` then `chat_open_model`, in that order, and the second only
+   * once the first has resolved.** Two servers alive at once is not a cosmetic
+   * problem: each holds every byte of its weights, so a 7B model left running
+   * beside the one being loaded is several gigabytes of VRAM held for a model
+   * nobody is talking to — on the machine that is about to need it. Firing both
+   * commands together would make the overlap the normal case rather than a
+   * failure mode.
+   *
+   * A close that *fails* therefore opens nothing. Rust clears its own session
+   * either way, so a refusal here means a child it can no longer reach; adding
+   * a second one beside it would double the leak rather than recover from it.
+   * The page drops to its no-model state, which is what Rust is now in.
+   *
+   * Reuses the two commands rather than adding a third that does both. One path
+   * into a session means one place that reads the GGUF header, does the launch
+   * arithmetic and builds the lockdown argument vector — a switch that skipped
+   * any of it would be a session with different properties from every other.
+   */
+  async function switchModel(target: string): Promise<void> {
+    if (target === '' || switching || streaming) return;
+
+    setSwitchingTo(stemOf(target));
+    setOpenError(null);
+
+    try {
+      await chatClose();
+    } catch (error: unknown) {
+      setSession(null);
+      setSwitchingTo(null);
+      setOpenError(messageOf(error));
+      return;
+    }
+
+    try {
+      setSession(await chatOpenModel(target));
+    } catch (error: unknown) {
+      // The previous model is already closed by this point, so there is no
+      // session left to fall back to and saying so is the honest state.
+      setSession(null);
+      setOpenError(messageOf(error));
+    } finally {
+      setSwitchingTo(null);
+    }
+  }
+
   function send(): void {
     const text = draft.trim();
-    if (text === '' || session === null || streaming) return;
+    if (text === '' || session === null || streaming || switching) return;
 
     const id = state.conversation.id;
     setDraft('');
@@ -651,6 +800,8 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
   // the stream it was reading no longer has a server behind it — which is the
   // truth, and better than a transcript waiting forever on a dead process.
   function unload(): void {
+    if (switching) return;
+
     setSession(null);
     setOpenError(null);
     chatClose().catch((error: unknown) => {
@@ -674,8 +825,13 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
           title={state.conversation.title}
           used={usedTokens(state.conversation.messages)}
           streaming={streaming}
+          models={models}
+          switchingTo={switchingTo}
           failure={state.failure}
           onStop={stop}
+          onSwitch={(target) => {
+            void switchModel(target);
+          }}
           onUnload={unload}
           onNew={() => {
             dispatch({ kind: 'open', conversation: freshConversation(session.modelName) });
@@ -732,7 +888,13 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
       </div>
 
       {session !== null && (
-        <Composer draft={draft} streaming={streaming} onDraftChange={setDraft} onSend={send} />
+        <Composer
+          draft={draft}
+          streaming={streaming}
+          switching={switching}
+          onDraftChange={setDraft}
+          onSend={send}
+        />
       )}
     </div>
   );
@@ -908,14 +1070,17 @@ function ConversationList({
   );
 }
 
-/** The session's identity, its context meter, and the session controls. */
+/** The session's identity, its model chooser, its context meter and controls. */
 function ModelBar({
   session,
   title,
   used,
   streaming,
+  models,
+  switchingTo,
   failure,
   onStop,
+  onSwitch,
   onUnload,
   onNew,
 }: {
@@ -923,23 +1088,41 @@ function ModelBar({
   title: string;
   used: number;
   streaming: boolean;
+  /** Every downloaded model, which is everything the chooser may offer. */
+  models: readonly Downloaded[];
+  /** The model a switch is loading, or `null` when none is. */
+  switchingTo: string | null;
   failure: string | null;
   onStop: () => void;
+  onSwitch: (path: string) => void;
   onUnload: () => void;
   onNew: () => void;
 }): React.JSX.Element {
+  const switching = switchingTo !== null;
+
   return (
     <section
       aria-label="Session"
       className="shrink-0 rounded-xl border border-edge bg-surface-raised p-3"
     >
       <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
+        {/* The model being loaded, not the one that was: `chat_close` has
+            already run by the time this reads a name, so the previous one is
+            gone and printing it would name weights nothing is holding. */}
         <span data-selectable className="font-mono text-sm">
-          {session.modelName}
+          {switchingTo ?? session.modelName}
         </span>
-        <span className="font-mono text-xs text-neutral-500">
-          {String(session.gpuLayers)} layers on GPU
-        </span>
+
+        {/* The layer count belongs to the open session, so while a different
+            model is loading there is no honest figure to show. Absent rather
+            than stale: the new model may offload a different number, and a
+            count carried over from the old one would be a measurement of
+            something that is no longer running. */}
+        {!switching && (
+          <span className="font-mono text-xs text-neutral-500">
+            {String(session.gpuLayers)} layers on GPU
+          </span>
+        )}
         <span className="truncate text-xs text-neutral-500">{title}</span>
 
         <div className="ml-auto flex items-center gap-2">
@@ -961,9 +1144,10 @@ function ModelBar({
           </button>
           <button
             type="button"
+            disabled={switching}
             onClick={onUnload}
             title="End the server and give back the memory the weights hold"
-            className="rounded-md border border-edge px-2 py-0.5 text-xs text-neutral-400 hover:bg-white/[0.04]"
+            className="rounded-md border border-edge px-2 py-0.5 text-xs text-neutral-400 hover:bg-white/[0.04] disabled:opacity-40"
           >
             Unload
           </button>
@@ -971,12 +1155,34 @@ function ModelBar({
       </div>
 
       <div className="mt-2">
-        <Meter
-          label="Context"
-          fraction={used / session.contextLength}
-          detail={`${formatCount(used)} of ${formatCount(session.contextLength)} tokens`}
-          warnWhenFull
+        <ModelChooser
+          models={models}
+          open={session.modelName}
+          switchingTo={switchingTo}
+          streaming={streaming}
+          onSwitch={onSwitch}
         />
+      </div>
+
+      <div className="mt-2">
+        {switching ? (
+          /* The meter measures a window the loading model has not declared
+             yet. A live one against the old session's denominator would be a
+             fraction of the wrong number, so this says what is happening
+             instead — and says it through `status`, because a switch takes
+             seconds and a screen reader would otherwise announce nothing at
+             all between the choice and the new session. */
+          <p role="status" className="text-xs text-neutral-400">
+            Loading {switchingTo}… a model takes a few seconds to start. The conversation is kept.
+          </p>
+        ) : (
+          <Meter
+            label="Context"
+            fraction={used / session.contextLength}
+            detail={`${formatCount(used)} of ${formatCount(session.contextLength)} tokens`}
+            warnWhenFull
+          />
+        )}
       </div>
 
       {failure !== null && (
@@ -999,6 +1205,102 @@ function ModelBar({
         </p>
       )}
     </section>
+  );
+}
+
+/**
+ * The control that swaps the open model for another downloaded one.
+ *
+ * A native `<select>` rather than a built menu, and deliberately: it is
+ * keyboard-operable, labelled, type-ahead searchable and screen-reader
+ * announced without a line of code written for any of it, and it costs no
+ * dependency. Nothing here needs the two things a custom listbox would buy —
+ * rich rows, or a search field — and the marker that has to survive is a string,
+ * which an `<option>` carries perfectly well.
+ *
+ * **Disabled while a reply streams, rather than stopping the reply.** Both
+ * satisfy "must be safe mid-generation"; they differ in what they cost when the
+ * user did not mean it. Stopping first would truncate an answer they are
+ * watching as a side effect of touching a control that looks like a label — an
+ * unrecoverable loss from a reversible gesture. Refusing costs one click on the
+ * Stop control that is already in this same bar while a reply streams, and says
+ * so. What neither may do is switch underneath the stream: the transcript would
+ * then attribute one model's words to another's name, which is the failure this
+ * page exists to make impossible.
+ */
+function ModelChooser({
+  models,
+  open,
+  switchingTo,
+  streaming,
+  onSwitch,
+}: {
+  models: readonly Downloaded[];
+  /** The open session's model name. */
+  open: string;
+  /** The model a switch is loading, or `null` when none is. */
+  switchingTo: string | null;
+  streaming: boolean;
+  onSwitch: (path: string) => void;
+}): React.JSX.Element {
+  // An empty control the user can open, tab into and find nothing in is a dead
+  // end. The reason and the place to fix it are one sentence, so this says
+  // both instead of rendering the control at all.
+  if (models.length === 0) {
+    return (
+      <p className="text-[11px] text-neutral-500">
+        No models are downloaded, so there is nothing to switch to. The LLM tab is where models are
+        found and fetched.
+      </p>
+    );
+  }
+
+  // Matched by name because that is all a session reports; the path it was
+  // opened from is not part of `ModelSession`. A model opened from the file
+  // box that is not in the library matches nothing, which is the case the
+  // standing option below covers.
+  const shown = switchingTo ?? open;
+  const selected = models.find((model) => model.name === shown)?.path ?? '';
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <label htmlFor="chat-model" className="text-[10px] uppercase tracking-wider text-neutral-500">
+        Model
+      </label>
+
+      <select
+        id="chat-model"
+        value={selected}
+        disabled={streaming || switchingTo !== null}
+        onChange={(event) => {
+          onSwitch(event.target.value);
+        }}
+        className="min-w-0 max-w-full rounded-md border border-edge bg-transparent px-2 py-0.5 font-mono text-xs disabled:opacity-40"
+      >
+        {/* The open model, when it is not one of the downloaded ones — which is
+            what a file opened straight from the box above is. Without this the
+            control would sit there displaying the first model in the list while
+            a different one answered, which is the misattribution in a quieter
+            form. Disabled because it is a statement, not a destination. */}
+        {selected === '' && (
+          <option value="" disabled>
+            {shown} (not in the library)
+          </option>
+        )}
+
+        {models.map((model) => (
+          <option key={model.path} value={model.path}>
+            {labelOf(model)}
+          </option>
+        ))}
+      </select>
+
+      {streaming && (
+        <span className="text-[11px] text-neutral-500">
+          Stop the reply before switching, so the answer keeps the name of the model that wrote it.
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -1103,14 +1405,26 @@ function Turn({
 function Composer({
   draft,
   streaming,
+  switching,
   onDraftChange,
   onSend,
 }: {
   draft: string;
   streaming: boolean;
+  /** Whether a model switch is loading, which is also nothing to talk to. */
+  switching: boolean;
   onDraftChange: (value: string) => void;
   onSend: () => void;
 }): React.JSX.Element {
+  // Two reasons the composer is closed and two sentences for them. "Waiting for
+  // the reply" during a model load would name a reply that does not exist.
+  const busy = streaming || switching;
+  const placeholder = streaming
+    ? 'Waiting for the reply…'
+    : switching
+      ? 'Loading the model…'
+      : 'Say something';
+
   return (
     <form
       className="flex shrink-0 items-end gap-2"
@@ -1126,8 +1440,8 @@ function Composer({
         id="chat-message"
         rows={2}
         value={draft}
-        disabled={streaming}
-        placeholder={streaming ? 'Waiting for the reply…' : 'Say something'}
+        disabled={busy}
+        placeholder={placeholder}
         onChange={(event) => {
           onDraftChange(event.target.value);
         }}
@@ -1143,7 +1457,7 @@ function Composer({
       />
       <button
         type="submit"
-        disabled={streaming || draft.trim() === ''}
+        disabled={busy || draft.trim() === ''}
         className="rounded-md border border-accent px-3 py-1.5 text-xs text-accent transition-colors hover:bg-accent/10 disabled:opacity-40"
       >
         Send

@@ -21,6 +21,7 @@ import type { ChatComplete } from '../bindings/ChatComplete';
 import type { ChatFailure } from '../bindings/ChatFailure';
 import type { ChatToken } from '../bindings/ChatToken';
 import type { Conversation } from '../bindings/Conversation';
+import type { ModelCatalogueEntry } from '../bindings/ModelCatalogueEntry';
 import type { ModelSession } from '../bindings/ModelSession';
 
 const {
@@ -31,6 +32,7 @@ const {
   chatOpenModel,
   chatSend,
   chatStop,
+  fetchModelCatalogue,
   onChatComplete,
   onChatFailed,
   onChatToken,
@@ -42,6 +44,7 @@ const {
   chatOpenModel: vi.fn(),
   chatSend: vi.fn(),
   chatStop: vi.fn(),
+  fetchModelCatalogue: vi.fn(),
   onChatComplete: vi.fn(),
   onChatFailed: vi.fn(),
   onChatToken: vi.fn(),
@@ -55,6 +58,7 @@ vi.mock('../lib/ipc', () => ({
   chatOpenModel,
   chatSend,
   chatStop,
+  fetchModelCatalogue,
   onChatComplete,
   onChatFailed,
   onChatToken,
@@ -191,6 +195,104 @@ function session(overrides: Partial<ModelSession> = {}): ModelSession {
   };
 }
 
+/** The open model's file, so the chooser has the running session to select. */
+const MISTRAL_PATH = `C:\\models\\${MODEL_NAME}.gguf`;
+
+/** A second downloaded model, and the one the switching tests move to. */
+const QWEN_NAME = 'Qwen2.5-7B-Instruct-Q4_K_M';
+const QWEN_PATH = `C:\\models\\${QWEN_NAME}.gguf`;
+
+/** A downloaded model that arrived through search rather than through a pin. */
+const PHI_NAME = 'Phi-4-mini-Q5_K_M';
+const PHI_PATH = `C:\\models\\${PHI_NAME}.gguf`;
+
+/**
+ * What `models_catalogue` returns: five cells in three states.
+ *
+ * Three downloaded, one still downloading and one never fetched. The last two
+ * are the point of the fixture — a chooser built from `state` alone, or from no
+ * filter at all, would offer models that are not on disk, and every one of
+ * those controls ends in an error the user cannot act on.
+ */
+const CATALOGUE: ModelCatalogueEntry[] = [
+  {
+    key: { modelId: 'mistral-7b', quantId: 'Q4_K_M' },
+    state: 'downloaded',
+    publisher: 'bartowski',
+    repo: 'bartowski/Mistral-7B-Instruct-GGUF',
+    file: `${MODEL_NAME}.gguf`,
+    sizeBytes: 4_368_439_808,
+    path: MISTRAL_PATH,
+    provenance: 'pinned',
+  },
+  {
+    key: { modelId: 'llama-3.1-8b', quantId: 'Q4_K_M' },
+    state: 'downloadable',
+    publisher: 'bartowski',
+    repo: 'bartowski/Llama-3.1-8B-Instruct-GGUF',
+    file: 'Llama-3.1-8B-Instruct-Q4_K_M.gguf',
+    sizeBytes: 4_920_733_696,
+    path: null,
+    provenance: 'pinned',
+  },
+  {
+    key: { modelId: 'qwen2.5-7b', quantId: 'Q4_K_M' },
+    state: 'downloaded',
+    publisher: 'bartowski',
+    repo: 'bartowski/Qwen2.5-7B-Instruct-GGUF',
+    file: `${QWEN_NAME}.gguf`,
+    sizeBytes: 4_683_073_536,
+    path: QWEN_PATH,
+    provenance: 'pinned',
+  },
+  {
+    key: { modelId: 'gemma-2-9b', quantId: 'Q4_K_M' },
+    state: 'downloading',
+    publisher: 'bartowski',
+    repo: 'bartowski/gemma-2-9b-it-GGUF',
+    file: 'gemma-2-9b-it-Q4_K_M.gguf',
+    sizeBytes: 5_761_297_408,
+    path: null,
+    provenance: 'pinned',
+  },
+  {
+    key: { modelId: 'microsoft/Phi-4-mini-GGUF', quantId: `${PHI_NAME}.gguf` },
+    state: 'downloaded',
+    publisher: 'microsoft',
+    repo: 'microsoft/Phi-4-mini-GGUF',
+    file: `${PHI_NAME}.gguf`,
+    sizeBytes: 2_815_889_408,
+    path: PHI_PATH,
+    provenance: 'searched',
+  },
+];
+
+/** The header's model dropdown, by the name a keyboard user reaches it under. */
+function chooser(): HTMLSelectElement {
+  return screen.getByRole('combobox', { name: 'Model' });
+}
+
+/**
+ * When a mock was first called, on vitest's global invocation counter.
+ *
+ * A command that was never called sorts after everything, so an ordering
+ * assertion against a skipped one fails rather than passing vacuously.
+ */
+function firstCall(mock: { mock: { invocationCallOrder: number[] } }): number {
+  const [first] = mock.mock.invocationCallOrder;
+  return first ?? Number.POSITIVE_INFINITY;
+}
+
+/** A promise a test resolves when it chooses, for watching a slow load. */
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+
+  return { promise, resolve };
+}
+
 let token = capturing<ChatToken>();
 let complete = capturing<ChatComplete>();
 let failed = capturing<ChatFailure>();
@@ -211,6 +313,7 @@ beforeEach(() => {
     id === OLDER.id ? Promise.resolve(OLDER) : Promise.resolve(STORED)
   );
   chatDelete.mockResolvedValue(undefined);
+  fetchModelCatalogue.mockResolvedValue(CATALOGUE);
   onChatToken.mockImplementation(token.subscribe);
   onChatComplete.mockImplementation(complete.subscribe);
   onChatFailed.mockImplementation(failed.subscribe);
@@ -224,18 +327,19 @@ beforeEach(() => {
  * helper that skipped that would test a state the app cannot reach.
  */
 async function renderChat(overrides: Partial<ModelSession> = {}): Promise<void> {
-  chatOpenModel.mockResolvedValue(session(overrides));
+  const opened = session(overrides);
+  chatOpenModel.mockResolvedValue(opened);
   render(<Chat />);
 
   fireEvent.change(await screen.findByLabelText(/model file/i), {
-    target: { value: 'C:\\models\\model.gguf' },
+    target: { value: MISTRAL_PATH },
   });
   fireEvent.click(screen.getByRole('button', { name: /open model/i }));
 
   // `findAllByText`, not `findByText`: the open model's name and the resumed
   // conversation's title each appear twice now -- once in the model bar and
   // once in the entry the conversation list draws for it.
-  await screen.findAllByText(MODEL_NAME);
+  await screen.findAllByText(opened.modelName);
   await screen.findAllByText(STORED.title);
 }
 
@@ -597,5 +701,166 @@ describe('Chat', () => {
 
     const rendered = await screen.findByText(/<b>bold<\/b> and \*\*stars\*\*/);
     expect(rendered.querySelector('b')).toBeNull();
+  });
+
+  it('offers every downloaded model and nothing that is not on disk', async () => {
+    // The names, in order, rather than a count or a presence check: a chooser
+    // that listed the whole catalogue would still render a control, and every
+    // extra entry in it is a model that cannot be loaded because there is no
+    // file behind it. The searched model carries its tier in the same words the
+    // LLM tab uses, so a model does not become indistinguishable from a
+    // reviewed one by being reached through this control instead of that one.
+    await renderChat();
+
+    const options = within(await screen.findByRole('combobox', { name: 'Model' }))
+      .getAllByRole('option')
+      .map((option) => option.textContent);
+
+    expect(options).toEqual([
+      MODEL_NAME,
+      QWEN_NAME,
+      `${PHI_NAME} — Not reviewed · hash from Hugging Face`,
+    ]);
+  });
+
+  it('shows the open model as the chosen one', async () => {
+    // A chooser displaying the first entry in the list while a different model
+    // answers is the same misattribution as switching mid-reply, only quieter.
+    await renderChat();
+
+    expect(await screen.findByRole('combobox', { name: 'Model' })).toHaveValue(MISTRAL_PATH);
+  });
+
+  it('closes the open session before opening the chosen one', async () => {
+    // THE one to get right. `chat_open_model` on its own would leave the
+    // previous llama-server running, holding every byte of the old weights --
+    // several gigabytes of VRAM for a model nobody is talking to, on the
+    // machine that is about to need it for the new one.
+    await renderChat();
+    // The initial open is not under test; only the switch's own two calls are.
+    chatClose.mockClear();
+    chatOpenModel.mockClear();
+    chatOpenModel.mockResolvedValue(session({ modelName: QWEN_NAME }));
+
+    await userEvent.selectOptions(chooser(), QWEN_PATH);
+
+    await waitFor(() => {
+      expect(chatOpenModel).toHaveBeenCalledWith(QWEN_PATH);
+    });
+    expect(chatClose).toHaveBeenCalledTimes(1);
+    expect(firstCall(chatClose)).toBeLessThan(firstCall(chatOpenModel));
+  });
+
+  it('opens nothing when the old session refused to close', async () => {
+    // The other half of the ordering. A close that failed means a child Rust
+    // can no longer reach; starting a second one beside it would double the
+    // leak rather than recover from it.
+    await renderChat();
+    chatOpenModel.mockClear();
+    chatClose.mockRejectedValue(new Error('the model server would not stop'));
+
+    await userEvent.selectOptions(chooser(), QWEN_PATH);
+
+    expect(await screen.findByText(/would not stop/)).toBeInTheDocument();
+    expect(chatOpenModel).not.toHaveBeenCalled();
+  });
+
+  it('runs the chosen model rather than another, with its own figures', async () => {
+    // The session that comes back replaces the old one whole. Asserting the new
+    // model's layer count and window, not just its name: a page that kept the
+    // previous session's numbers beside the new name would describe two
+    // different models as one.
+    await renderChat();
+    chatOpenModel.mockResolvedValue(
+      session({ modelName: QWEN_NAME, gpuLayers: 40, contextLength: 16_384 })
+    );
+
+    await userEvent.selectOptions(chooser(), QWEN_PATH);
+
+    expect(await screen.findByText('40 layers on GPU')).toBeInTheDocument();
+    expect(screen.getByText(/0 of 16,384 tokens/)).toBeInTheDocument();
+    expect(chooser()).toHaveValue(QWEN_PATH);
+    expect(screen.queryByText('32 layers on GPU')).not.toBeInTheDocument();
+  });
+
+  it('says a switch is under way and keeps the conversation on screen', async () => {
+    // A switch takes seconds because the weights have to be read off disk. A
+    // bar that simply froze on the old model's name would be indistinguishable
+    // from one that had stopped responding -- and the conversation must not go
+    // anywhere while it happens.
+    await renderChat();
+    await userEvent.click(await within(conversationList()).findByText(OLDER.title));
+    await screen.findByText('why is it bitter');
+
+    const loading = deferred<ModelSession>();
+    chatOpenModel.mockReturnValue(loading.promise);
+    await userEvent.selectOptions(chooser(), QWEN_PATH);
+
+    // Named, not a bare spinner: which model is loading is the fact worth
+    // showing when the wait is measured in seconds.
+    expect(await screen.findByRole('status')).toHaveTextContent(`Loading ${QWEN_NAME}…`);
+    expect(screen.getByText('why is it bitter')).toBeInTheDocument();
+    // The old session's layer count is gone rather than left standing against
+    // a model that is no longer running.
+    expect(screen.queryByText('32 layers on GPU')).not.toBeInTheDocument();
+    expect(chooser()).toBeDisabled();
+
+    await act(async () => {
+      loading.resolve(session({ modelName: QWEN_NAME, gpuLayers: 40 }));
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByText('40 layers on GPU')).toBeInTheDocument();
+    expect(screen.getByText('why is it bitter')).toBeInTheDocument();
+  });
+
+  it('refuses to switch while a reply is streaming, and says why', async () => {
+    // Swapping the model underneath a streaming reply would file one model's
+    // words under another model's name. Refusing costs one click on the Stop
+    // control already in this bar; stopping automatically would truncate an
+    // answer the user is watching as a side effect of touching what looks like
+    // a label.
+    await renderChat();
+
+    await emit(token, { conversationId: 'c1', delta: 'still thinking', timings: null });
+
+    expect(chooser()).toBeDisabled();
+    expect(screen.getByText(/stop the reply before switching/i)).toBeInTheDocument();
+    // Still naming the model that is actually answering.
+    expect(chooser()).toHaveValue(MISTRAL_PATH);
+
+    await emit(complete, {
+      conversationId: 'c1',
+      usage: { promptTokens: 5, completionTokens: 2 },
+      timings: null,
+      stopped: false,
+      elapsedSeconds: 1.5,
+    });
+
+    // And the refusal lifts on its own once the reply lands, rather than
+    // needing the page reopened.
+    await waitFor(() => {
+      expect(chooser()).toBeEnabled();
+    });
+  });
+
+  it('points at the LLM tab when no model is downloaded', async () => {
+    // An empty control the user can tab into and find nothing in is a dead end.
+    fetchModelCatalogue.mockResolvedValue([]);
+    await renderChat();
+
+    expect(await screen.findByText(/no models are downloaded/i)).toBeInTheDocument();
+    expect(screen.getByText(/llm tab is where models are found/i)).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Model' })).not.toBeInTheDocument();
+  });
+
+  it('says so when the open model is not one of the downloaded ones', async () => {
+    // Reachable through the file box, which takes any path. Without this the
+    // chooser would display the first library entry while a model from
+    // somewhere else answered.
+    await renderChat({ modelName: 'Scratch-Build-F16' });
+
+    expect(await screen.findByText('Scratch-Build-F16 (not in the library)')).toBeInTheDocument();
+    expect(chooser()).toHaveValue('');
   });
 });
