@@ -31,6 +31,7 @@ const {
   chatLoad,
   chatOpenModel,
   chatSend,
+  chatStatus,
   chatStop,
   fetchModelCatalogue,
   onChatComplete,
@@ -43,6 +44,7 @@ const {
   chatLoad: vi.fn(),
   chatOpenModel: vi.fn(),
   chatSend: vi.fn(),
+  chatStatus: vi.fn(),
   chatStop: vi.fn(),
   fetchModelCatalogue: vi.fn(),
   onChatComplete: vi.fn(),
@@ -57,6 +59,7 @@ vi.mock('../lib/ipc', () => ({
   chatLoad,
   chatOpenModel,
   chatSend,
+  chatStatus,
   chatStop,
   fetchModelCatalogue,
   onChatComplete,
@@ -305,6 +308,10 @@ beforeEach(() => {
   failed = capturing<ChatFailure>();
 
   chatOpenModel.mockResolvedValue(session());
+  // Nothing open until a test opens something. The page asks on mount, and
+  // every test here drives the open flow itself -- `Chat.session.test.tsx` is
+  // where adopting a session opened elsewhere is the subject.
+  chatStatus.mockResolvedValue(null);
   chatSend.mockResolvedValue(undefined);
   chatStop.mockResolvedValue(undefined);
   chatClose.mockResolvedValue(undefined);
