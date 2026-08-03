@@ -10,6 +10,7 @@
 
 pub mod chat;
 pub mod commands;
+pub mod log;
 pub mod models;
 pub mod ports;
 pub mod runtime;
@@ -77,6 +78,100 @@ pub fn wants_startup_measurement(args: &[String]) -> bool {
     args.iter().any(|arg| arg == MEASURE_STARTUP_FLAG)
 }
 
+/// Everything that has to happen once the Tauri runtime exists.
+///
+/// A named function rather than the closure it used to be: this is where new
+/// startup work lands, and it had already grown to the length at which one
+/// function stops reading as one thing.
+///
+/// # Errors
+///
+/// Returns an error only if the sampler cannot be started. Everything else
+/// here degrades: no app data directory means chat and downloads are
+/// unavailable, and no tray icon means no tray icon. An app that refuses to
+/// start is worse than an app missing a feature.
+fn setup(
+    app: &mut tauri::App,
+    process_start: std::time::Instant,
+    measuring_startup: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Before anything else here: a failure further down is exactly what a log
+    // is for, and there is no point starting one after the event worth
+    // recording has already happened. A log directory that cannot be made
+    // leaves the app running without a log rather than not running.
+    if let Ok(root) = app.path().app_data_dir() {
+        let directory = root.join("logs");
+        let level = log::LogLevel::default();
+
+        if let Some(guard) = log::init(&directory, level) {
+            app.manage(log::LogGuard::new(guard));
+        }
+
+        // After `init`, not before. The appender opens today's file when it is
+        // built, so pruning afterwards is what lets retention see that file and
+        // keep it; pruning first would leave yesterday's as the newest and
+        // count one file too few.
+        log::prune(&directory, log::RETENTION);
+        app.manage(log::LogState::new(directory, level));
+    }
+
+    let sampler = Sampler::start(app.handle().clone(), DEFAULT_INTERVAL)?;
+    app.manage(sampler);
+    app.manage(CloseSetting::default());
+    app.manage(PortInspector::default());
+
+    // Conversations, the session record and the index of downloaded models all
+    // live under app data. A directory that cannot be resolved leaves chat and
+    // downloads unavailable rather than stopping the app from starting: osstat
+    // is a system monitor first, and the tray and the sampler need neither.
+    match app.path().app_data_dir() {
+        Ok(root) => {
+            app.manage(models::ModelState::new(root.clone()));
+            app.manage(chat::ChatState::new(root));
+            // Before anything else can start a server: an osstat that crashed
+            // mid-session left one holding VRAM, and this is the only run that
+            // will ever be in a position to end it.
+            chat::reap_orphan(app.handle());
+        }
+        // The error is dropped rather than logged: it comes from Tauri's path
+        // resolver and its message names the directory it could not resolve.
+        Err(_) => log::app_data_unavailable(),
+    }
+
+    // A tray that could not be created is logged and moved past. An app
+    // without a tray icon still works; an app that refuses to start does not.
+    if tray::create(app.handle()).is_err() {
+        log::tray_unavailable();
+    }
+
+    // Last, so it means what it says. Everything above can degrade, and a line
+    // claiming the app had started before the sampler was running would be the
+    // one line in the file that could not be trusted.
+    log::app_started();
+
+    // The window is configured invisible so a sign-in launch paints nothing.
+    // An ordinary launch has to ask for it, which also costs the old flash of
+    // unstyled window before React mounts.
+    if !starts_hidden(&std::env::args().collect::<Vec<_>>())
+        && let Some(window) = app.get_webview_window("main")
+    {
+        let _ = window.show();
+
+        // The measurement run's whole job is this one line, then a clean exit:
+        // hyperfine times the process's wall-clock life, so cold-start mode
+        // makes that lifetime *be* the number.
+        if measuring_startup {
+            println!(
+                "osstat_cold_start_ms={}",
+                process_start.elapsed().as_millis()
+            );
+            std::process::exit(0);
+        }
+    }
+
+    Ok(())
+}
+
 /// Starts the application and blocks until the last window closes.
 ///
 /// # Errors
@@ -101,60 +196,7 @@ pub fn run() -> tauri::Result<()> {
             MacosLauncher::LaunchAgent,
             Some(vec![HIDDEN_FLAG]),
         ))
-        .setup(move |app| {
-            let sampler = Sampler::start(app.handle().clone(), DEFAULT_INTERVAL)?;
-            app.manage(sampler);
-            app.manage(CloseSetting::default());
-            app.manage(PortInspector::default());
-
-            // Conversations, the session record and the index of downloaded
-            // models all live under app data. A directory that cannot be
-            // resolved leaves chat and downloads unavailable rather than
-            // stopping the app from starting: osstat is a system monitor
-            // first, and the tray and the sampler do not depend on either.
-            match app.path().app_data_dir() {
-                Ok(root) => {
-                    app.manage(models::ModelState::new(root.clone()));
-                    app.manage(chat::ChatState::new(root));
-                    // Before anything else can start a server: an osstat that
-                    // crashed mid-session left one holding VRAM, and this is
-                    // the only run that will ever be in a position to end it.
-                    chat::reap_orphan(app.handle());
-                }
-                Err(error) => {
-                    eprintln!("osstat: chat is unavailable, no app data directory: {error}");
-                }
-            }
-
-            // A tray that could not be created is logged and moved past. An app
-            // without a tray icon still works; an app that refuses to start
-            // does not.
-            if let Err(error) = tray::create(app.handle()) {
-                eprintln!("osstat: could not create the tray icon: {error}");
-            }
-
-            // The window is configured invisible so a sign-in launch paints
-            // nothing. An ordinary launch has to ask for it, which also costs
-            // the old flash of unstyled window before React mounts.
-            if !starts_hidden(&std::env::args().collect::<Vec<_>>())
-                && let Some(window) = app.get_webview_window("main")
-            {
-                let _ = window.show();
-
-                // The measurement run's whole job is this one line, then a
-                // clean exit: hyperfine times the process's wall-clock life,
-                // so cold-start mode makes that lifetime *be* the number.
-                if measuring_startup {
-                    println!(
-                        "osstat_cold_start_ms={}",
-                        process_start.elapsed().as_millis()
-                    );
-                    std::process::exit(0);
-                }
-            }
-
-            Ok(())
-        })
+        .setup(move |app| setup(app, process_start, measuring_startup))
         .on_window_event(|window, event| {
             // Both signals matter now: minimising and hiding to the tray are
             // different events, and both mean nobody can see the window. See
@@ -209,6 +251,11 @@ pub fn run() -> tauri::Result<()> {
             models::models_set_folder,
             models::models_plan_move,
             models::models_move,
+            log::log_level,
+            log::log_set_level,
+            log::log_save,
+            log::log_directory,
+            log::ui_log,
             commands::set_sample_interval,
             commands::set_sampling_paused,
             commands::set_close_behaviour,

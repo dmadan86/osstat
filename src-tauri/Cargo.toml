@@ -49,6 +49,19 @@ tauri-plugin-single-instance = "2"
 # Already in Cargo.lock through Tauri itself; `sync` for the one-shot channel
 # that stops a reply, `macros` for the `select!` that watches it.
 tokio = { version = "1", features = ["sync", "macros"] }
+# Logging. `tracing` itself is already in Cargo.lock through Tauri.
+tracing = "0.1"
+# `default-features = false` deliberately: it drops `ansi`, so no escape codes
+# are ever written, and `tracing-log`, so no dependency's `log` records are
+# picked up. The second matters — reqwest and hyper log URLs, and the point of
+# this feature is that a log carries no user data.
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+  "fmt",
+  "env-filter",
+  "registry",
+  "std",
+] }
+tracing-appender = "0.2"
 ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]

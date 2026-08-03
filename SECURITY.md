@@ -185,3 +185,57 @@ exception to the claim above. They reach a process osstat itself started, on a
 loopback port; nothing leaves the machine, and no prompt or reply is sent
 anywhere. Those requests are made from Rust too, so the webview still has no
 network access of any kind (ADR-013).
+
+## Logs
+
+osstat writes a log file. **It contains no personal data at any level, and there
+is no setting that enables any**, so it is safe to attach to a bug report
+without reading it first.
+
+- One file per day, `osstat.YYYY-MM-DD.log`, in a `logs` folder under the same
+  app-data directory the conversations use (`%APPDATA%\dev.osstat.app\logs` on
+  Windows, `~/.local/share/dev.osstat.app/logs` on Linux,
+  `~/Library/Application Support/dev.osstat.app/logs` on macOS).
+- **A week is kept**, oldest deleted first. Deleting the folder is safe at any
+  time; it is recreated on the next launch.
+- **Settings → Logs** chooses how much detail is captured and copies the whole
+  set into a folder you name.
+
+This is stricter than a redaction policy, and deliberately so, because of what
+this application can see. A log that recorded "all events" here would contain
+your process names and PIDs, your open ports with their remote addresses, the
+paths you were cleaning, the models you run, and — at a debug level — your
+prompts and the model's replies. The purpose of saving a log is to send it to
+someone, and a design where the useful log is also the sensitive one puts you in
+the position of choosing between getting help and disclosing all of that.
+
+It is a property of the code rather than a promise anyone has to keep:
+
+- **All logging goes through one module.** Every event function in
+  `src-tauri/src/log.rs` takes counts, durations, booleans and fixed
+  `&'static str` kinds. There is no `String`, `Path` or `PathBuf` parameter
+  anywhere in its surface, so a path cannot be logged because there is nowhere
+  to put one.
+- **Errors log their variant, not their message.** Every error type has a
+  `kind()` returning a fixed name — `spawn_failed`, `checksum_mismatch`,
+  `not_a_gguf` — and only that is written. The messages themselves name files,
+  paths and URLs, which is what makes them useful on screen and unacceptable in
+  a log.
+- **The filter is scoped to osstat's own code.** A bare level would also enable
+  `reqwest`'s and `hyper`'s instrumentation, which log URLs — user data arriving
+  through the back door at exactly the setting somebody turned on to help.
+- **A test scans the output.** The suite captures every line the logging paths
+  produce and fails on a path separator, an `@`, or a long run of digits.
+
+The last of those is a net under the module boundary, not a guarantee, and
+should not be read as more: it catches an accidental `{:?}` of a struct that
+grew a path field later, which is how this would realistically break. It does
+not catch a bare process name.
+
+The cost is real and worth stating: a failed download logs `download_failed
+kind=checksum_mismatch` with no file name, and if two downloads ran that session
+the log does not say which. Some bugs need a reproduction rather than a log.
+That is the accepted trade.
+
+A log line that contains a path, a file name, a process name, an address, a
+prompt or a model reply is a vulnerability. Report it.

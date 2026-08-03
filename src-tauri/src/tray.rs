@@ -111,12 +111,17 @@ pub fn create<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
             if matches!(event, TrayIconEvent::Click { .. }) {
+                crate::log::tray_action(crate::log::TrayAction::Show);
                 show_main_window(tray.app_handle());
             }
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
-            SHOW_ID => show_main_window(app),
+            SHOW_ID => {
+                crate::log::tray_action(crate::log::TrayAction::Show);
+                show_main_window(app);
+            }
             AUTOSTART_ID => {
+                crate::log::tray_action(crate::log::TrayAction::Autostart);
                 let manager = app.autolaunch();
                 // Toggle against what the OS currently says, not against what
                 // the checkbox is showing: another window, or Task Manager, may
@@ -127,7 +132,13 @@ pub fn create<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                     manager.enable()
                 };
             }
-            QUIT_ID => app.exit(0),
+            QUIT_ID => {
+                // Before the exit, not after: this is the last thing the log
+                // will contain, and a deliberate quit is what distinguishes it
+                // from a crash for whoever reads the file afterwards.
+                crate::log::tray_action(crate::log::TrayAction::Quit);
+                app.exit(0);
+            }
             _ => {}
         })
         .build(app)?;

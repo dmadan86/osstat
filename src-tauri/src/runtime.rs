@@ -265,6 +265,12 @@ pub fn acquire_runtime(
         CudaChoice::Declined
     };
 
+    // The one interesting fact about which build this is, and it is a boolean:
+    // CUDA is 642 MB against Vulkan's 34 MB, so an acquisition that seems to
+    // have stalled is either explained by this line or is worth looking into.
+    crate::log::runtime_acquiring(accept_cuda);
+    let started = std::time::Instant::now();
+
     tauri::async_runtime::spawn(async move {
         let client = reqwest::Client::new();
         let mut on_stage = |stage: Stage| {
@@ -275,6 +281,7 @@ pub fn acquire_runtime(
 
         match acquire(&store, &client, target, &gpu, cuda, &mut on_stage).await {
             Ok(installed) => {
+                crate::log::runtime_acquired(installed.size_bytes, started.elapsed().as_secs());
                 let _ = app.emit(
                     RUNTIME_READY_EVENT,
                     InstalledRuntimeInfo {
@@ -285,6 +292,8 @@ pub fn acquire_runtime(
                 );
             }
             Err(error) => {
+                // By kind: every `AcquireError` message names a file or a URL.
+                crate::log::runtime_acquire_failed(error.kind());
                 let _ = app.emit(RUNTIME_FAILED_EVENT, RuntimeFailure::from(&error));
             }
         }

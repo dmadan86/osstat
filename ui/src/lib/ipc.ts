@@ -25,6 +25,8 @@ import type { Conversation } from '../bindings/Conversation';
 import type { CriticalProcess } from '../bindings/CriticalProcess';
 import type { GpuDevice } from '../bindings/GpuDevice';
 import type { LlmAdvice } from '../bindings/LlmAdvice';
+import type { LogLevel } from '../bindings/LogLevel';
+import type { UiEventKind } from '../bindings/UiEventKind';
 import type { MetricsSample } from '../bindings/MetricsSample';
 import type { InstalledRuntimeInfo } from '../bindings/InstalledRuntimeInfo';
 import type { LibraryMovePlan } from '../bindings/LibraryMovePlan';
@@ -78,6 +80,10 @@ export const COMMANDS = {
   modelsSetFolder: 'models_set_folder',
   modelsPlanMove: 'models_plan_move',
   modelsMove: 'models_move',
+  logSetLevel: 'log_set_level',
+  logSave: 'log_save',
+  logDirectory: 'log_directory',
+  uiLog: 'ui_log',
 } as const;
 
 /** Names of every event the Rust side emits. */
@@ -466,6 +472,50 @@ export async function setSampleInterval(millis: number): Promise<void> {
  */
 export async function setCloseBehaviour(behaviour: CloseBehaviour): Promise<void> {
   await invoke(COMMANDS.setCloseBehaviour, { behaviour });
+}
+
+/**
+ * Sets how much detail the log carries, from now on.
+ *
+ * Takes effect immediately and without a restart. Re-applied at startup the
+ * same way {@link setCloseBehaviour} is, and for the same reason: the value
+ * lives in the front-end's preferences and Rust holds only what it was last
+ * told.
+ *
+ * @param level How much detail to capture.
+ */
+export async function setLogLevel(level: LogLevel): Promise<void> {
+  await invoke(COMMANDS.logSetLevel, { level });
+}
+
+/** Where the log files are kept. Deleting that folder is safe at any time. */
+export function fetchLogDirectory(): Promise<string> {
+  return invoke<string>(COMMANDS.logDirectory);
+}
+
+/**
+ * Copies every log file into `path`.
+ *
+ * @param path An absolute path to the folder to copy them into.
+ * @returns How many files were copied.
+ */
+export function saveLogs(path: string): Promise<number> {
+  return invoke<number>(COMMANDS.logSave, { path });
+}
+
+/**
+ * Reports something the front end did into the one log Rust writes.
+ *
+ * A command rather than a file the webview keeps itself, so a session reads as
+ * a single ordered story instead of two files somebody has to interleave by
+ * timestamp. The parameter is one of a fixed set of kinds and never a string:
+ * a free-text parameter would be somewhere a page title or a message could be
+ * put, and the log carries no user data at any level.
+ *
+ * @param kind What happened.
+ */
+export async function logUiEvent(kind: UiEventKind): Promise<void> {
+  await invoke(COMMANDS.uiLog, { kind });
 }
 
 /**

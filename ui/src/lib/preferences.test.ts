@@ -17,6 +17,7 @@ describe('coercePreferences', () => {
       refreshMs: 5000,
       historySeconds: 60,
       closeBehaviour: 'quit',
+      logLevel: 'verbose',
       hasSeenTrayNotice: true,
       overviewPanels: [],
     };
@@ -47,6 +48,18 @@ describe('coercePreferences', () => {
     expect(coercePreferences({ closeBehaviour: 'nonsense' }).closeBehaviour).toBe(
       DEFAULT_PREFERENCES.closeBehaviour
     );
+  });
+
+  it('rejects a log level that is not one the UI offers', () => {
+    // The fallback direction matters here: the loudest level writes a line
+    // every couple of seconds all day, so an unrecognised stored value must
+    // land on the quietest rather than on whatever it happened to say.
+    expect(coercePreferences({ logLevel: 'trace' }).logLevel).toBe('info');
+    expect(DEFAULT_PREFERENCES.logLevel).toBe('info');
+  });
+
+  it('keeps a log level the UI does offer', () => {
+    expect(coercePreferences({ logLevel: 'verbose' }).logLevel).toBe('verbose');
   });
 
   it('rejects a refresh interval that is not one the UI offers', () => {
@@ -80,6 +93,7 @@ describe('loadPreferences', () => {
       refreshMs: 1000,
       historySeconds: 600,
       closeBehaviour: 'quit',
+      logLevel: 'debug',
       hasSeenTrayNotice: true,
       overviewPanels: [],
     };

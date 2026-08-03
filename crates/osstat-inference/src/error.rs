@@ -133,6 +133,31 @@ pub enum AcquireError {
 }
 
 impl AcquireError {
+    /// A stable, user-data-free name for this variant, safe to write to a log.
+    ///
+    /// [`Display`](std::fmt::Display) is not: every variant here names a file,
+    /// a path or a URL, which is the whole point of the messages and exactly
+    /// what must not reach a log line. Logging code takes this instead.
+    ///
+    /// The match has no wildcard arm on purpose. A new variant must fail to
+    /// compile rather than quietly logging as something it is not.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::UnsupportedTarget { .. } => "unsupported_target",
+            Self::UnknownArtifact { .. } => "unknown_artifact",
+            Self::Network { .. } => "network",
+            Self::HttpStatus { .. } => "http_status",
+            Self::NotEnoughSpace { .. } => "not_enough_space",
+            Self::ChecksumMismatch { .. } => "checksum_mismatch",
+            Self::SizeMismatch { .. } => "size_mismatch",
+            Self::Extraction { .. } => "extraction",
+            Self::ServerMissing { .. } => "server_missing",
+            Self::NotExecutable { .. } => "not_executable",
+            Self::Io { .. } => "io",
+        }
+    }
+
     /// Whether this failure is worth offering a retry for.
     ///
     /// False for [`Self::ChecksumMismatch`] above all: retrying a hash that did
@@ -224,5 +249,107 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("1075000000"));
         assert!(message.contains("4096"));
+    }
+
+    /// A `reqwest::Error` without a socket: an unusable URL fails in the
+    /// builder, before any request is made.
+    fn a_transport_error() -> reqwest::Error {
+        reqwest::Client::new()
+            .get("nowhere-in-particular")
+            .build()
+            .unwrap_err()
+    }
+
+    #[test]
+    fn every_variant_has_a_distinct_kind() {
+        // A copied-and-not-edited string makes two different failures look
+        // identical in a log, which is worse than no log line.
+        let kinds = [
+            AcquireError::UnsupportedTarget {
+                os: String::new(),
+                arch: String::new(),
+            }
+            .kind(),
+            AcquireError::UnknownArtifact { id: String::new() }.kind(),
+            AcquireError::Network {
+                url: String::new(),
+                source: a_transport_error(),
+            }
+            .kind(),
+            AcquireError::HttpStatus {
+                url: String::new(),
+                status: 500,
+            }
+            .kind(),
+            AcquireError::NotEnoughSpace {
+                path: PathBuf::new(),
+                needed_bytes: 0,
+                available_bytes: 0,
+            }
+            .kind(),
+            AcquireError::ChecksumMismatch {
+                file: String::new(),
+                expected: String::new(),
+                actual: String::new(),
+            }
+            .kind(),
+            AcquireError::SizeMismatch {
+                file: String::new(),
+                expected_bytes: 0,
+                actual_bytes: 0,
+            }
+            .kind(),
+            AcquireError::Extraction {
+                file: String::new(),
+                message: String::new(),
+            }
+            .kind(),
+            AcquireError::ServerMissing {
+                file: String::new(),
+            }
+            .kind(),
+            AcquireError::NotExecutable {
+                path: PathBuf::new(),
+                source: std::io::Error::other("x"),
+            }
+            .kind(),
+            AcquireError::Io {
+                path: PathBuf::new(),
+                source: std::io::Error::other("x"),
+            }
+            .kind(),
+        ];
+        let mut seen: Vec<&str> = Vec::new();
+        for kind in kinds {
+            assert!(!seen.contains(&kind), "duplicate kind {kind}");
+            assert!(!kind.is_empty());
+            seen.push(kind);
+        }
+    }
+
+    #[test]
+    fn a_kind_carries_no_user_data() {
+        // The whole reason kind() exists: the Display of this variant contains
+        // a path, and the kind must not.
+        let error = AcquireError::Io {
+            path: PathBuf::from("/home/someone/Library/runtimes"),
+            source: std::io::Error::other("x"),
+        };
+
+        assert_eq!(error.kind(), "io");
+        assert!(!error.kind().contains('/'));
+    }
+
+    #[test]
+    fn a_checksum_mismatch_kind_drops_the_file_name_and_both_hashes() {
+        let error = AcquireError::ChecksumMismatch {
+            file: "llama.zip".to_owned(),
+            expected: "a".repeat(64),
+            actual: "b".repeat(64),
+        };
+
+        assert_eq!(error.kind(), "checksum_mismatch");
+        assert!(!error.kind().contains("llama"));
+        assert!(!error.kind().contains("aaaa"));
     }
 }

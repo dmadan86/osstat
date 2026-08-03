@@ -335,6 +335,10 @@ fn run(
     // Probe for GPUs first: it is the slowest thing here and it only happens
     // once, so it runs off the startup path rather than delaying the window.
     let devices = gpus.devices().unwrap_or_default();
+    // The count, never what they are. A GPU's model name is hardware the user
+    // owns rather than something they typed, but it is still theirs, and there
+    // is no diagnosis this line enables that the count does not.
+    crate::log::gpus_probed(devices.len());
     {
         let mut snapshot = write(&shared.snapshot);
         snapshot.devices = Some(devices);
@@ -358,10 +362,12 @@ fn run(
 
         // The process table is read only in the foreground. It is the expensive
         // half of a tick, and nothing a hidden window shows depends on it.
+        let mut read = 0;
         if activity.reads_processes() {
             let processes = source.processes().unwrap_or_default();
             let diff = diff_processes(&previous, &processes);
 
+            read = processes.len();
             write(&shared.snapshot).processes.clone_from(&processes);
             previous = processes;
 
@@ -369,6 +375,10 @@ fn run(
                 let _ = app.emit(PROCESSES_EVENT, &diff);
             }
         }
+
+        // At `trace`, so only Verbose writes it. osstat ticks every two seconds
+        // all day; at any higher level this one line would be most of the log.
+        crate::log::sampler_tick(read);
 
         write(&shared.snapshot).history.push(sample.clone());
 

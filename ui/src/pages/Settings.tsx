@@ -10,6 +10,7 @@
 import { useEffect, useState } from 'react';
 
 import { InferenceRuntime } from '../components/InferenceRuntime';
+import { Logging } from '../components/Logging';
 import { ModelFolder } from '../components/ModelFolder';
 import { isAutostartEnabled, setAutostart } from '../lib/ipc';
 import { CHOICES, type Preferences } from '../lib/preferences';
@@ -261,6 +262,12 @@ export function Settings({ preferences, onChange }: SettingsProps): React.JSX.El
         />
         <InferenceRuntime />
         <ModelFolder />
+        <Logging
+          level={preferences.logLevel}
+          onChangeLevel={(logLevel) => {
+            onChange({ logLevel });
+          }}
+        />
       </div>
     </div>
   );

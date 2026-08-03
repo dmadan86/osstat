@@ -5,7 +5,7 @@
  * subscriptions the pages read. Everything else is a page or a component.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import type { GpuDevice } from './bindings/GpuDevice';
 import type { MetricsSample } from './bindings/MetricsSample';
@@ -13,7 +13,7 @@ import type { ModelSession } from './bindings/ModelSession';
 import type { SystemDescription } from './bindings/SystemDescription';
 import { EndProcessDialog } from './components/EndProcessDialog';
 import { Navigation } from './components/Navigation';
-import { setCloseBehaviour, setSampleInterval } from './lib/ipc';
+import { logUiEvent, setCloseBehaviour, setSampleInterval } from './lib/ipc';
 import { samplesInWindow, usePreferences, type Preferences } from './lib/preferences';
 import type { ProcessTree } from './lib/processTree';
 import type { EndProcessTarget } from './lib/termination';
@@ -76,6 +76,21 @@ export function App(): React.JSX.Element {
     setCloseBehaviour(preferences.closeBehaviour).catch(() => {});
   }, [preferences.closeBehaviour]);
 
+  // The front end reports into Rust's log rather than keeping one of its own,
+  // so a session reads as one ordered story instead of two files somebody has
+  // to interleave by timestamp. Which page, never what is on it.
+  const mounted = useRef(false);
+  useEffect(() => {
+    logUiEvent(mounted.current ? 'pageChanged' : 'ready').catch(() => {});
+    mounted.current = true;
+  }, [route]);
+
+  /** Applies a preference change, and notes that one happened. */
+  function changePreference(update: Partial<Preferences>): void {
+    updatePreferences(update);
+    logUiEvent('settingChanged').catch(() => {});
+  }
+
   const stacked = preferences.navigation === 'tabs';
 
   return (
@@ -110,7 +125,7 @@ export function App(): React.JSX.Element {
               tree={tree}
               processesLoaded={loaded}
               preferences={preferences}
-              onPreferenceChange={updatePreferences}
+              onPreferenceChange={changePreference}
               hiddenToTray={hiddenToTray}
               onEndProcess={setEndTarget}
               openedModel={openedModel}

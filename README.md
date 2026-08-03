@@ -36,6 +36,15 @@ delete permissions on your whole disk. osstat takes the opposite position:
   There is no analytics SDK, no crash reporter, and no phone-home.
 - **The rules are readable.** What gets cleaned is defined in TOML manifests you
   can read, diff and contribute to — not compiled into a binary.
+- **The log has nothing in it about you.** osstat keeps a week of daily log
+  files under its app-data directory (`%APPDATA%\dev.osstat.app\logs` on
+  Windows, `~/.local/share/dev.osstat.app/logs` on Linux,
+  `~/Library/Application Support/dev.osstat.app/logs` on macOS). No file names,
+  paths, process names, addresses, prompts or model replies reach one at any
+  setting, so you can attach one to a bug report without reading it first.
+  **Settings → Logs** chooses how much detail is captured and copies the set
+  into a folder you name. [SECURITY.md](SECURITY.md#logs) explains how that is
+  enforced rather than promised.
 - **It is small.** A Rust backend with the OS's own webview, not a bundled browser.
 
 Deliberately **not** included: registry "cleaning", driver updating, and malware
