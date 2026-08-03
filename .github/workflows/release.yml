@@ -69,18 +69,33 @@ jobs:
 
       - run: npm ci
 
+      # Code signing is opt-in, and opting in means having the secrets.
+      #
+      # Setting the Apple variables unconditionally does not produce an
+      # unsigned build on a repository without them: GitHub substitutes an
+      # empty string, the bundler sees the variable as *set*, and codesigning
+      # fails at `security import` with an empty certificate. The first real
+      # release attempt failed exactly this way. Exporting them only when a
+      # certificate exists is what actually makes signing optional.
+      - name: Configure Apple code signing
+        if: startsWith(matrix.os, 'macos') && secrets.APPLE_CERTIFICATE != ''
+        env:
+          CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          {
+            echo "APPLE_CERTIFICATE<<__OSSTAT_EOF__"
+            echo "$CERTIFICATE"
+            echo "__OSSTAT_EOF__"
+            echo "APPLE_CERTIFICATE_PASSWORD=${{ secrets.APPLE_CERTIFICATE_PASSWORD }}"
+            echo "APPLE_SIGNING_IDENTITY=${{ secrets.APPLE_SIGNING_IDENTITY }}"
+            echo "APPLE_ID=${{ secrets.APPLE_ID }}"
+            echo "APPLE_PASSWORD=${{ secrets.APPLE_PASSWORD }}"
+            echo "APPLE_TEAM_ID=${{ secrets.APPLE_TEAM_ID }}"
+          } >> "$GITHUB_ENV"
+
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Code signing. Releases are unsigned until these secrets exist; see
-          # docs for how to obtain them. Unsigned builds still install, with an
-          # OS warning.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: 'osstat __VERSION__'
