@@ -238,6 +238,26 @@ describe('Chat', () => {
     expect(chatStop).toHaveBeenCalled();
   });
 
+  it('unloads the model through chat_close and returns to the no-model state', async () => {
+    // The gap the user hit: a loaded 7B model holds around five gigabytes
+    // resident and the only way to give it back was to leave the page. The
+    // command named here is the point -- `chat_stop` ends a reply and leaves
+    // every byte of the weights where they are, so a control wired to it would
+    // look identical on screen and free nothing.
+    await renderChat();
+
+    await userEvent.click(screen.getByRole('button', { name: /unload/i }));
+
+    expect(chatClose).toHaveBeenCalledTimes(1);
+    expect(chatStop).not.toHaveBeenCalled();
+    // Back to the state that offers a model file, not merely one without a bar.
+    expect(await screen.findByLabelText(/model file/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /open model/i })).toBeInTheDocument();
+    expect(
+      screen.queryByText(`${String(session().gpuLayers)} layers on GPU`)
+    ).not.toBeInTheDocument();
+  });
+
   it('renders a fenced code block as code rather than as prose', async () => {
     await renderChat();
 

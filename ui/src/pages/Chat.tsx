@@ -483,6 +483,20 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
     });
   }
 
+  // Unloading ends the server and returns the page to its no-model state.
+  // Navigating away already does this (ADR-013), but a 7B model holds around
+  // five gigabytes resident and needing to leave the page to give that back is
+  // not a way to ask for it. A reply still streaming ends as a failure, because
+  // the stream it was reading no longer has a server behind it — which is the
+  // truth, and better than a transcript waiting forever on a dead process.
+  function unload(): void {
+    setSession(null);
+    setOpenError(null);
+    chatClose().catch((error: unknown) => {
+      setOpenError(messageOf(error));
+    });
+  }
+
   return (
     <div className="flex h-full flex-col gap-3">
       {session === null ? (
@@ -501,6 +515,7 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
           streaming={streaming}
           failure={state.failure}
           onStop={stop}
+          onUnload={unload}
           onNew={() => {
             dispatch({ kind: 'open', conversation: freshConversation(session.modelName) });
           }}
@@ -605,7 +620,7 @@ function OpenModel({
   );
 }
 
-/** The session's identity, its context meter, and the stop control. */
+/** The session's identity, its context meter, and the session controls. */
 function ModelBar({
   session,
   title,
@@ -613,6 +628,7 @@ function ModelBar({
   streaming,
   failure,
   onStop,
+  onUnload,
   onNew,
 }: {
   session: ModelSession;
@@ -621,6 +637,7 @@ function ModelBar({
   streaming: boolean;
   failure: string | null;
   onStop: () => void;
+  onUnload: () => void;
   onNew: () => void;
 }): React.JSX.Element {
   return (
@@ -653,6 +670,14 @@ function ModelBar({
             className="rounded-md border border-edge px-2 py-0.5 text-xs text-neutral-400 hover:bg-white/[0.04]"
           >
             New conversation
+          </button>
+          <button
+            type="button"
+            onClick={onUnload}
+            title="End the server and give back the memory the weights hold"
+            className="rounded-md border border-edge px-2 py-0.5 text-xs text-neutral-400 hover:bg-white/[0.04]"
+          >
+            Unload
           </button>
         </div>
       </div>
