@@ -102,19 +102,46 @@ The controls:
   hash matches, so nothing partial can be mistaken for a usable runtime.
 - What was downloaded is listed with its size in Settings and can be deleted.
 
-Model files follow the same rule, with one difference worth stating. They are
-verified against a SHA256 pinned in this repository and a mismatch aborts with
-no override, exactly as the runtime does. But the pins point at **community
-GGUF re-uploads** — third parties who re-quantised a model — rather than at the
-model vendors' own repositories, because the vendors' are gated behind an
-account and a licence acceptance. The publisher of every pinned file is recorded
-in the registry and named in the download control, so who you are trusting is
-visible rather than implied. Models are stored wherever you chose in Settings,
-and deleting one removes the file.
+Model files have **two verification tiers**, and osstat labels which one a model
+came from rather than presenting both as equally checked.
+
+**Pinned models** — the curated set in the fit matrix — are verified against a
+SHA256 pinned in this repository, and a mismatch aborts with no override,
+exactly as the runtime does. The pins point at **community GGUF re-uploads** —
+third parties who re-quantised a model — rather than at the model vendors' own
+repositories, because the vendors' are gated behind an account and a licence
+acceptance. The publisher of every pinned file is recorded in the registry and
+named in the download control, so who you are trusting is visible rather than
+implied.
+
+**Searched models** — anything you find through the search box — are verified
+against the SHA256 Hugging Face reports beside the file. That detects a
+corrupted transfer. It does **not** detect a compromised upload, because the
+digest and the file come from the same origin: whoever could replace one could
+replace the other. Nobody reviewed that hash in a pull request here.
+
+That is a real difference and osstat says so plainly. Every searched result and
+every model downloaded from one carries the label _Not reviewed · hash from
+Hugging Face_, in the search results and in the model list afterwards. A
+searched model is a choice you make knowingly, about a file you went looking for
+and picked; a searched model that downloaded and displayed exactly like a pinned
+one would retire this guarantee without telling anyone.
+
+What is the same across both tiers: the hash is always checked, a mismatch
+always aborts with no override and no retry, downloads land in a temporary file
+and move into place only after the hash matches, and search results with no
+usable hash are never offered at all. What differs is only where the hash came
+from. Gated repositories stay unavailable — osstat sends no authentication
+token — and split multi-part GGUF files are excluded rather than half-supported.
+
+Models are stored wherever you chose in Settings, and deleting one removes the
+file. **The webview makes no HTTP request for any of this**, including search:
+it hands a term to Rust and gets results back.
 
 A way to make osstat execute a binary that does not match its pinned hash is a
 critical vulnerability. So is a way to make an archive write outside its
-directory, or to reach the runtime's HTTP port from off the machine.
+directory, to reach the runtime's HTTP port from off the machine, or to make a
+searched model download without its label or with a hash osstat never checked.
 
 ### 6. Running a model, and what the chat keeps
 
