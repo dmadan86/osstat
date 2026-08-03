@@ -801,10 +801,20 @@ mod tests {
             interrupted.is_err(),
             "the fixture closed the connection half way through"
         );
-        assert_eq!(
-            std::fs::metadata(&part).unwrap().len(),
-            2048,
+        // A range, not an exact count. How much of a dropped response has
+        // reached the file depends on reqwest's internal buffering, which this
+        // code does not control -- asserting 2048 exactly made the test pass or
+        // fail on scheduling, and it failed in one CI job while passing in
+        // another on the same commit and platform. What has to hold is that
+        // something survived to resume from and that it is not the whole file.
+        let survived = std::fs::metadata(&part).unwrap().len();
+        assert!(
+            survived > 0,
             "the part must survive a dropped connection or there is nothing to resume"
+        );
+        assert!(
+            survived < 4096,
+            "the part holds {survived} bytes, so the connection was not cut"
         );
         assert!(!dest.exists());
 
