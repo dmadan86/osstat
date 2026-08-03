@@ -102,6 +102,16 @@ The controls:
   hash matches, so nothing partial can be mistaken for a usable runtime.
 - What was downloaded is listed with its size in Settings and can be deleted.
 
+Model files follow the same rule, with one difference worth stating. They are
+verified against a SHA256 pinned in this repository and a mismatch aborts with
+no override, exactly as the runtime does. But the pins point at **community
+GGUF re-uploads** — third parties who re-quantised a model — rather than at the
+model vendors' own repositories, because the vendors' are gated behind an
+account and a licence acceptance. The publisher of every pinned file is recorded
+in the registry and named in the download control, so who you are trusting is
+visible rather than implied. Models are stored wherever you chose in Settings,
+and deleting one removes the file.
+
 A way to make osstat execute a binary that does not match its pinned hash is a
 critical vulnerability. So is a way to make an archive write outside its
 directory, or to reach the runtime's HTTP port from off the machine.
