@@ -9,9 +9,23 @@
 //!
 //! **The webview never makes an HTTP request.** Every byte moves in Rust and
 //! reaches the front end over IPC, which is what keeps the CSP in
-//! `tauri.conf.json` an unweakened control (SECURITY.md threat 3). It is also
-//! what keeps "only pinned files are downloadable" true: there is no command
-//! here that takes a URL.
+//! `tauri.conf.json` an unweakened control (SECURITY.md threat 3). Search does
+//! not change that: [`models_search`] takes a term and returns results, and the
+//! requests behind it are made here.
+//!
+//! There is still **no command that takes a URL**.
+//! [`models_download_searched`] takes a [`SearchResult`], whose repository and
+//! file are re-validated against the same predicates the search filtered on
+//! before either is interpolated into one — because by the time the value comes
+//! back it has been through the webview, and a repository and a file that were
+//! not checked would be a URL by another name.
+//!
+//! Two verification tiers now exist and they stay visibly different all the way
+//! to the model list. A pinned file is checked against a hash reviewed in a pull
+//! request against this repository; a searched one against the hash Hugging Face
+//! reports beside it, which detects a corrupted transfer and not a replaced
+//! upload. [`Provenance`] rides on every catalogue entry so the UI can say
+//! which — see SECURITY.md threat 5.
 
 // Tauri resolves `AppHandle` and `State<'_, T>` by injecting them by value; a
 // reference is not part of the command signature it accepts. Both are cheap
@@ -24,8 +38,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use osstat_inference::{
-    AcquireError, ModelKey, ModelRecord, ModelStore, MovePlan, Progress,
-    download_resumable_retrying, download_url, move_library, plan_move, require_space,
+    AcquireError, ModelKey, ModelRecord, ModelStore, MovePlan, Progress, Provenance, SearchResult,
+    download_resumable_retrying, download_url, move_library, plan_move, require_space, search,
 };
 use osstat_llm::registry::{ModelDownload, seeded_registry};
 use serde::Serialize;
@@ -70,6 +84,13 @@ const RATE_WINDOW: Duration = Duration::from_secs(5);
 /// rate is computed from the two ends of the window and nothing in between.
 const RATE_SAMPLES: usize = 64;
 
+/// How many repositories one search consults.
+///
+/// Small on purpose. Each repository costs a second request, and one usually
+/// holds the same model at a dozen quantizations — so a larger figure buys a
+/// longer wait and a list nobody reads to the end of, not better answers.
+const SEARCH_LIMIT: usize = 8;
+
 /// How many times a cancelled download's partial file is chased.
 const DISCARD_ATTEMPTS: u32 = 5;
 
@@ -109,6 +130,14 @@ pub struct ModelCatalogueEntry {
     /// This is what the Run control hands to `chat_open_model`, so there is one
     /// path into a session rather than two.
     pub path: Option<String>,
+    /// Which verification tier this file was fetched under.
+    ///
+    /// Carried all the way to the model list rather than shown only on the
+    /// control that started the download: once the bytes are on disk nothing
+    /// about them says whether the hash they were checked against had been
+    /// reviewed by a person, and a list that showed both tiers identically
+    /// would retire a guarantee SECURITY.md still makes.
+    pub provenance: Provenance,
 }
 
 /// How a download or a move is progressing.
@@ -511,6 +540,9 @@ pub fn models_catalogue(state: State<'_, ModelState>) -> Vec<ModelCatalogueEntry
                 file: Some(download.file),
                 size_bytes: record.map_or(download.size_bytes, |record| record.size_bytes),
                 path: record.map(|record| shown(&record.path)),
+                // A cell of the curated matrix is pinned whether or not it has
+                // been downloaded: it is the registry's row, not a record's.
+                provenance: Provenance::Pinned,
                 key,
             });
         }
@@ -518,7 +550,9 @@ pub fn models_catalogue(state: State<'_, ModelState>) -> Vec<ModelCatalogueEntry
 
     // A record whose pin has since been withdrawn still describes a file on
     // disk the user can run. Dropping it here would make a model vanish from
-    // the advisor while its gigabytes stayed put.
+    // the advisor while its gigabytes stayed put. Every searched model arrives
+    // through this branch too — it occupies no cell of the curated matrix, so
+    // there is nothing above for it to join against.
     for record in present {
         if entries.iter().any(|entry| entry.key == record.key) {
             continue;
@@ -534,6 +568,8 @@ pub fn models_catalogue(state: State<'_, ModelState>) -> Vec<ModelCatalogueEntry
                 .map(|name| name.to_string_lossy().into_owned()),
             size_bytes: record.size_bytes,
             path: Some(shown(&record.path)),
+            // From the record, which is the only thing that still remembers.
+            provenance: record.provenance,
         });
     }
 
@@ -614,7 +650,19 @@ pub fn models_download(
     let url = download_url(&download.repo, &download.file);
 
     tauri::async_runtime::spawn(async move {
-        let outcome = fetch(&app, &url, &part, &destination, &download, &key, receiver).await;
+        let outcome = fetch(
+            &app,
+            &url,
+            &part,
+            &destination,
+            Expected {
+                sha256: &download.sha256,
+                size_bytes: download.size_bytes,
+            },
+            &key,
+            receiver,
+        )
+        .await;
 
         match outcome {
             Ok(()) => {
@@ -627,6 +675,9 @@ pub fn models_download(
                     sha256: download.sha256,
                     publisher: download.publisher,
                     repo: download.repo,
+                    // Everything the seed registry pins was reviewed in a pull
+                    // request against this repository.
+                    provenance: Provenance::Pinned,
                 });
 
                 // A verified file the index does not know about is a file the
@@ -662,7 +713,283 @@ pub fn models_download(
     Ok(())
 }
 
-/// Fetches one pinned file, retrying what is worth retrying and stopping early
+/// Searches Hugging Face for downloadable GGUF files.
+///
+/// **The webview makes no request here either.** It hands over a term and gets
+/// back results; every byte still moves in Rust, which is what keeps the CSP in
+/// `tauri.conf.json` an unweakened control (SECURITY.md threat 3).
+///
+/// Results from here are a **weaker tier** than the pinned seven: the hash they
+/// carry is the one Hugging Face reports beside the file, so verifying it
+/// detects a corrupted transfer and not a replaced upload. The UI has to say so
+/// — see [`Provenance`].
+///
+/// # Errors
+///
+/// If the search term is empty, or Hugging Face could not be reached. A
+/// response that will not parse yields no results rather than an error.
+#[tauri::command]
+pub async fn models_search(query: String) -> Result<Vec<SearchResult>, String> {
+    let query = query.trim().to_owned();
+    if query.is_empty() {
+        return Err("type something to search for".to_owned());
+    }
+
+    let started = std::time::Instant::now();
+    let client = reqwest::Client::new();
+
+    match search(&client, &query, SEARCH_LIMIT).await {
+        Ok(results) => {
+            // The count and the duration. Never the term, and never a
+            // repository or file name: what someone went looking for is the
+            // most obviously personal thing this app touches.
+            crate::log::search_finished(results.len(), started.elapsed().as_secs());
+            Ok(results)
+        }
+        Err(error) => {
+            crate::log::search_failed(error.kind());
+            Err(error.to_string())
+        }
+    }
+}
+
+/// What the advisor makes of a searched file, having read its header.
+///
+/// Every field comes out of [`osstat_chat::plan_launch`] or out of the header it
+/// was given. Nothing here is derived from the file size and a quantization tag
+/// — that guess is what ADR-008 names as the worst thing this feature could do,
+/// and the reason it is not needed is that the header was read rather than
+/// guessed at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct SearchedFit {
+    /// Layers that would be offloaded to the GPU — what `-ngl` would be given.
+    pub gpu_layers: u32,
+    /// The model's transformer block count, so a partial offload can be shown
+    /// as the fraction it is rather than as a bare number.
+    pub block_count: u32,
+    /// The context window that would be allocated.
+    pub context_length: u32,
+    /// Whether every layer fitted. `false` is a warning, never a refusal.
+    pub fits: bool,
+    /// Whether the KV-cache arithmetic rested on a derived head dimension.
+    ///
+    /// Travels for the same reason it does on [`crate::chat::ModelSession`]: a
+    /// derived figure is right for standard attention and wrong for models that
+    /// diverge, and a mis-sized cache is otherwise a mystery rather than a
+    /// diagnosis.
+    pub head_dim_derived: bool,
+}
+
+/// Prices one searched file, by reading the header off the front of it.
+///
+/// **This is the same verdict a downloaded model gets.** A GGUF header sits at
+/// the start of the file, so the architecture can be fetched with a `Range`
+/// request without the weights behind it, and then handed to the very
+/// [`osstat_chat::plan_launch`] that [`crate::chat::chat_open_model`] hands a
+/// locally-read header to. There is one calculator and one launch plan in the
+/// codebase; a searched model and the same file once downloaded cannot disagree,
+/// because nothing here does any arithmetic of its own.
+///
+/// Called **per result and on demand**, never for a whole page of them: this is
+/// a network request against a multi-gigabyte file, and making one for every row
+/// a search returned would spend a dozen round trips on rows nobody looked at.
+///
+/// `result` has been through the webview, so it is checked again rather than
+/// trusted — the same reason [`models_download_searched`] checks it. A `Range`
+/// request is still a request, and a repository and file interpolated into a URL
+/// without validation would be the URL-taking command ADR-012 rests on there not
+/// being.
+///
+/// # Errors
+///
+/// If the result is not one a search could have produced, the GPU probe has not
+/// finished, the file could not be reached, or its header is not readable within
+/// the ceiling — the last being what a server that ignores `Range` produces. The
+/// caller shows the size alone in every one of those cases.
+#[tauri::command]
+pub async fn models_price_searched(
+    sampler: State<'_, crate::sampler::Sampler>,
+    result: SearchResult,
+) -> Result<SearchedFit, String> {
+    if !result.is_well_formed() {
+        return Err("that result cannot be priced: it is not a whole, hashed GGUF file from a Hugging Face repository".to_owned());
+    }
+
+    // Read before the request rather than after it, for the same reason
+    // `llm_advice` and `chat_open_model` refuse to answer early: pricing a model
+    // against "no GPU" on a machine that has one is a confident wrong answer,
+    // and it would be the confident wrong answer the user acts on.
+    let devices = sampler.devices().ok_or_else(|| {
+        crate::log::header_fetch_failed("probe_unfinished");
+        "the GPU probe has not finished yet".to_owned()
+    })?;
+    let budget = osstat_llm::calculator::select_gpu_budget(&devices);
+
+    let url = download_url(&result.repo, &result.file);
+    let started = Instant::now();
+
+    let model = osstat_chat::fetch_header(&reqwest::Client::new(), &url)
+        .await
+        .map_err(|error| {
+            // The kind and nothing else. The URL this failed on is built from a
+            // repository and a file name, which is what the user searched for.
+            crate::log::header_fetch_failed(error.kind());
+            error.to_string()
+        })?;
+
+    crate::log::header_fetched(started.elapsed().as_secs());
+
+    // The size the search reported, which is the size the loader will read —
+    // the same figure `chat_open_model` takes from the file's metadata.
+    let plan = osstat_chat::plan_launch(&model, result.size_bytes, budget);
+
+    Ok(SearchedFit {
+        gpu_layers: plan.gpu_layers,
+        block_count: model.block_count,
+        context_length: plan.context_length,
+        fits: plan.fits,
+        head_dim_derived: model.head_dim_derived,
+    })
+}
+
+/// The cell a searched file occupies in the index.
+///
+/// Repository and file name, which cannot collide with a registry cell because
+/// a repository always contains a slash and a registry model id never does.
+/// That is what lets one [`ModelStore`] hold both tiers, and one
+/// [`models_delete`] remove either.
+fn searched_key(result: &SearchResult) -> ModelKey {
+    ModelKey {
+        model_id: result.repo.clone(),
+        quant_id: result.file.clone(),
+    }
+}
+
+/// Starts downloading a searched model, reporting through `model:*` events.
+///
+/// The same transfer as [`models_download`] in every respect that matters —
+/// [`download_resumable_retrying`] unchanged, so pause, resume, the bounded
+/// backoff and the free-space check all apply — and the same refusal on a hash
+/// that does not match. What differs is [`ModelRecord::provenance`], which
+/// records that the hash came from the same origin as the file.
+///
+/// `result` has been through the webview, so it is checked again rather than
+/// trusted. ADR-012 rests on there being no command that takes a URL, and a
+/// repository and file interpolated into one are a URL unless both are
+/// validated — see [`SearchResult::is_well_formed`].
+///
+/// # Errors
+///
+/// If the result is not one a search could have produced, another download is
+/// already running, the folder cannot be created, or there is not enough room —
+/// the last **before any HTTP request is made**. Failures *during* the download
+/// arrive on `model:failed`, not here.
+#[tauri::command]
+pub fn models_download_searched(
+    app: AppHandle,
+    state: State<'_, ModelState>,
+    result: SearchResult,
+) -> Result<(), String> {
+    if !result.is_well_formed() {
+        return Err("that result cannot be downloaded: it is not a whole, hashed GGUF file from a Hugging Face repository".to_owned());
+    }
+
+    let key = searched_key(&result);
+    let folder = state.folder();
+    ensure_folder(&folder)?;
+
+    // The last segment only: the local library is flat, and nothing here
+    // rebuilds a remote directory tree on the user's disk.
+    let destination = folder.join(result.file_name());
+    let part = destination.with_extension(PART_SUFFIX);
+
+    let already = std::fs::metadata(&part).map_or(0, |data| data.len());
+    let outstanding = result.size_bytes.saturating_sub(already);
+
+    require_space(&folder, outstanding).map_err(|error| {
+        crate::log::download_failed(error.kind());
+        error.to_string()
+    })?;
+
+    state.claim(Busy {
+        key: Some(key.clone()),
+        what: result.file_name().to_owned(),
+    })?;
+
+    crate::log::download_started(result.size_bytes);
+    let started = std::time::Instant::now();
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    if let Ok(mut held) = state.cancel.lock() {
+        *held = Some(sender);
+    }
+
+    let store = state.store();
+    let url = download_url(&result.repo, &result.file);
+
+    tauri::async_runtime::spawn(async move {
+        let outcome = fetch(
+            &app,
+            &url,
+            &part,
+            &destination,
+            Expected {
+                sha256: &result.sha256,
+                size_bytes: result.size_bytes,
+            },
+            &key,
+            receiver,
+        )
+        .await;
+
+        match outcome {
+            Ok(()) => {
+                crate::log::download_finished(result.size_bytes, started.elapsed().as_secs());
+
+                let recorded = store.record(ModelRecord {
+                    key: key.clone(),
+                    path: destination.clone(),
+                    size_bytes: result.size_bytes,
+                    sha256: result.sha256,
+                    publisher: result.publisher,
+                    repo: result.repo,
+                    // The whole point of the field. A searched file recorded as
+                    // pinned would be indistinguishable in the model list from
+                    // one whose hash a person reviewed.
+                    provenance: Provenance::Searched,
+                });
+
+                let _ = match recorded {
+                    Ok(()) => app.emit(
+                        MODEL_DONE_EVENT,
+                        ModelDone {
+                            key: Some(key),
+                            path: shown(&destination),
+                        },
+                    ),
+                    Err(error) => {
+                        crate::log::download_failed(error.kind());
+                        app.emit(MODEL_FAILED_EVENT, ModelFailure::of(Some(key), &error))
+                    }
+                };
+            }
+            Err(failure) => {
+                let _ = app.emit(MODEL_FAILED_EVENT, failure);
+            }
+        }
+
+        if let Some(state) = app.try_state::<ModelState>() {
+            state.release();
+        }
+    });
+
+    Ok(())
+}
+
+/// Fetches one file, retrying what is worth retrying and stopping early
 /// if the user asks.
 ///
 /// Stopping drops the transfer mid-write, which leaves the part file exactly as
@@ -673,12 +1000,30 @@ pub fn models_download(
 /// interrupts a download **and** the backoff between two attempts. A Pause that
 /// took effect only once a sixteen-second wait had elapsed would read as a
 /// control that did not work.
+/// What a transfer must turn out to be, whichever tier asked for it.
+///
+/// One struct rather than two loose arguments so that adding a third thing to
+/// check reaches both callers, and so [`fetch`] cannot be given a pinned size
+/// beside a searched hash.
+#[derive(Debug, Clone, Copy)]
+struct Expected<'a> {
+    /// The hex SHA256 the finished file must have.
+    sha256: &'a str,
+    /// The size the response must advertise, checked before any byte is written.
+    size_bytes: u64,
+}
+
+/// Takes the hash and the size rather than a [`ModelDownload`], so a searched
+/// model travels this exact code path: pause, resume, the bounded backoff and
+/// the refusal on a mismatch are one implementation rather than two that could
+/// drift. The tier a file came from changes what is recorded afterwards and
+/// nothing about how it is fetched.
 async fn fetch(
     app: &AppHandle,
     url: &str,
     part: &Path,
     destination: &Path,
-    download: &ModelDownload,
+    expected: Expected<'_>,
     key: &ModelKey,
     cancel: tokio::sync::oneshot::Receiver<Stop>,
 ) -> Result<(), ModelFailure> {
@@ -711,8 +1056,8 @@ async fn fetch(
         url,
         part,
         destination,
-        &download.sha256,
-        download.size_bytes,
+        expected.sha256,
+        expected.size_bytes,
         &mut on_progress,
     );
 
@@ -1381,9 +1726,133 @@ mod tests {
             file: Some("a.gguf".to_owned()),
             size_bytes: 400,
             path: None,
+            provenance: Provenance::Pinned,
         })
         .unwrap();
         assert!(entry.as_object().unwrap().contains_key("sizeBytes"));
+    }
+
+    /// A result of the shape [`search`] produces.
+    fn sample_result() -> SearchResult {
+        SearchResult {
+            repo: "bartowski/Some-Model-GGUF".to_owned(),
+            publisher: "bartowski".to_owned(),
+            file: "Some-Model-Q4_K_M.gguf".to_owned(),
+            size_bytes: 4_683_074_240,
+            sha256: "a".repeat(64),
+            quant_hint: Some("Q4_K_M".to_owned()),
+        }
+    }
+
+    #[test]
+    fn a_searched_cell_cannot_collide_with_a_pinned_one() {
+        // Both tiers share one index and one delete command, so the keys have
+        // to be distinguishable. A repository always contains a slash and a
+        // registry model id never does, which is what makes that true rather
+        // than merely unlikely.
+        let key = searched_key(&sample_result());
+
+        assert!(key.model_id.contains('/'));
+        assert!(
+            !seeded_registry()
+                .models
+                .iter()
+                .any(|model| model.id == key.model_id),
+            "a searched key took a registry model's id"
+        );
+        assert_ne!(key, sample_key());
+    }
+
+    #[test]
+    fn a_result_the_webview_could_have_altered_is_refused_before_any_request() {
+        // The command takes a repository and a file, which become a URL. ADR-012
+        // rests on there being no command that takes a URL, so the check has to
+        // happen here rather than only in the search that produced the value.
+        for bad in [
+            SearchResult {
+                repo: "https://elsewhere.invalid/x".to_owned(),
+                ..sample_result()
+            },
+            SearchResult {
+                file: "../../../../Windows/System32/x.gguf".to_owned(),
+                ..sample_result()
+            },
+            SearchResult {
+                sha256: String::new(),
+                ..sample_result()
+            },
+        ] {
+            assert!(
+                !bad.is_well_formed(),
+                "a result the search would never produce was accepted: {bad:?}"
+            );
+        }
+
+        assert!(sample_result().is_well_formed());
+    }
+
+    #[test]
+    fn a_searched_file_is_saved_flat_rather_than_under_its_remote_folders() {
+        let nested = SearchResult {
+            file: "Q4_K_M/Some-Model.gguf".to_owned(),
+            ..sample_result()
+        };
+
+        assert!(nested.is_well_formed());
+        assert_eq!(nested.file_name(), "Some-Model.gguf");
+    }
+
+    #[test]
+    fn a_pinned_cell_of_the_matrix_reports_pinned_provenance() {
+        // Every cell of the curated matrix is pinned whether or not it has been
+        // downloaded: it is the registry's row, not a record's.
+        let entry = ModelCatalogueEntry {
+            key: sample_key(),
+            state: "downloadable".to_owned(),
+            publisher: Some("bartowski".to_owned()),
+            repo: Some("bartowski/Qwen2.5-0.5B-Instruct-GGUF".to_owned()),
+            file: Some("a.gguf".to_owned()),
+            size_bytes: 400,
+            path: None,
+            provenance: Provenance::Pinned,
+        };
+
+        assert_eq!(entry.provenance, Provenance::Pinned);
+    }
+
+    #[test]
+    fn the_two_tiers_reach_the_webview_as_different_strings() {
+        // The label is the feature, and the UI cannot render a distinction the
+        // payload does not carry.
+        let entry = |provenance| {
+            serde_json::to_value(ModelCatalogueEntry {
+                key: sample_key(),
+                state: "downloaded".to_owned(),
+                publisher: Some("bartowski".to_owned()),
+                repo: Some("bartowski/Some-GGUF".to_owned()),
+                file: Some("a.gguf".to_owned()),
+                size_bytes: 400,
+                path: Some("D:\\models\\a.gguf".to_owned()),
+                provenance,
+            })
+            .unwrap()
+        };
+
+        assert_eq!(entry(Provenance::Pinned)["provenance"], "pinned");
+        assert_eq!(entry(Provenance::Searched)["provenance"], "searched");
+    }
+
+    #[test]
+    fn a_search_result_reaches_the_webview_in_camel_case() {
+        let json = serde_json::to_value(sample_result()).unwrap();
+        let object = json.as_object().unwrap();
+
+        assert!(object.contains_key("sizeBytes"));
+        assert!(object.contains_key("quantHint"));
+        assert!(
+            !object.contains_key("verdict") && !object.contains_key("tier"),
+            "a searched result grew a field the advisor cannot honestly fill: {object:?}"
+        );
     }
 
     #[test]

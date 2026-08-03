@@ -36,6 +36,8 @@ import type { ModelFailure } from '../bindings/ModelFailure';
 import type { ModelProgress } from '../bindings/ModelProgress';
 import type { ModelRegistry } from '../bindings/ModelRegistry';
 import type { ModelSession } from '../bindings/ModelSession';
+import type { SearchedFit } from '../bindings/SearchedFit';
+import type { SearchResult } from '../bindings/SearchResult';
 import type { PortRecord } from '../bindings/PortRecord';
 import type { ProcessDiff } from '../bindings/ProcessDiff';
 import type { ProcessKey } from '../bindings/ProcessKey';
@@ -74,6 +76,9 @@ export const COMMANDS = {
   chatDelete: 'chat_delete',
   modelsCatalogue: 'models_catalogue',
   modelsDownload: 'models_download',
+  modelsSearch: 'models_search',
+  modelsPriceSearched: 'models_price_searched',
+  modelsDownloadSearched: 'models_download_searched',
   modelsPause: 'models_pause',
   modelsCancel: 'models_cancel',
   modelsDelete: 'models_delete',
@@ -358,6 +363,68 @@ export function fetchModelCatalogue(): Promise<ModelCatalogueEntry[]> {
  */
 export async function downloadModel(modelId: string, quantId: string): Promise<void> {
   await invoke(COMMANDS.modelsDownload, { modelId, quantId });
+}
+
+/**
+ * Searches Hugging Face for downloadable GGUF files.
+ *
+ * The webview makes no request of its own here — it hands over a term and gets
+ * back results. Every byte still moves in Rust, which is what keeps the CSP an
+ * unweakened control (SECURITY.md threat 3).
+ *
+ * Results are a **weaker verification tier** than the pinned seven: the hash
+ * they carry comes from the same origin as the file, so checking it detects a
+ * corrupted transfer and not a replaced upload. Anything rendering these must
+ * say so — see {@link downloadSearchedModel}.
+ *
+ * Rejects if the term is empty or Hugging Face could not be reached. A response
+ * that will not parse resolves to an empty list rather than rejecting.
+ *
+ * @param query What to search for.
+ */
+export function searchModels(query: string): Promise<SearchResult[]> {
+  return invoke<SearchResult[]>(COMMANDS.modelsSearch, { query });
+}
+
+/**
+ * Prices one searched result, having read its header off the front of the file.
+ *
+ * A GGUF header sits at the start of the file, so Rust fetches it with a `Range`
+ * request and hands it to the same launch arithmetic a downloaded model gets.
+ * **The verdict is therefore the real one, not an estimate** — there is one
+ * calculator in the codebase and this uses it.
+ *
+ * One network request against a multi-gigabyte file, so call it **on demand**
+ * for the result somebody asked about, never in a loop over a page of them.
+ *
+ * Rejects if the GPU probe has not finished, the file could not be reached, or
+ * its header did not arrive within the ceiling Rust reads to — which is what a
+ * server that ignores `Range` produces. A rejection means "unpriced": show the
+ * size alone and say why, rather than guessing a verdict from it.
+ *
+ * @param result A result {@link searchModels} returned, unaltered. Rust checks
+ *   it again rather than trusting it, so an edited one is refused.
+ */
+export function priceSearchedModel(result: SearchResult): Promise<SearchedFit> {
+  return invoke<SearchedFit>(COMMANDS.modelsPriceSearched, { result });
+}
+
+/**
+ * Starts downloading a searched model.
+ *
+ * The same transfer as {@link downloadModel} in every respect that matters —
+ * pause, resume, the bounded backoff, the free-space check, and the same
+ * refusal on a hash that does not match. What differs is what gets recorded:
+ * the model is marked `searched`, and the model list says so.
+ *
+ * Resolves as soon as the work is spawned. Progress and the outcome arrive on
+ * {@link onModelProgress}, {@link onModelDone} and {@link onModelFailed}.
+ *
+ * @param result A result {@link searchModels} returned, unaltered. Rust checks
+ *   it again rather than trusting it, so an edited one is refused.
+ */
+export async function downloadSearchedModel(result: SearchResult): Promise<void> {
+  await invoke(COMMANDS.modelsDownloadSearched, { result });
 }
 
 /**

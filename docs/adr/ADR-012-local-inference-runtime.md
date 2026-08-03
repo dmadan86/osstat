@@ -1,6 +1,7 @@
 # ADR-012: Local inference runtime
 
-**Status:** Accepted
+**Status:** Accepted, amended for model search (see "Amendment: searched models"
+below)
 
 ## Context
 
@@ -114,3 +115,73 @@ rather than hoped for.
 If upstream renames or drops an artifact, the drift tests fail rather than the
 app failing on a user's machine. Adding a backend is one `runtimes.json` entry
 and one arm in `Backend::artifact_id`.
+
+## Amendment: searched models
+
+**This scopes the pinned-hash rule. It does not overturn it.**
+
+The advisor now has a search box: a user can look up any public GGUF file on
+Hugging Face and download it, alongside the seven curated models. Those files
+are verified against the SHA256 Hugging Face reports beside them — the LFS oid,
+which for a GGUF in an LFS-backed repository is the file's SHA256.
+
+That is exactly the arrangement this ADR rejected above: a digest fetched
+alongside its file proves the transfer was not corrupted and cannot prove the
+file is the one anybody reviewed. The reasoning still stands. What changes is
+that it is now applied to the thing it was about rather than to everything.
+
+**What the pinned rule still governs, unchanged:**
+
+- The **runtime binary**, which osstat _executes_. Nothing here touches
+  `runtimes.json`, the refusal on mismatch, or the refresh procedure above.
+- The **seven curated models**, whose hashes live in `osstat-llm`'s registry and
+  were reviewed in a pull request. Search adds a second list beside them; it
+  changes nothing about how they behave.
+
+**Why weights the user chose are different from a binary osstat runs.** The
+runtime is code osstat starts as a subprocess, on every launch, without being
+asked again. Compromising a release would change what osstat executes on every
+machine that updated. A model is data the user went looking for, named, and
+picked from a list — a decision made once, knowingly, about a specific file. The
+blast radius and the consent are both different, and pretending otherwise would
+mean either refusing a feature people reasonably want or pinning hashes for the
+whole of Hugging Face.
+
+**The condition on which the trade is acceptable: osstat says which is which.**
+Two tiers now exist and they are labelled everywhere they appear — in the search
+results, on the download control, and in the model list after the file is on
+disk. `ModelRecord::provenance` records it so the label outlives the search that
+found the file. A searched result that downloaded and displayed identically to a
+pinned one would retire a guarantee SECURITY.md still makes, silently, which is
+the failure this amendment exists to prevent. SECURITY.md threat 5 states both
+tiers explicitly.
+
+**What is unchanged by design:**
+
+- **All egress stays in Rust.** `models_search` takes a term, not a URL, and
+  makes the requests itself. The webview issues no HTTP request, so the CSP
+  remains the unweakened control it was.
+- **There is still no command that takes a URL.** `models_download_searched`
+  takes a `SearchResult` and re-validates its repository and file name against
+  the same predicates the search filtered on, because by then the value has been
+  through the webview. A repository and a file interpolated into a URL are a URL
+  unless both are checked.
+- **A hash is always checked and a mismatch always aborts** with no retry and no
+  override. The weaker guarantee is about _where the hash came from_, not about
+  whether it is verified.
+- **A result with no usable hash is never offered.** A file with no LFS oid, or
+  an oid that is not 64 hex characters, is dropped rather than downloaded
+  unverified.
+- **Out of scope, deliberately:** authentication tokens (so gated repositories
+  stay unavailable), split multi-part GGUF files, and any source other than
+  Hugging Face.
+
+**What the advisor may say about a searched model: its file size, and nothing
+else.** No fit verdict, no speed tier, no layer count. The fit matrix prices a
+model from its architecture, which lives in the registry for the pinned seven
+and in the GGUF header for everything else — and the header only exists once the
+file is downloaded. Deriving a parameter count from file size and quantization
+bits would produce a figure that looks like the calculator's output and is a
+guess, which ADR-008 names as the worst thing this feature could do. After the
+download the header is read and the model is priced properly, exactly as an
+imported file is.

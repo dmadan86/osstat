@@ -123,9 +123,20 @@ executable behind.
 
 ### M4.2–M4.4 — Running a model
 
-- [ ] **M4.2** Model acquisition: Hugging Face search and resumable GGUF
-      download. Local file import and GGUF header parsing landed with M4.3,
-      so this now adds downloading to a chat that already works.
+- [x] **M4.2** Model acquisition: resumable GGUF download of the seven pinned
+      models, plus **Hugging Face search** for anything else public. Local file
+      import and GGUF header parsing landed with M4.3, so this added downloading
+      to a chat that already worked. Two verification tiers now exist and are
+      labelled as such wherever a model appears — pinned files are checked
+      against a hash reviewed in this repository, searched files against the hash
+      Hugging Face reports beside them, which catches a corrupted transfer and
+      not a compromised upload
+      ([ADR-012 amendment](docs/adr/ADR-012-local-inference-runtime.md),
+      SECURITY.md threat 5). A searched result shows its file size and nothing
+      else: no verdict until the file is on disk and its GGUF header has been
+      read. Out, deliberately: authentication tokens, so gated repositories stay
+      unavailable; split multi-part GGUF files; and any source other than
+      Hugging Face.
 - [x] **M4.3** Inference session: spawn with layer and context counts computed
       from the model file, supervise, stream, cancel, tear down without
       orphaning the process ([ADR-013](docs/adr/ADR-013-inference-session.md))
