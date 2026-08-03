@@ -99,12 +99,12 @@ on machinery that already exists):
       `tokio::time::sleep` between attempts.
 
       Pause and cancel share a cancellation token; they differ only in whether
-          the `.part` is removed afterwards. Add a doc comment saying so, because
-          the difference is one line and will otherwise look accidental.
+                      the `.part` is removed afterwards. Add a doc comment saying so, because
+                      the difference is one line and will otherwise look accidental.
 
-          Rate and ETA are computed from consecutive progress events over a short
-          window rather than the whole transfer, so a stall is visible instead of
-          being averaged away.
+                      Rate and ETA are computed from consecutive progress events over a short
+                      window rather than the whole transfer, so a stall is visible instead of
+                      being averaged away.
 
 - [ ] **Step 4: Run tests + `cargo clippy --workspace --all-targets --all-features -- -D warnings` + `cargo fmt --all --check` + `just bindings`.**
 
