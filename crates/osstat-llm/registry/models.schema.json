@@ -69,6 +69,49 @@
         "sourceNote": {
           "type": "string",
           "description": "Where the numbers above came from — a model card, technical report or config.json — so a reviewer can check them without re-deriving anything."
+        },
+        "downloads": {
+          "type": "array",
+          "description": "The pinned GGUF files available for this model, at most one per quantization. Absent or empty means the model is priced by the calculator but cannot be downloaded — a cell with no button rather than a button that fails.",
+          "items": { "$ref": "#/$defs/download" }
+        }
+      }
+    },
+    "download": {
+      "type": "object",
+      "required": ["quantId", "repo", "publisher", "file", "sha256", "sizeBytes"],
+      "additionalProperties": false,
+      "description": "One downloadable GGUF file. The URL is derived as https://huggingface.co/{repo}/resolve/main/{file} rather than stored, so the host cannot vary per entry.",
+      "properties": {
+        "quantId": {
+          "type": "string",
+          "pattern": "^[A-Z0-9_]+$",
+          "description": "The quantLevel id this file is a build of. A quantId the registry does not define is a download control on a cell that does not exist, which a drift test rejects."
+        },
+        "repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$",
+          "description": "Hugging Face repository, e.g. bartowski/Qwen2.5-7B-Instruct-GGUF."
+        },
+        "publisher": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Who published the re-quantization. These are community re-uploads rather than the model vendors' own gated repositories, so the UI names the publisher rather than presenting one as the other."
+        },
+        "file": {
+          "type": "string",
+          "pattern": "\\.gguf$",
+          "description": "File name within the repository. Multi-part files are not supported."
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA256 of the file, lowercase hex, taken from the Hugging Face API's Git-LFS oid. A mismatch aborts the download with no override."
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "Exact size in bytes as reported by the Hugging Face API, not an estimate — the free-space check depends on it."
         }
       }
     },

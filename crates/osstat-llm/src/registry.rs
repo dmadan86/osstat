@@ -70,6 +70,43 @@ pub struct ModelArchitecture {
     pub max_context_length: u32,
 }
 
+/// One downloadable GGUF file: a specific model at a specific quantization,
+/// pinned by hash.
+///
+/// The URL is derived from `repo` and `file` rather than stored, so the host
+/// cannot vary per entry — a wider trust surface than this feature needs, and
+/// one nobody would notice widening.
+///
+/// `publisher` is recorded because these are community re-quantizations rather
+/// than the model vendors' own uploads. Llama and Gemma are gated on Hugging
+/// Face, and pinning the official repositories would mean nothing downloads
+/// without an account and a stored token. Trusting a third-party re-quantiser
+/// is a real trade, so the UI names who published every file rather than
+/// presenting a re-upload as though it were the vendor's own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct ModelDownload {
+    /// The [`QuantLevel::id`] this file is a build of, e.g. `Q4_K_M`.
+    pub quant_id: String,
+    /// Hugging Face repository, e.g. `bartowski/Qwen2.5-7B-Instruct-GGUF`.
+    pub repo: String,
+    /// Who published the re-quantization, shown beside the download control.
+    pub publisher: String,
+    /// File name within the repository.
+    pub file: String,
+    /// SHA256 of the file, lowercase hex. Pinned here rather than fetched
+    /// alongside the file: a digest from the same origin proves only that the
+    /// transfer was not corrupted, not that the bytes are the ones anybody
+    /// reviewed.
+    pub sha256: String,
+    /// Exact size in bytes, from the Hugging Face API. The free-space check
+    /// depends on this being real rather than an estimate.
+    #[cfg_attr(feature = "ts-bindings", ts(type = "number"))]
+    pub size_bytes: u64,
+}
+
 /// One model in the registry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
@@ -91,6 +128,11 @@ pub struct ModelEntry {
     /// Where the numbers above came from, so a reviewer can check them
     /// without re-deriving anything.
     pub source_note: String,
+    /// The pinned GGUF files available for this model, at most one per
+    /// quantization. Defaults to empty so a model nobody has pinned yet needs
+    /// no change to the JSON — it simply has no download control.
+    #[serde(default)]
+    pub downloads: Vec<ModelDownload>,
 }
 
 /// The whole registry: quantization levels once, models many times.
@@ -224,6 +266,77 @@ mod tests {
         let encoded = serde_json::to_string(&registry).unwrap();
         let decoded: ModelRegistry = serde_json::from_str(&encoded).unwrap();
         assert_eq!(registry, decoded);
+    }
+
+    #[test]
+    fn every_download_names_a_quantization_the_registry_defines() {
+        // A quantId nobody prices is a download button on a cell that does not
+        // exist. The two halves of the registry have to agree.
+        let registry = seeded_registry();
+        let known: Vec<&str> = registry
+            .quant_levels
+            .iter()
+            .map(|q| q.id.as_str())
+            .collect();
+
+        for model in &registry.models {
+            for download in &model.downloads {
+                assert!(
+                    known.contains(&download.quant_id.as_str()),
+                    "{} pins unknown quantization {}",
+                    model.id,
+                    download.quant_id
+                );
+            }
+        }
+    }
+
+    // The case-sensitive comparison is the point: a pin names one exact file in
+    // one exact repository, and `.GGUF` would not be that file. Clippy's
+    // case-insensitive suggestion would loosen the very thing being asserted.
+    #[allow(clippy::case_sensitive_file_extension_comparisons)]
+    #[test]
+    fn a_pinned_download_is_complete_or_absent() {
+        // A half-filled entry is worse than none: it produces a button that
+        // cannot verify what it fetched.
+        for model in &seeded_registry().models {
+            for download in &model.downloads {
+                assert_eq!(download.sha256.len(), 64, "{} has no usable hash", model.id);
+                assert!(download.sha256.chars().all(|c| c.is_ascii_hexdigit()));
+                assert!(download.size_bytes > 0, "{} has no size", model.id);
+                assert!(!download.repo.is_empty() && !download.file.is_empty());
+                assert!(!download.publisher.is_empty(), "provenance must be visible");
+                assert!(download.file.ends_with(".gguf"));
+            }
+        }
+    }
+
+    #[test]
+    fn at_least_one_model_is_actually_downloadable() {
+        // Guards against the manifest silently emptying: the whole feature
+        // renders as "not pinned" everywhere and looks like a bug.
+        let count: usize = seeded_registry()
+            .models
+            .iter()
+            .map(|m| m.downloads.len())
+            .sum();
+        assert!(count >= 5, "only {count} models are pinned");
+    }
+
+    #[test]
+    fn no_two_downloads_claim_the_same_cell() {
+        for model in &seeded_registry().models {
+            let mut seen: Vec<&str> = Vec::new();
+            for download in &model.downloads {
+                assert!(
+                    !seen.contains(&download.quant_id.as_str()),
+                    "{} pins {} twice",
+                    model.id,
+                    download.quant_id
+                );
+                seen.push(&download.quant_id);
+            }
+        }
     }
 
     #[test]

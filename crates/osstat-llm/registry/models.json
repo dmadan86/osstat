@@ -40,7 +40,17 @@
         "headDim": 128,
         "maxContextLength": 131072
       },
-      "sourceNote": "Meta Llama 3.1 model card (8B parameters); architecture cross-checked against the published config.json (num_hidden_layers, hidden_size, num_attention_heads, num_key_value_heads, head_dim, max_position_embeddings)."
+      "sourceNote": "Meta Llama 3.1 model card (8B parameters); architecture cross-checked against the published config.json (num_hidden_layers, hidden_size, num_attention_heads, num_key_value_heads, head_dim, max_position_embeddings).",
+      "downloads": [
+        {
+          "quantId": "Q4_K_M",
+          "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+          "publisher": "bartowski",
+          "file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+          "sha256": "7b064f5842bf9532c91456deda288a1b672397a54fa729aa665952863033557c",
+          "sizeBytes": 4920739232
+        }
+      ]
     },
     {
       "id": "llama-3.1-70b",
@@ -55,7 +65,8 @@
         "headDim": 128,
         "maxContextLength": 131072
       },
-      "sourceNote": "Meta Llama 3.1 model card (70B parameters); architecture cross-checked against the published config.json."
+      "sourceNote": "Meta Llama 3.1 model card (70B parameters); architecture cross-checked against the published config.json.",
+      "downloads": []
     },
     {
       "id": "llama-3.1-405b",
@@ -70,7 +81,8 @@
         "headDim": 128,
         "maxContextLength": 131072
       },
-      "sourceNote": "Meta Llama 3.1 model card (405B parameters); architecture cross-checked against the published config.json. Included deliberately as the machine this feature will most often have to say no to."
+      "sourceNote": "Meta Llama 3.1 model card (405B parameters); architecture cross-checked against the published config.json. Included deliberately as the machine this feature will most often have to say no to.",
+      "downloads": []
     },
     {
       "id": "llama-3.2-1b",
@@ -85,7 +97,17 @@
         "headDim": 64,
         "maxContextLength": 131072
       },
-      "sourceNote": "Meta Llama 3.2 model card (1.24B parameters); architecture cross-checked against the published config.json."
+      "sourceNote": "Meta Llama 3.2 model card (1.24B parameters); architecture cross-checked against the published config.json.",
+      "downloads": [
+        {
+          "quantId": "Q4_K_M",
+          "repo": "bartowski/Llama-3.2-1B-Instruct-GGUF",
+          "publisher": "bartowski",
+          "file": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+          "sha256": "6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83",
+          "sizeBytes": 807694464
+        }
+      ]
     },
     {
       "id": "llama-3.2-3b",
@@ -100,7 +122,17 @@
         "headDim": 128,
         "maxContextLength": 131072
       },
-      "sourceNote": "Meta Llama 3.2 model card (3.21B parameters); architecture cross-checked against the published config.json."
+      "sourceNote": "Meta Llama 3.2 model card (3.21B parameters); architecture cross-checked against the published config.json.",
+      "downloads": [
+        {
+          "quantId": "Q4_K_M",
+          "repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+          "publisher": "bartowski",
+          "file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+          "sha256": "6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff",
+          "sizeBytes": 2019377696
+        }
+      ]
     },
     {
       "id": "mistral-7b-v0.3",
@@ -115,7 +147,17 @@
         "headDim": 128,
         "maxContextLength": 32768
       },
-      "sourceNote": "Mistral AI model card (7.3B parameters); architecture cross-checked against the published config.json (head_dim derived as hidden_size / num_attention_heads, the model's own config does not list it separately)."
+      "sourceNote": "Mistral AI model card (7.3B parameters); architecture cross-checked against the published config.json (head_dim derived as hidden_size / num_attention_heads, the model's own config does not list it separately).",
+      "downloads": [
+        {
+          "quantId": "Q4_K_M",
+          "repo": "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
+          "publisher": "bartowski",
+          "file": "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+          "sha256": "1270d22c0fbb3d092fb725d4d96c457b7b687a5f5a715abe1e818da303e562b6",
+          "sizeBytes": 4372812000
+        }
+      ]
     },
     {
       "id": "qwen2.5-0.5b",
@@ -130,7 +172,17 @@
         "headDim": 64,
         "maxContextLength": 32768
       },
-      "sourceNote": "Qwen2.5 technical report (0.49B parameters); architecture cross-checked against the published config.json."
+      "sourceNote": "Qwen2.5 technical report (0.49B parameters); architecture cross-checked against the published config.json.",
+      "downloads": [
+        {
+          "quantId": "Q4_K_M",
+          "repo": "bartowski/Qwen2.5-0.5B-Instruct-GGUF",
+          "publisher": "bartowski",
+          "file": "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf",
+          "sha256": "6eb923e7d26e9cea28811e1a8e852009b21242fb157b26149d3b188f3a8c8653",
+          "sizeBytes": 397808192
+        }
+      ]
     },
     {
       "id": "qwen2.5-7b",
@@ -145,7 +197,17 @@
         "headDim": 128,
         "maxContextLength": 131072
       },
-      "sourceNote": "Qwen2.5 technical report (7.61B parameters); architecture cross-checked against the published config.json."
+      "sourceNote": "Qwen2.5 technical report (7.61B parameters); architecture cross-checked against the published config.json.",
+      "downloads": [
+        {
+          "quantId": "Q4_K_M",
+          "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF",
+          "publisher": "bartowski",
+          "file": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+          "sha256": "65b8fcd92af6b4fefa935c625d1ac27ea29dcb6ee14589c55a8f115ceaaa1423",
+          "sizeBytes": 4683074240
+        }
+      ]
     },
     {
       "id": "qwen2.5-14b",
@@ -160,7 +222,8 @@
         "headDim": 128,
         "maxContextLength": 131072
       },
-      "sourceNote": "Qwen2.5 technical report (14.7B parameters); architecture cross-checked against the published config.json."
+      "sourceNote": "Qwen2.5 technical report (14.7B parameters); architecture cross-checked against the published config.json.",
+      "downloads": []
     },
     {
       "id": "qwen2.5-32b",
@@ -175,7 +238,8 @@
         "headDim": 128,
         "maxContextLength": 131072
       },
-      "sourceNote": "Qwen2.5 technical report (32.5B parameters); architecture cross-checked against the published config.json."
+      "sourceNote": "Qwen2.5 technical report (32.5B parameters); architecture cross-checked against the published config.json.",
+      "downloads": []
     },
     {
       "id": "qwen2.5-72b",
@@ -190,7 +254,8 @@
         "headDim": 128,
         "maxContextLength": 131072
       },
-      "sourceNote": "Qwen2.5 technical report (72.7B parameters); architecture cross-checked against the published config.json."
+      "sourceNote": "Qwen2.5 technical report (72.7B parameters); architecture cross-checked against the published config.json.",
+      "downloads": []
     },
     {
       "id": "gemma-2-2b",
@@ -205,7 +270,8 @@
         "headDim": 256,
         "maxContextLength": 8192
       },
-      "sourceNote": "Google Gemma 2 technical report (2.61B parameters); architecture cross-checked against the published config.json. Note head_dim (256) is not hiddenSize / numAttentionHeads on this family."
+      "sourceNote": "Google Gemma 2 technical report (2.61B parameters); architecture cross-checked against the published config.json. Note head_dim (256) is not hiddenSize / numAttentionHeads on this family.",
+      "downloads": []
     },
     {
       "id": "gemma-2-9b",
@@ -220,7 +286,8 @@
         "headDim": 256,
         "maxContextLength": 8192
       },
-      "sourceNote": "Google Gemma 2 technical report (9.24B parameters); architecture cross-checked against the published config.json."
+      "sourceNote": "Google Gemma 2 technical report (9.24B parameters); architecture cross-checked against the published config.json.",
+      "downloads": []
     },
     {
       "id": "gemma-2-27b",
@@ -235,7 +302,8 @@
         "headDim": 128,
         "maxContextLength": 8192
       },
-      "sourceNote": "Google Gemma 2 technical report (27.2B parameters); architecture cross-checked against the published config.json."
+      "sourceNote": "Google Gemma 2 technical report (27.2B parameters); architecture cross-checked against the published config.json.",
+      "downloads": []
     },
     {
       "id": "phi-3.5-mini",
@@ -250,7 +318,17 @@
         "headDim": 96,
         "maxContextLength": 131072
       },
-      "sourceNote": "Microsoft Phi-3.5-mini model card (3.82B parameters); architecture cross-checked against the published config.json. No grouped-query attention on this model — numKvHeads equals numAttentionHeads."
+      "sourceNote": "Microsoft Phi-3.5-mini model card (3.82B parameters); architecture cross-checked against the published config.json. No grouped-query attention on this model — numKvHeads equals numAttentionHeads.",
+      "downloads": [
+        {
+          "quantId": "Q4_K_M",
+          "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+          "publisher": "bartowski",
+          "file": "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+          "sha256": "e4165e3a71af97f1b4820da61079826d8752a2088e313af0c7d346796c38eff5",
+          "sizeBytes": 2393232672
+        }
+      ]
     }
   ]
 }

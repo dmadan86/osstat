@@ -491,6 +491,7 @@ mod tests {
             parameters_billion: 1.0,
             architecture: architecture(),
             source_note: "fixture, not a real model".into(),
+            downloads: Vec::new(),
         }
     }
 
