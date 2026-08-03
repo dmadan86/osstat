@@ -8,6 +8,13 @@
  * straight back. A page that treated its own lifetime as the session's drew a
  * model bar for a server it had just closed, and every message was refused.
  *
+ * **The page no longer closes anything on unmount.** ADR-013 originally ended
+ * the server when the chat page was left; the user asked for the model to
+ * survive navigating between tabs, and the reversal is recorded there. So the
+ * assertions below are the opposite of the ones they replaced: leaving keeps the
+ * session, and the two things that end it are the Unload control and the
+ * application exiting.
+ *
  * So the mock here is not a set of resolved values but a stand-in for the state
  * Rust holds: `chat_open_model` opens it, `chat_close` closes it,
  * `chat_status` reports it, and `chat_send` refuses in exactly the words the
@@ -105,15 +112,14 @@ const NO_MODEL = 'no model is open; open one before sending a message';
 let held: ModelSession | null = null;
 
 /**
- * Waits long enough for a scheduled close to have run if it was going to.
+ * Waits long enough for a close to have run if anything was going to fire one.
  *
- * The page defers its close by a grace period so a remount can call it off,
- * which means "the session was not closed" is only worth asserting after that
- * period has passed. Comfortably longer than the grace period, and real time
- * rather than fake: the page also awaits promises across it, and fake timers
+ * "The session was not closed" is a claim about something not happening, so it
+ * is only worth asserting after enough time for it to have happened. Real time
+ * rather than fake: the page awaits promises across this window, and fake timers
  * would freeze the half of the sequence that is not a timer.
  */
-async function afterTheGracePeriod(): Promise<void> {
+async function longEnoughForACloseToHaveFired(): Promise<void> {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 400));
   });
@@ -198,7 +204,7 @@ describe('the chat session across the page mounting', () => {
     render(<Chat opened={session()} />);
     await screen.findAllByText(MODEL_NAME);
 
-    await afterTheGracePeriod();
+    await longEnoughForACloseToHaveFired();
 
     expect(held).not.toBeNull();
     expect(chatClose).not.toHaveBeenCalled();
@@ -212,21 +218,84 @@ describe('the chat session across the page mounting', () => {
     expect(screen.queryByText(new RegExp(NO_MODEL, 'i'))).not.toBeInTheDocument();
   });
 
-  it('closes the session when the page is genuinely left', async () => {
-    // The property the cleanup exists for, and the one the fix must not trade
-    // away: a loaded 7B model holds around five gigabytes, and a monitoring
-    // application that kept it alive after the user walked away would be the
-    // worst neighbour on the machine (ADR-013).
+  it('keeps the model loaded across navigating away and back', async () => {
+    // The reversal, as the user described it: open a model, go and look at
+    // something else, come back, and carry on the same conversation with the
+    // same model without waiting for it to load again. Against the old code
+    // this fails on the first assertion -- the unmount closed the session.
     await runOpensAModel();
 
-    const view = render(<Chat opened={session()} />);
+    // Away.
+    const chat = render(<Chat opened={session()} />);
     await screen.findAllByText(MODEL_NAME);
-    view.unmount();
+    chat.unmount();
+
+    await longEnoughForACloseToHaveFired();
+
+    expect(chatClose).not.toHaveBeenCalled();
+    expect(held).not.toBeNull();
+
+    // And back. The shell hands the session straight back, and Rust confirms
+    // it, so there is no reload and no no-model form in between.
+    render(<Chat opened={held} />);
+    await screen.findAllByText(MODEL_NAME);
+
+    expect(screen.queryByLabelText(/model file/i)).not.toBeInTheDocument();
+    expect(chatOpenModel).not.toHaveBeenCalled();
+
+    // The conversation is where it was, and usable.
+    expect(await screen.findAllByText(STORED.title)).not.toHaveLength(0);
+    await sendAMessage();
+    await waitFor(() => {
+      expect(chatSend).toHaveBeenCalledWith(STORED.id, 'hello');
+    });
+    expect(screen.queryByText(new RegExp(NO_MODEL, 'i'))).not.toBeInTheDocument();
+  });
+
+  it('still stops the session when the user asks it to', async () => {
+    // The other half of the reversal, and the half that keeps osstat honest.
+    // Nothing closes the model implicitly any more, so the explicit control is
+    // now the only way a user can give several gigabytes back without quitting
+    // -- if it stopped working the memory would have no way out at all.
+    await runOpensAModel();
+
+    render(<Chat opened={session()} />);
+    await screen.findAllByText(MODEL_NAME);
+
+    await userEvent.click(screen.getByRole('button', { name: /^unload$/i }));
 
     await waitFor(() => {
       expect(chatClose).toHaveBeenCalledTimes(1);
     });
     expect(held).toBeNull();
+    expect(await screen.findByLabelText(/model file/i)).toBeInTheDocument();
+  });
+
+  it('tells the shell what is open, so another tab can say so', async () => {
+    // What the marker on the Chat entry is drawn from. A model is now invisible
+    // while the user is on another page, and the shell is the only thing still
+    // mounted to remember it -- so this reporting is the whole of how a
+    // multi-gigabyte allocation stays visible at all.
+    await runOpensAModel();
+    const reported: (ModelSession | null)[] = [];
+
+    render(
+      <Chat
+        opened={session()}
+        onSessionChange={(open) => {
+          reported.push(open);
+        }}
+      />
+    );
+    await screen.findAllByText(MODEL_NAME);
+
+    expect(reported.at(-1)).not.toBeNull();
+
+    await userEvent.click(screen.getByRole('button', { name: /^unload$/i }));
+
+    await waitFor(() => {
+      expect(reported.at(-1)).toBeNull();
+    });
   });
 
   it('shows the no-model form when nothing is open, whatever it was handed', async () => {

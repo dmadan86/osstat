@@ -789,6 +789,34 @@ pub fn chat_delete(state: State<'_, ChatState>, id: String) -> Result<(), String
     state.store.delete(&id).map_err(|error| error.to_string())
 }
 
+/// Ends the open server as the application exits.
+///
+/// **This is what now guarantees a loaded model dies with osstat.** It used to
+/// be the chat page's unmount: leaving the page closed the session, and quitting
+/// unmounted the page. Since ADR-013's reversal the page closes nothing, so that
+/// path is gone and this one carries the whole property.
+///
+/// Nothing else covers it. `AppHandle::exit` ends the process, and a process
+/// that ends does not run destructors — so neither the `kill_on_drop` on the
+/// child nor a `Drop` on [`ChatState`] can be relied on here, and on Windows a
+/// child outlives its parent by default because ADR-013 chose a recorded
+/// [`ProcessKey`] over a job object. Without this call the server would simply
+/// keep running, holding every byte of VRAM the weights occupy, until the next
+/// launch reaped it.
+///
+/// Called from `RunEvent::Exit`, which is the event loop's last word before the
+/// process goes. [`Session::kill`] rather than [`Session::stop`] because there
+/// is no runtime left to await on at that point.
+pub fn stop_on_exit(app: &AppHandle) {
+    let Some(state) = app.try_state::<ChatState>() else {
+        return;
+    };
+
+    if let Some(session) = state.take_session() {
+        session.kill();
+    }
+}
+
 /// Ends a server left behind by a previous run.
 ///
 /// osstat crashing must not leave a `llama-server` holding several gigabytes of

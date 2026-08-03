@@ -267,7 +267,20 @@ pub fn run() -> tauri::Result<()> {
             commands::terminate_process,
             commands::critical_processes,
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())?
+        // `build` and a run callback rather than `run`, for one reason: a model
+        // no longer dies when the chat page is left (ADR-013's reversal), so the
+        // only thing left between quitting osstat and a `llama-server` holding
+        // several gigabytes of VRAM is this handler. `Exit` is the event loop's
+        // last word before the process goes, and the process going is what makes
+        // every other teardown — `Drop`, `kill_on_drop` — unavailable here.
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                chat::stop_on_exit(app);
+            }
+        });
+
+    Ok(())
 }
 
 #[cfg(test)]

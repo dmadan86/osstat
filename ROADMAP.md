@@ -182,7 +182,10 @@ refine the LLM advisor's tokens-per-second estimates.
 
 ## Product goals these milestones serve
 
-- Installer under ~20 MB, cold start under 2 s, idle RAM under 150 MB
+- Installer under ~20 MB, cold start under 2 s, idle RAM under 150 MB. The RAM
+  figure is osstat itself: a model loaded through the chat is several gigabytes
+  on top, held until it is unloaded or the app quits (ADR-013), and osstat says
+  so on the navigation for as long as one is
 - Native feel and native performance on all three platforms from one codebase
 - Safe by default: nothing deleted without preview and confirmation, and
   recoverable when it is

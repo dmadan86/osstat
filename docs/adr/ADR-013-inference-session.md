@@ -29,13 +29,11 @@ server-sent-event stream, and forwards `chat:*` events to the front end.
 
 **Reap orphans with a recorded `ProcessKey`**, not a Windows Job Object.
 
-**The process lives only while the chat page is open**, but the page does not
-own the session — Rust does. It is opened by the Run control before the chat
-page exists, and it survives that page being unmounted and mounted again. So the
-page asks `chat_status` what is open on mount rather than assuming, and the close
-that leaving performs is deferred long enough for a remount to call it off. A
-close fired straight from the unmount ended the server on every remount, and the
-page that came back showed a model bar over nothing.
+**The process lives until it is unloaded or the application exits** — see the
+reversal below. The page does not own the session; Rust does. It is opened by the
+Run control before the chat page exists and survives that page being unmounted
+and mounted again, so the page asks `chat_status` what is open on mount rather
+than assuming.
 
 **Conversations are persisted**, one JSON file each, with a delete control.
 
@@ -104,12 +102,51 @@ mismatch, because ADR-006 needed exactly that guarantee for terminating a
 user-selected process. PID reuse is the trap in both cases, and it is already
 solved once.
 
-**Why the process dies when you leave the page.** A loaded 7B model at Q4 holds
-roughly 5 GB resident. osstat's stated budgets are an installer under ~20 MB,
-cold start under 2 s and idle RAM under 150 MB. A monitoring utility that
-quietly holds 5 GB while sitting in the tray has become the thing it measures.
-The cost — a few seconds of model load on returning — is paid visibly, in the
-place the user asked to be.
+**Why the process dies when you leave the page — reversed, 2026-08-03.**
+
+This decision originally read, and the reasoning is kept here in full because it
+is still the strongest argument against what replaced it:
+
+> A loaded 7B model at Q4 holds roughly 5 GB resident. osstat's stated budgets
+> are an installer under ~20 MB, cold start under 2 s and idle RAM under 150 MB.
+> A monitoring utility that quietly holds 5 GB while sitting in the tray has
+> become the thing it measures. The cost — a few seconds of model load on
+> returning — is paid visibly, in the place the user asked to be.
+
+**The user has since used it and asked for the opposite**, knowing what this
+paragraph said. The cost turned out not to be the one predicted. It is not "a
+few seconds of model load on returning" — it is a few seconds _every time you
+glance at another tab_, which is what a monitoring application is for. Checking
+which process is eating the CPU while a model is loaded meant reloading the
+model, so the two halves of the application could not be used together at all.
+That is a worse failure than the one the original reasoning was avoiding, and it
+is the user's machine and the user's call.
+
+**What replaced it.** The session now lives until the user unloads it or osstat
+exits. Nothing implicit ends it: the chat page's unmount cleanup is gone rather
+than deferred, and there is no grace period left to tune.
+
+**What now guarantees the process still dies when osstat does.** `RunEvent::Exit`
+— the event loop's last word before the process goes — calls `chat::stop_on_exit`,
+which takes the session out of `ChatState` and calls `Session::kill`. This had to
+be added: the property used to be a side effect of quitting unmounting the page,
+and nothing else was covering it. Nothing else _can_. `AppHandle::exit` ends the
+process, and a process that ends runs no destructors, so neither the child's
+`kill_on_drop` nor a `Drop` on `ChatState` is reachable — and on Windows a child
+outlives its parent by default, precisely because this ADR chose a recorded
+`ProcessKey` over a job object. `kill` rather than `stop` because there is no
+async runtime left to await a wait on at that point; it signals and returns, and
+it deliberately leaves the record behind, so anything that somehow survived is
+reaped on next launch by the path that already existed.
+
+**What the user gives up, stated rather than hidden.** A loaded model is now
+invisible while you are on another tab, so osstat can be holding several
+gigabytes with nothing on screen saying so. That is the real cost of the
+reversal, and it is paid down rather than accepted: the navigation marks the Chat
+entry with a dot, in all three navigation styles, for as long as a model is
+loaded. The idle-footprint budget is qualified in ROADMAP.md and SECURITY.md
+rather than left standing as a claim that is no longer true while a model is
+open.
 
 **Why conversations are files rather than a database.** The directory is meant
 to be readable: a user can open it and see exactly what osstat kept. That is the
@@ -124,6 +161,10 @@ no schema to migrate and no engine to embed.
   uninstalling leaves behind. This is a real change to what osstat is.
 - **osstat now runs a local HTTP server**, bound to loopback, on an ephemeral
   port, behind a per-session key, with its own web UI disabled.
+- **A loaded model outlives the chat page.** osstat's idle RAM budget of under
+  150 MB describes osstat idle, not osstat holding a model, and both ROADMAP.md
+  and SECURITY.md now say so. The two ways to give the memory back are the
+  Unload control and quitting.
 - **SECURITY.md's "no network requests except ones you explicitly trigger"
   still holds**, and is clarified: requests to `127.0.0.1` reach a process
   osstat itself started, and nothing leaves the machine.
