@@ -7,10 +7,50 @@ A free, open-source system utility for Windows, Linux and macOS. It inspects you
 machine, manages processes and ports, safely reclaims disk space, and tells you
 which local LLMs your hardware can actually run.
 
-> **Status: pre-alpha.** Milestone M0 (project foundation) is complete: the app
-> builds and opens a window on all three platforms, but none of the capabilities
-> below are implemented yet. Follow [ROADMAP.md](ROADMAP.md) for what is landing
-> when. There is no release to install yet.
+> **Status: alpha.** System info, the process manager, ports, the LLM advisor and
+> local inference all work. The cleaning engine does not exist yet. Builds are
+> unsigned, so Windows and macOS will warn on install. Follow
+> [ROADMAP.md](ROADMAP.md) for what is landing when.
+
+## Screenshots
+
+<!--
+  Images live in docs/images/ and are referenced by the exact names below.
+  Screenshots of the Overview, Processes and Ports tabs show real process
+  names, PIDs and open ports -- check what is in frame before committing one,
+  because git history keeps it even if the file is later replaced.
+-->
+
+|                                                                                               |                                                                                                  |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| ![The LLM advisor, showing which models fit this machine](docs/images/llm-advisor.png)        | ![A conversation with a local model](docs/images/chat.png)                                       |
+| **LLM advisor** — every model priced against your actual hardware, with the arithmetic shown. | **Chat** — a model running locally, with context fill, tokens per second and per-message counts. |
+
+## A walkthrough
+
+What the LLM half of osstat does, end to end:
+
+1. **Open the LLM tab.** Every model in the registry is priced against the GPU
+   and memory osstat measured on your machine — not a guess from a spec sheet.
+   The explanation drawer shows the arithmetic rather than hiding it.
+2. **Search for anything else.** Public GGUF models on Hugging Face are searched
+   from the same tab, and each result is priced _before_ you download it, by
+   reading the real file's header over a range request. Searched models are
+   labelled as unreviewed provenance, distinct from the curated ones osstat pins
+   by hash.
+3. **Download it.** Progress, transfer rate and estimated time; pause and resume
+   across a dropped connection; automatic retry for what is worth retrying and an
+   immediate, honest failure for what is not.
+4. **Run it.** osstat starts a local `llama-server`, choosing the GPU layer count
+   and context size from the model file's own header and your measured VRAM. The
+   server binds loopback on a random port behind a per-session key, with its own
+   web UI disabled.
+5. **Chat.** Replies stream with timestamps, response times and per-message token
+   counts, and the context window is drawn as a meter — the same one the Overview
+   uses for CPU and RAM, because it is the resource that governs whether the model
+   still remembers the start of your conversation.
+6. **Unload when you are done.** The model stays loaded while you use other tabs,
+   and the LLM tab shows which one is running. Nothing survives quitting osstat.
 
 ## What it does
 
