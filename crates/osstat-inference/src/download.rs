@@ -21,8 +21,9 @@
 //! them.
 //!
 //! [`download_resumable_retrying`] wraps the second of those in a bounded
-//! backoff, and is where [`is_transient`] decides what is worth waiting for.
-//! That decision is the interesting part of this module and not the retrying:
+//! backoff, and is where [`AcquireError::is_retryable`] decides what is worth
+//! waiting for. That decision is the interesting part of this module and not
+//! the retrying:
 //! a wrong pin retried three times is a minute of apparent activity ending in
 //! the same place, reported as a network blip.
 
@@ -464,47 +465,14 @@ pub async fn download_resumable(
 /// that was working.
 ///
 /// Twenty-one seconds of waiting in the worst case. That is a long time to
-/// stare at a bar that is not moving, and it is the reason [`is_transient`]
-/// exists: it is only ever spent on failures where waiting is the right answer.
+/// stare at a bar that is not moving, and it is the reason
+/// [`AcquireError::is_retryable`] exists: it is only ever spent on failures
+/// where waiting is the right answer.
 pub const RETRY_BACKOFF: [std::time::Duration; 3] = [
     std::time::Duration::from_secs(1),
     std::time::Duration::from_secs(4),
     std::time::Duration::from_secs(16),
 ];
-
-/// Whether trying `error` again could plausibly produce a different answer.
-///
-/// **Only network and I/O failures.** A wrong pin and a file that is no longer
-/// being served are permanent: fetching the same bytes again produces the same
-/// mismatch and the same status, so retrying costs the user a minute of
-/// apparent activity that ends in exactly the place it started — and reports a
-/// permanent problem as a network blip, which is the more expensive half.
-///
-/// The match has no wildcard arm, for the same reason
-/// [`AcquireError::kind`] has none: a variant added later must fail to compile
-/// and be classified deliberately, rather than defaulting to retryable and
-/// quietly acquiring a three-attempt loop nobody chose for it.
-///
-/// This is **not** [`AcquireError::is_retryable`], which asks a different
-/// question — whether to *offer the user* a retry control. A 503 is worth a
-/// button and is not worth an automatic loop that will hit the same overloaded
-/// server three more times within twenty seconds.
-#[must_use]
-pub const fn is_transient(error: &AcquireError) -> bool {
-    match error {
-        AcquireError::Network { .. } | AcquireError::Io { .. } => true,
-
-        AcquireError::UnsupportedTarget { .. }
-        | AcquireError::UnknownArtifact { .. }
-        | AcquireError::HttpStatus { .. }
-        | AcquireError::NotEnoughSpace { .. }
-        | AcquireError::ChecksumMismatch { .. }
-        | AcquireError::SizeMismatch { .. }
-        | AcquireError::Extraction { .. }
-        | AcquireError::ServerMissing { .. }
-        | AcquireError::NotExecutable { .. } => false,
-    }
-}
 
 /// [`download_resumable`], retrying a transient failure a bounded number of
 /// times.
@@ -513,8 +481,8 @@ pub const fn is_transient(error: &AcquireError) -> bool {
 /// left in `part` rather than starting over — which is the only thing that
 /// makes retrying a multi-gigabyte download worth doing at all.
 ///
-/// A permanent failure returns immediately. See [`is_transient`] for what that
-/// means and why the distinction is the point of this function.
+/// A permanent failure returns immediately. See [`AcquireError::is_retryable`]
+/// for what that means and why the distinction is the point of this function.
 ///
 /// # Errors
 ///
@@ -544,7 +512,7 @@ pub async fn download_resumable_retrying(
         .await
         {
             Ok(()) => return Ok(()),
-            Err(error) if is_transient(&error) => tokio::time::sleep(backoff).await,
+            Err(error) if error.is_retryable() => tokio::time::sleep(backoff).await,
             Err(error) => return Err(error),
         }
     }
@@ -570,7 +538,6 @@ mod tests {
     use super::*;
     use std::io::{Read as _, Write as _};
     use std::net::TcpListener;
-    use std::path::PathBuf;
 
     /// SHA256 of the three bytes `abc`, the standard test vector.
     const ABC_SHA256: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
@@ -728,8 +695,8 @@ mod tests {
         }
         assert!(checked, "expected an HTTP status error, got {error:?}");
         assert!(
-            error.is_retryable(),
-            "a 404 may be a transient CDN failure; retrying is reasonable"
+            !error.is_retryable(),
+            "a 404 is a deleted file or a wrong URL; asking again returns it again"
         );
         assert!(!dest.exists());
     }
@@ -1339,56 +1306,26 @@ mod tests {
             actual: "b".repeat(64),
         };
 
-        assert!(!is_transient(&error));
+        assert!(!error.is_retryable());
     }
 
     #[test]
-    fn a_missing_file_upstream_is_permanent() {
-        assert!(!is_transient(&AcquireError::HttpStatus {
-            url: "https://example.invalid/x".to_owned(),
-            status: 404,
-        }));
-    }
-
-    #[test]
-    fn a_dropped_connection_is_transient() {
+    fn a_dropped_connection_is_retryable() {
         // The one case automatic retry exists for: nothing about the request
         // was wrong, so the same request may well work a second later.
-        assert!(is_transient(&AcquireError::Network {
-            url: "https://example.invalid/x".to_owned(),
-            source: a_transport_error(),
-        }));
+        assert!(
+            AcquireError::Network {
+                url: "https://example.invalid/x".to_owned(),
+                source: a_transport_error(),
+            }
+            .is_retryable()
+        );
     }
 
-    #[test]
-    fn a_disk_that_would_not_write_is_transient() {
-        // A locked file or a momentarily unavailable network share. Unlike a
-        // full disk -- which is `NotEnoughSpace` and stays full -- an I/O error
-        // says nothing about whether the next attempt will hit it too.
-        assert!(is_transient(&AcquireError::Io {
-            path: PathBuf::from("/models/model.gguf.part"),
-            source: std::io::Error::other("device not ready"),
-        }));
-    }
-
-    #[test]
-    fn a_full_disk_is_permanent_because_nothing_about_it_changed() {
-        assert!(!is_transient(&AcquireError::NotEnoughSpace {
-            path: PathBuf::from("/models"),
-            needed_bytes: 4_683_074_240,
-            available_bytes: 4_096,
-        }));
-    }
-
-    #[test]
-    fn a_changed_upload_is_permanent() {
-        // Fetching it again returns the same wrong file.
-        assert!(!is_transient(&AcquireError::SizeMismatch {
-            file: "model.gguf".to_owned(),
-            expected_bytes: 4_683_074_240,
-            actual_bytes: 12,
-        }));
-    }
+    // Which statuses and which variants count as retryable is asserted beside
+    // `AcquireError::is_retryable` in `error.rs`, where the one function that
+    // answers it lives. What follows is the policy those answers drive: how
+    // many requests actually reach a server, and what the second one asks for.
 
     // `start_paused` so the backoff between attempts costs no wall-clock time.
     // Nothing here is timing-sensitive: the sleeps are the only timers, and
@@ -1471,6 +1408,59 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn an_overloaded_server_is_retried_and_resumes_where_it_stopped() {
+        // The reconciliation, end to end. A 503 used to be classified by its
+        // variant and so returned on the first attempt, while the UI offered a
+        // retry button for the same failure -- one question with two answers.
+        // Three answers: a cut connection to put bytes on disk, then the 503
+        // under test, then a server that has recovered. The 503 must be waited
+        // out rather than reported, and the attempt after it must ask for the
+        // bytes that are missing rather than all of them.
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("model.gguf.part");
+        let dest = dir.path().join("model.gguf");
+        let body = filler(4096);
+        let digest = sha256_of(&body);
+        let fixture = serve_ranges(
+            body.clone(),
+            vec![
+                Answer::Cut { sent: 2048 },
+                Answer::Status("503 Service Unavailable"),
+                Answer::Whole,
+            ],
+        );
+
+        download_resumable_retrying(
+            &reqwest::Client::new(),
+            &fixture.url,
+            &part,
+            &dest,
+            &digest,
+            4096,
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+
+        let ranges = fixture.ranges();
+        assert_eq!(
+            ranges.len(),
+            3,
+            "a 503 was reported rather than retried: {ranges:?}"
+        );
+        assert_eq!(
+            ranges[2],
+            Some(2048),
+            "the attempt after the 503 refetched bytes it already had: {ranges:?}"
+        );
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            body,
+            "the reassembled file is not the one that was served"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn retrying_is_bounded_rather_than_endless() {
         // Four attempts, not four hundred. A download that retried forever
         // would look identical to one that was working.
@@ -1492,7 +1482,7 @@ mod tests {
         .unwrap_err();
 
         assert!(
-            is_transient(&error),
+            error.is_retryable(),
             "the fixture failed permanently: {error:?}"
         );
         assert_eq!(
