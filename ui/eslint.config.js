@@ -35,6 +35,17 @@ export default tseslint.config(
       globals: globals.node,
     },
   },
+  {
+    // `public/` is copied to the bundle verbatim rather than compiled, so what
+    // is written there is what the browser runs: plain script, no imports, no
+    // TypeScript. It still gets the browser globals the rest of the front end
+    // has, since that is exactly what it is written against.
+    files: ['public/*.js'],
+    languageOptions: {
+      sourceType: 'script',
+      globals: globals.browser,
+    },
+  },
   // Must stay last: turns off every rule Prettier owns (ADR-011).
   prettier
 );

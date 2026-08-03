@@ -15,7 +15,74 @@ import { ModelFolder } from '../components/ModelFolder';
 import { isAutostartEnabled, setAutostart } from '../lib/ipc';
 import { CHOICES, type Preferences } from '../lib/preferences';
 import { reconcileLayout, updatePanel } from '../lib/panelLayout';
+import { THEMES, type Theme } from '../lib/theme';
 import { OVERVIEW_PANELS, OVERVIEW_PANEL_IDS } from './overviewPanels';
+
+/**
+ * The theme picker.
+ *
+ * Rendered here rather than through `Choice` because a theme is chosen by
+ * looking at it. Each option carries a swatch, and the swatch is not a list of
+ * hard-coded colours: it is an ordinary element wearing the same `data-theme`
+ * attribute the document wears, drawing `bg-surface-raised`, `border-edge` and
+ * `bg-accent` from the theme's own block in `index.css`. A preview built any
+ * other way is a second copy of the palette, and the copy is what goes stale.
+ */
+function Themes({
+  value,
+  onSelect,
+}: {
+  value: Theme;
+  onSelect: (chosen: Theme) => void;
+}): React.JSX.Element {
+  return (
+    <div className="flex flex-col gap-2 border-b border-edge px-4 py-3 last:border-b-0">
+      <div>
+        <p className="text-sm">Theme</p>
+        <p className="text-xs text-text-muted">
+          All four are dark. osstat sits beside a terminal, and every surface, chart and meter in it
+          is built for a dark background.
+        </p>
+      </div>
+
+      <div role="radiogroup" aria-label="Theme" className="flex flex-col gap-1">
+        {THEMES.map((theme) => {
+          const selected = theme.value === value;
+          return (
+            <button
+              key={theme.value}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              onClick={() => {
+                onSelect(theme.value);
+              }}
+              className={`flex items-center gap-3 rounded-md border px-3 py-2 text-left transition-colors ${
+                selected ? 'border-accent bg-accent/10' : 'border-edge hover:bg-white/[0.04]'
+              }`}
+            >
+              {/* `aria-hidden`: the swatch shows what the label already says,
+                  and a screen reader announcing two coloured squares per row
+                  would bury the four names this control is actually made of. */}
+              <span
+                data-theme={theme.value}
+                aria-hidden="true"
+                className="flex h-7 w-10 shrink-0 items-center justify-center rounded border border-edge bg-surface-raised"
+              >
+                <span className="h-2.5 w-2.5 rounded-full bg-accent" />
+              </span>
+
+              <span className="min-w-0">
+                <span className="block text-xs text-text">{theme.label}</span>
+                <span className="block text-[11px] text-text-muted">{theme.description}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 /**
  * The start-at-sign-in switch.
@@ -213,6 +280,12 @@ export function Settings({ preferences, onChange }: SettingsProps): React.JSX.El
       </header>
 
       <div className="overflow-hidden rounded-xl border border-edge bg-surface-raised">
+        <Themes
+          value={preferences.theme}
+          onSelect={(theme) => {
+            onChange({ theme });
+          }}
+        />
         <Choice
           label="Navigation"
           description="Where the list of pages lives."

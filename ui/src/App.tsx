@@ -17,6 +17,7 @@ import { logUiEvent, setCloseBehaviour, setSampleInterval } from './lib/ipc';
 import { samplesInWindow, usePreferences, type Preferences } from './lib/preferences';
 import type { ProcessTree } from './lib/processTree';
 import type { EndProcessTarget } from './lib/termination';
+import { applyTheme } from './lib/theme';
 import {
   useGpuDevices,
   useMetrics,
@@ -60,6 +61,16 @@ export function App(): React.JSX.Element {
     if (route === 'chat' && next !== 'chat') setOpenedModel(null);
     setRoute(next);
   }
+
+  // The theme is already on `<html>` when this first runs -- `theme-boot.js`
+  // put it there before the first paint, which is the only way to open on the
+  // chosen theme rather than flashing the default one. This effect exists for
+  // the *change*: it is what makes picking a theme in Settings take effect.
+  // Re-asserting the boot script's work on mount costs one attribute write and
+  // means the document and React can never hold different ideas of the theme.
+  useEffect(() => {
+    applyTheme(preferences.theme);
+  }, [preferences.theme]);
 
   // Push the chosen tick rate to the sampler. The backend clamps anything it
   // cannot honour, so a stale stored preference cannot produce a busy loop.

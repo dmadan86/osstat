@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { SERIES } from './charts/palette';
+import { THEMES, type Theme } from './lib/theme';
 
 const SOURCE_ROOT = join(import.meta.dirname, '.');
 const STYLESHEET = join(SOURCE_ROOT, 'index.css');
@@ -90,5 +91,129 @@ describe('the colour tokens', () => {
 
     expect(stylesheet).toContain(`--color-chart-down: ${SERIES[0]};`);
     expect(stylesheet).toContain(`--color-chart-up: ${SERIES[1]};`);
+  });
+});
+
+/** The `--color-*` declarations inside one theme's block, by token name. */
+function tokensOf(theme: Theme): Map<string, string> {
+  const stylesheet = readFileSync(STYLESHEET, 'utf8');
+  const block = new RegExp(`\\[data-theme='${theme}'\\]\\s*\\{([^}]*)\\}`).exec(stylesheet)?.[1];
+
+  if (block === undefined) throw new Error(`index.css defines no block for '${theme}'`);
+
+  return new Map(
+    [...block.matchAll(/--color-([a-z-]+):\s*([^;]+);/g)].map((match) => [
+      match[1] ?? '',
+      (match[2] ?? '').trim(),
+    ])
+  );
+}
+
+/** The `--color-*` names declared before the theme blocks, i.e. in `@theme`. */
+function baseTokenNames(): string[] {
+  const base = readFileSync(STYLESHEET, 'utf8').split('}')[0] ?? '';
+  return [...base.matchAll(/--color-([a-z-]+):/g)].map((match) => match[1] ?? '');
+}
+
+/**
+ * How light one theme's token is, on the `oklch` 0..1 scale.
+ *
+ * Throws rather than returning a default when the token or the colour space is
+ * not what it should be: a missing token silently reading as `0` would let a
+ * theme pass the ordering checks below by being absent.
+ */
+function lightness(theme: Theme, token: string): number {
+  const value = tokensOf(theme).get(token);
+
+  if (value === undefined) throw new Error(`'${theme}' declares no --color-${token}`);
+
+  const measured = /oklch\(\s*([0-9.]+)/.exec(value)?.[1];
+
+  if (measured === undefined) throw new Error(`--color-${token} on '${theme}' is not oklch`);
+
+  return Number(measured);
+}
+
+describe('the four themes', () => {
+  it('each override the same complete set of tokens', () => {
+    // A theme that forgot `--color-text-faint` would inherit midnight's, and
+    // grey-blue timestamps on a green surface is exactly the kind of thing
+    // that survives review because nobody scrolled to a timestamp.
+    const expected = [...tokensOf('midnight').keys()].sort();
+
+    expect(expected.length).toBeGreaterThan(0);
+
+    for (const theme of THEMES) {
+      expect({ [theme.value]: [...tokensOf(theme.value).keys()].sort() }).toEqual({
+        [theme.value]: expected,
+      });
+    }
+  });
+
+  it('themes every token except the chart pair', () => {
+    // Keeps the two sets from drifting apart in either direction: a token
+    // added to `@theme` and forgotten here would be frozen at midnight's value
+    // under all four themes.
+    expect(new Set(tokensOf('midnight').keys())).toEqual(
+      new Set(baseTokenNames().filter((token) => !token.startsWith('chart-')))
+    );
+  });
+
+  it('leaves midnight identical to the values outside the theme blocks', () => {
+    // `@theme` is what an unthemed document wears, so if these disagreed the
+    // very first frame of a first run would be a colour no theme defines.
+    const base = readFileSync(STYLESHEET, 'utf8').split('}')[0] ?? '';
+
+    for (const [token, value] of tokensOf('midnight')) {
+      expect(base).toContain(`--color-${token}: ${value};`);
+    }
+  });
+
+  it('is dark on all four, which the settings row promises outright', () => {
+    for (const theme of THEMES) {
+      expect({ [theme.value]: lightness(theme.value, 'surface') < 0.25 }).toEqual({
+        [theme.value]: true,
+      });
+    }
+  });
+
+  it('makes contrast actually higher-contrast, tier by tier', () => {
+    // The claim the theme is named for. Before the text ramp became a token
+    // this could not have been true at all: every tier was a fixed grey, so
+    // "high contrast" would have moved the panels and left every word on them
+    // exactly as legible as before.
+    for (const tier of ['text', 'text-muted', 'text-faint']) {
+      expect({
+        tier,
+        lighter: lightness('contrast', tier) > lightness('midnight', tier),
+      }).toEqual({ tier, lighter: true });
+    }
+
+    // Its surface is darker as well -- brighter text on the same background
+    // would be half the job.
+    expect(lightness('contrast', 'surface')).toBeLessThan(lightness('midnight', 'surface'));
+
+    // The tier that gains most is the one that was hardest to read: faint text
+    // on contrast outruns *muted* text on midnight.
+    expect(lightness('contrast', 'text-faint')).toBeGreaterThan(
+      lightness('midnight', 'text-muted')
+    );
+  });
+
+  it('keeps each ramp ordered, so a tier never outshines the one above it', () => {
+    for (const theme of THEMES) {
+      const ramp = ['text', 'text-muted', 'text-faint'].map((tier) => lightness(theme.value, tier));
+
+      expect({ theme: theme.value, ramp }).toEqual({
+        theme: theme.value,
+        ramp: [...ramp].sort((left, right) => right - left),
+      });
+
+      // And the faintest tier stays clear of the surface it is drawn on.
+      expect({
+        theme: theme.value,
+        readable: lightness(theme.value, 'text-faint') - lightness(theme.value, 'surface') > 0.2,
+      }).toEqual({ theme: theme.value, readable: true });
+    }
   });
 });

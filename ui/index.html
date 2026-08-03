@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>osstat</title>
+
+    <!-- Blocking, classic, and first: this sets `data-theme` on `<html>` from
+         the stored preference while the head is still parsing, so the first
+         paint is already the chosen theme. `defer`, `async` or `type="module"`
+         would each push it past first paint and reintroduce the flash of the
+         default theme this exists to prevent. `themeBoot.test.ts` asserts the
+         tag keeps all three off. -->
+    <script src="/theme-boot.js"></script>
   </head>
   <body class="h-full">
     <div id="root" class="h-full"></div>
