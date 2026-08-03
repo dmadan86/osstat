@@ -278,3 +278,21 @@ export function updatePanel(
 ): PanelLayout[] {
   return list.map((panel) => (panel.id === id ? normalise({ ...panel, ...change }) : panel));
 }
+
+/**
+ * The chart height a named panel height is worth.
+ *
+ * Here rather than beside `PanelGrid` because it renders nothing: it maps a
+ * layout entry onto the pixel figure {@link PANEL_HEIGHTS} defines, which is
+ * this module's job. A non-component export sitting in a component file also
+ * costs that file its Fast Refresh boundary, so an edit to either would reload
+ * the whole page rather than swapping the component.
+ *
+ * @param layout The reconciled layout.
+ * @param id The panel to size.
+ * @returns The panel's height in pixels, or the normal height if it is unknown.
+ */
+export function chartHeightFor(layout: readonly PanelLayout[], id: string): number {
+  const panel = layout.find((candidate) => candidate.id === id);
+  return PANEL_HEIGHTS[panel?.height ?? 'normal'];
+}

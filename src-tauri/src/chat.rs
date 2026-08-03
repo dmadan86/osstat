@@ -77,6 +77,16 @@ pub struct ChatState {
     /// [`chat_send`] has only the session to ask. Set and cleared in the same
     /// two places the session is, so the pair cannot drift apart.
     model_name: Mutex<Option<String>>,
+    /// The open model's file, kept beside the session it belongs to.
+    ///
+    /// The name above cannot stand in for this. It is the file stem, so two
+    /// models called `model.gguf` in different folders share one, and a delete
+    /// keyed on it would refuse the wrong file — or worse, allow the right one.
+    ///
+    /// Set and cleared in the same two places the session is, for the same
+    /// reason the name is: a path left behind by a closed session would make
+    /// [`crate::models::models_delete`] refuse a model nothing is running.
+    model_path: Mutex<Option<PathBuf>>,
     /// When the open session started, for the duration on its stop line.
     ///
     /// Set and cleared in the same two places the session is, for the same
@@ -178,6 +188,7 @@ impl ChatState {
         Self {
             session: Mutex::new(None),
             model_name: Mutex::new(None),
+            model_path: Mutex::new(None),
             opened_at: Mutex::new(None),
             store: ConversationStore::new(root),
             cancel: Mutex::new(None),
@@ -213,6 +224,34 @@ impl ChatState {
             .unwrap_or_default()
     }
 
+    /// Whether `path` is the model this session has open.
+    ///
+    /// Compared after [`std::fs::canonicalize`] where the filesystem allows it,
+    /// so the same file reached by two spellings — a symlinked library folder,
+    /// `C:\Models` against `C:\models`, a route through a parent directory — is
+    /// recognised as one. A comparison on the raw paths would answer "nothing
+    /// is running" for a file that is, which is the one wrong answer that costs
+    /// the user something: [`crate::models::models_delete`] would then unlink
+    /// the weights out from under a live server.
+    pub fn has_open(&self, path: &Path) -> bool {
+        let Ok(held) = self.model_path.lock() else {
+            // A poisoned lock means a panic while a session was being recorded.
+            // "Something may be running" is the safe reading: refusing a delete
+            // costs a click, and allowing one costs the file.
+            return true;
+        };
+        let Some(open) = held.as_ref() else {
+            return false;
+        };
+
+        // Falls back to the path as given when canonicalising fails, which it
+        // does for a file that no longer exists -- exactly the case where the
+        // record outlived the file, and still worth comparing.
+        let resolve = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+
+        resolve(open) == resolve(path)
+    }
+
     /// Takes the open session out of state, leaving none behind.
     ///
     /// The one place a session ends — both closing and opening a second model
@@ -220,6 +259,9 @@ impl ChatState {
     /// here rather than at either caller.
     fn take_session(&self) -> Option<Session> {
         if let Ok(mut held) = self.model_name.lock() {
+            *held = None;
+        }
+        if let Ok(mut held) = self.model_path.lock() {
             *held = None;
         }
         let started = self
@@ -421,6 +463,9 @@ pub async fn chat_open_model(
     }
     if let Ok(mut held) = state.model_name.lock() {
         *held = Some(model_name.clone());
+    }
+    if let Ok(mut held) = state.model_path.lock() {
+        *held = Some(path.clone());
     }
     if let Ok(mut held) = state.opened_at.lock() {
         *held = Some(std::time::Instant::now());
@@ -1125,6 +1170,133 @@ mod tests {
         assert!(
             state.store.load("../escape").is_err(),
             "an id reached outside the conversation directory"
+        );
+    }
+
+    #[test]
+    fn nothing_is_open_when_no_model_has_been_opened() {
+        // The answer `models_delete` needs on a fresh start. Reporting a file
+        // as running here would make every model undeletable until the app had
+        // opened and closed one.
+        let directory = tempfile::tempdir().unwrap();
+        let state = ChatState::new(directory.path().to_path_buf());
+
+        assert!(!state.has_open(Path::new("/models/mistral.gguf")));
+    }
+
+    /// A state holding `path` open, for the tests below.
+    fn holding(directory: &Path, path: &Path) -> ChatState {
+        let state = ChatState::new(directory.to_path_buf());
+
+        if let Ok(mut held) = state.model_path.lock() {
+            *held = Some(path.to_path_buf());
+        }
+
+        state
+    }
+
+    #[test]
+    fn the_open_model_is_recognised_and_others_are_not() {
+        let directory = tempfile::tempdir().unwrap();
+        let open = directory.path().join("mistral.gguf");
+        std::fs::write(&open, b"weights").unwrap();
+
+        let state = holding(directory.path(), &open);
+
+        assert!(state.has_open(&open));
+        assert!(
+            !state.has_open(&directory.path().join("llama.gguf")),
+            "a model that is not running was reported as running"
+        );
+    }
+
+    #[test]
+    fn the_same_file_reached_through_a_parent_directory_is_still_open() {
+        // The comparison a raw `==` gets wrong, and the direction that costs
+        // something: answering "not running" for a file that is would let a
+        // delete unlink the weights out from under a live server.
+        //
+        // `..` rather than `.` because `Path` equality compares by
+        // `components()`, which drops a `.` before either side is looked at --
+        // so a `.` detour compares equal with or without canonicalising and
+        // tests nothing. `..` cannot be resolved without asking the
+        // filesystem, which is exactly what this is here to prove happens.
+        // Platform-neutral, so it guards the property on every target rather
+        // than only the one whose spelling quirk it names.
+        let directory = tempfile::tempdir().unwrap();
+        let inner = directory.path().join("quantized");
+        std::fs::create_dir(&inner).unwrap();
+        let open = directory.path().join("mistral.gguf");
+        std::fs::write(&open, b"weights").unwrap();
+
+        let state = holding(directory.path(), &open);
+        let roundabout = inner.join("..").join("mistral.gguf");
+
+        assert!(state.has_open(&roundabout));
+    }
+
+    /// The Windows spelling the doc comment names: `C:\Models` vs `C:\models`.
+    ///
+    /// Gated because it is a fact about the filesystem, not about this code.
+    /// NTFS is case-insensitive, so canonicalising resolves either casing onto
+    /// the one on disk; ext4 is case-sensitive, where the shouted name is a
+    /// different file that does not exist and *should* compare unequal.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn the_same_file_under_a_different_case_is_still_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let open = directory.path().join("mistral.gguf");
+        std::fs::write(&open, b"weights").unwrap();
+
+        let state = holding(directory.path(), &open);
+
+        assert!(state.has_open(&directory.path().join("MISTRAL.GGUF")));
+    }
+
+    /// The Unix equivalent: a library folder reached through a symlink.
+    ///
+    /// The other half of what the doc comment promises, and the case a user
+    /// actually hits — a models directory symlinked onto a second disk. Gated
+    /// to Unix because creating a symlink on Windows needs developer mode or
+    /// elevation, so the same test there would fail on the privilege rather
+    /// than on the behaviour.
+    #[cfg(unix)]
+    #[test]
+    fn the_same_file_reached_through_a_symlink_is_still_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let real = directory.path().join("library");
+        std::fs::create_dir(&real).unwrap();
+        let open = real.join("mistral.gguf");
+        std::fs::write(&open, b"weights").unwrap();
+
+        let link = directory.path().join("models");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let state = holding(directory.path(), &open);
+
+        assert!(state.has_open(&link.join("mistral.gguf")));
+    }
+
+    #[test]
+    fn closing_a_session_stops_the_model_counting_as_open() {
+        // The pairing the field's doc comment promises. A path left behind by
+        // a closed session would make `models_delete` refuse a model that is
+        // not running -- and the user would have no way to talk it round.
+        let directory = tempfile::tempdir().unwrap();
+        let state = ChatState::new(directory.path().to_path_buf());
+        let open = directory.path().join("mistral.gguf");
+        std::fs::write(&open, b"weights").unwrap();
+
+        if let Ok(mut held) = state.model_path.lock() {
+            *held = Some(open.clone());
+        }
+        assert!(state.has_open(&open));
+
+        state.take_session();
+
+        assert!(
+            !state.has_open(&open),
+            "a closed session still claimed to hold its model open"
         );
     }
 }

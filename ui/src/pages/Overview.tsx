@@ -10,7 +10,6 @@ import type { MetricsSample } from '../bindings/MetricsSample';
 import type { SystemDescription } from '../bindings/SystemDescription';
 import { Chart } from '../components/Chart';
 import { Meter } from '../components/Meter';
-import { chartHeightFor } from '../components/PanelGrid';
 import { SectionContainer, type SectionSpec } from '../components/Section';
 import {
   memoryAreaOption,
@@ -26,7 +25,7 @@ import {
   formatPercent,
   formatRate,
 } from '../lib/format';
-import { reconcileLayout, type PanelLayout } from '../lib/panelLayout';
+import { chartHeightFor, reconcileLayout, type PanelLayout } from '../lib/panelLayout';
 import type { PageLayout } from '../lib/preferences';
 import { OVERVIEW_PANEL_IDS } from './overviewPanels';
 

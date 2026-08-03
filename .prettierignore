@@ -15,3 +15,9 @@ src-tauri/gen/
 # Lockfiles
 package-lock.json
 Cargo.lock
+
+# Agent tooling installed into the working tree, not project source. Vendored
+# skill documents that nothing here authors or ships, so reformatting them
+# would be 260-odd files of churn against something the next install replaces.
+.agents/
+skills-lock.json

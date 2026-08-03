@@ -9,7 +9,7 @@
  * failure.
  */
 
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EndProcessDialog, type EndProcessDialogProps } from './EndProcessDialog';
@@ -228,7 +228,15 @@ describe('EndProcessDialog', () => {
     fireEvent.click(await screen.findByRole('button', { name: /^end chrome$/i }));
     await screen.findByRole('status');
 
-    expect(terminateProcess).toHaveBeenNthCalledWith(1, TARGET.key, 'graceful');
+    // Awaited rather than asserted outright: the graceful request is fired from
+    // an effect on the `waiting` phase, while the status paragraph renders in
+    // the commit that sets it. So the text can be in the DOM a tick before the
+    // effect has run, and a bare assertion here races it -- roughly one run in
+    // eight. The forceful assertion below needs no such wait because it is
+    // fired straight from the button's own handler.
+    await waitFor(() => {
+      expect(terminateProcess).toHaveBeenNthCalledWith(1, TARGET.key, 'graceful');
+    });
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(GRACE_MS);

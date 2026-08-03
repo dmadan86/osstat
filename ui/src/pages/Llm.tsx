@@ -101,6 +101,7 @@ import {
   priceSearchedModel,
   searchModels,
 } from '../lib/ipc';
+import { UNREVIEWED } from '../lib/provenance';
 import { Meter } from '../components/Meter';
 
 /** What a load can be doing. */
@@ -838,23 +839,12 @@ function Matrix({
 }
 
 /**
- * The wording that separates osstat's two verification tiers.
+ * The whole of that argument, for the control's tooltip.
  *
- * **This label is the feature.** A pinned model is checked against a hash
- * reviewed in a pull request against this repository, so the bytes are the ones
- * somebody looked at. A searched one is checked against the hash Hugging Face
- * reports beside the file — which proves the transfer was not corrupted and
- * cannot prove the upload was not replaced, because the digest and the file
- * come from the same origin.
- *
- * A searched result that downloaded exactly like a pinned one, with no visible
- * difference, would quietly retire a guarantee SECURITY.md still makes. So the
- * words live in one constant, used on the result and on the model once it is on
- * disk, rather than being retyped somewhere it could be dropped.
+ * Page-specific and therefore not alongside {@link UNREVIEWED} in
+ * `lib/provenance`: it points at the pinned matrix drawn above it, which exists
+ * on this page and nowhere else.
  */
-const UNREVIEWED = 'Not reviewed · hash from Hugging Face';
-
-/** The whole of that argument, for the control's tooltip. */
 const UNREVIEWED_DETAIL =
   'osstat checks this against the hash Hugging Face reports beside the file. That catches a corrupted transfer. It cannot show that the upload is the one anybody reviewed, which is what the pinned models above are checked against.';
 

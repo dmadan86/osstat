@@ -14,7 +14,6 @@ import {
   applyVisibleOrder,
   moveVisibleById,
   NARROW_WIDTH,
-  PANEL_HEIGHTS,
   updatePanel,
   type PanelLayout,
 } from '../lib/panelLayout';
@@ -151,10 +150,4 @@ export function PanelGrid({ sections, layout, onLayoutChange }: PanelGridProps):
       })}
     </div>
   );
-}
-
-/** The chart height a named panel height is worth. */
-export function chartHeightFor(layout: readonly PanelLayout[], id: string): number {
-  const panel = layout.find((candidate) => candidate.id === id);
-  return PANEL_HEIGHTS[panel?.height ?? 'normal'];
 }

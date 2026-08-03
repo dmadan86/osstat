@@ -1162,22 +1162,44 @@ pub fn models_cancel(state: State<'_, ModelState>) {
 /// Run control for bytes that are gone, and a file left behind would be
 /// gigabytes nothing in the app admits to.
 ///
+/// # A model that is currently running is refused rather than deleted
+///
+/// The two platforms fail differently and both fail badly. Windows holds an
+/// open file, so `remove_file` returns a sharing violation and the user gets an
+/// OS error message about a file they did not know was in use. Unix unlinks it
+/// happily: `llama-server` keeps serving from the open inode, the record is
+/// forgotten, and the gigabytes stay allocated until the process exits — a disk
+/// cleaner that appears to have freed space and has not.
+///
+/// So the session is asked first, and the refusal names the way out. Stopping
+/// the server on the user's behalf would be the other option and is worse: a
+/// Delete control that silently killed a running model, and with it whatever
+/// was being generated, would do more than it said.
+///
 /// # Errors
 ///
-/// If the file cannot be removed, or the index cannot be written.
+/// If the model is currently running, the file cannot be removed, or the index
+/// cannot be written.
 #[tauri::command]
 pub fn models_delete(
     state: State<'_, ModelState>,
+    chat: State<'_, crate::chat::ChatState>,
     model_id: String,
     quant_id: String,
 ) -> Result<(), String> {
     let key = ModelKey { model_id, quant_id };
     let store = state.store();
 
-    if let Some(path) = store.path_of(&key)
-        && let Err(error) = std::fs::remove_file(&path)
-    {
-        return Err(format!("{} could not be deleted: {error}", path.display()));
+    if let Some(path) = store.path_of(&key) {
+        if chat.has_open(&path) {
+            return Err(
+                "that model is running. Unload it first, then it can be deleted.".to_owned(),
+            );
+        }
+
+        if let Err(error) = std::fs::remove_file(&path) {
+            return Err(format!("{} could not be deleted: {error}", path.display()));
+        }
     }
 
     store.forget(&key).map_err(|error| error.to_string())
