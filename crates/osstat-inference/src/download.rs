@@ -1,12 +1,24 @@
-//! Fetching an archive and proving it is the one that was pinned.
+//! Fetching a file and proving it is the one that was pinned.
 //!
-//! Downloads land in a `.partial` file beside the destination and are moved
-//! into place only after the hash matches. An interrupted or tampered download
-//! therefore can never be mistaken for a usable runtime, and nothing partial
-//! survives a failure for a later step to find and trust.
+//! Downloads land in a partial file beside the destination and are moved into
+//! place only after the hash matches. An interrupted or tampered download
+//! therefore can never be mistaken for a usable runtime or model, and nothing
+//! partial survives a failure for a later step to find and trust.
 //!
-//! The hash is computed while streaming, so a 600 MB artifact is never held in
-//! memory and never read from disk twice.
+//! Two functions, differing only in what happens to an interrupted attempt.
+//!
+//! [`download_verified`] hashes while streaming, so a 600 MB artifact is never
+//! held in memory and never read from disk twice, and discards its partial file
+//! on any failure. That is the right trade for a runtime archive: small enough
+//! that refetching costs little, and never resuming means never reasoning about
+//! whether the bytes on disk belong to the file being fetched.
+//!
+//! [`download_resumable`] keeps its partial file across a failure and asks for
+//! only the missing bytes next time, because a model is gigabytes and a dropped
+//! connection at 90% must not cost the whole download. The price is that the
+//! hash cannot be carried across attempts, so the finished file is read once
+//! more to hash it — a second pass over a few gigabytes, against re-fetching
+//! them.
 
 use futures_util::StreamExt as _;
 use sha2::{Digest as _, Sha256};
