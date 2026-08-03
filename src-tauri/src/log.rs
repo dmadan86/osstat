@@ -8,9 +8,10 @@
 //! parameter on any of them, so a path cannot be logged because there is
 //! nowhere to put one.
 //!
-//! The single exception is [`init`]'s `dir`, which is where the log is
-//! *written to*. It is never a field in a line, and it is the only path this
-//! module ever holds.
+//! The exceptions are [`init`], [`prune`] and [`save`], which are about the
+//! log *directory* rather than about a log line: where the file is written,
+//! how many are kept, and where a copy is put when a user attaches one to a bug
+//! report. None of them can put a path in a line, and none of them logs.
 //!
 //! Errors are logged by [`kind()`](osstat_core::Error::kind), never by
 //! `Display` and never by `{:?}`: `ChatError::SpawnFailed` carries
@@ -30,10 +31,17 @@
 //!
 //! See `docs/superpowers/specs/2026-08-03-event-logging-design.md` §2 and §6.
 
-use std::path::Path;
-use std::sync::OnceLock;
+// Tauri resolves managed state by injecting `State<'_, T>` by value; a
+// reference is not part of the command signature it accepts. The guard is a
+// cheap handle, so the lint's concern does not apply here. Same reason as
+// `commands.rs`.
+#![allow(clippy::needless_pass_by_value)]
+
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use serde::{Deserialize, Serialize};
+use tauri::State;
 use tracing::{Level, debug, error, info, trace, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::Rotation;
@@ -45,6 +53,19 @@ const MIB: u64 = 1_048_576;
 
 /// Tokens in a kibi-token, for the context-length field.
 const KIBI_TOKENS: u32 = 1_024;
+
+/// How many daily files are kept.
+///
+/// A week. osstat sits in the tray all day, so unbounded logs on a monitoring
+/// utility would be its own bug (design §4); a week is long enough that "it
+/// started doing this on Monday" is still in the directory on Friday.
+pub const RETENTION: usize = 7;
+
+/// What every file [`init`]'s appender writes is called, before the date.
+const FILE_PREFIX: &str = "osstat.";
+
+/// What every file [`init`]'s appender writes is called, after the date.
+const FILE_SUFFIX: &str = ".log";
 
 /// The handle that lets [`set_level`] change the filter without a restart.
 ///
@@ -168,11 +189,14 @@ pub fn init(dir: &Path, level: LogLevel) -> Option<WorkerGuard> {
     std::fs::create_dir_all(dir).ok()?;
 
     // `osstat.YYYY-MM-DD.log` rather than the default `osstat.log.YYYY-MM-DD`,
-    // so the files sort together and open in whatever reads a `.log`.
+    // so the files sort together and open in whatever reads a `.log`. The dots
+    // are the appender's own separators, which is why they are trimmed off here
+    // and kept on the constants -- those are what `is_log_file` matches, and a
+    // looser match is what would let retention delete a neighbour.
     let appender = tracing_appender::rolling::Builder::new()
         .rotation(Rotation::DAILY)
-        .filename_prefix("osstat")
-        .filename_suffix("log")
+        .filename_prefix(FILE_PREFIX.trim_end_matches('.'))
+        .filename_suffix(FILE_SUFFIX.trim_start_matches('.'))
         .build(dir)
         .ok()?;
     let (writer, guard) = tracing_appender::non_blocking(appender);
@@ -213,6 +237,194 @@ pub fn set_level(level: LogLevel) {
     if let Some(handle) = RELOAD.get() {
         let _ = handle.reload(EnvFilter::new(filter_directive(level)));
     }
+}
+
+/// Whether `name` is one of the files [`init`]'s appender writes.
+///
+/// Matched at both ends. The log directory sits under app data beside
+/// `models.json` and the conversation store, and [`prune`] deletes whatever
+/// this admits — so a looser match here is a deletion loop over app data.
+fn is_log_file(name: &str) -> bool {
+    name.starts_with(FILE_PREFIX) && name.ends_with(FILE_SUFFIX)
+}
+
+/// Every log file in `dir`, oldest first.
+///
+/// Sorted by name, which is chronological because the names carry ISO dates —
+/// the reason [`init`] configures that layout rather than the appender's
+/// default. Modification times would be the obvious alternative and are worse:
+/// copying a directory rewrites them all, and retention would then delete by
+/// the order the files were restored in.
+///
+/// A directory that cannot be read yields nothing rather than an error.
+/// Retention and saving are both housekeeping, and neither is worth failing an
+/// app start or a settings page over.
+fn log_files(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(is_log_file)
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// Deletes the oldest log files in `dir` until at most `keep` remain.
+///
+/// **The newest file is never deleted, whatever `keep` says.** It is the one
+/// the appender currently has open, so removing it would truncate the session
+/// the user is trying to diagnose — and that is precisely the session anybody
+/// runs this app long enough to hit a retention cap in. The floor lives here
+/// rather than in the caller so that lowering [`RETENTION`] later cannot
+/// quietly remove it.
+///
+/// Failures are ignored: a file that will not delete costs disk, and refusing
+/// to start over it would cost the app.
+pub fn prune(dir: &Path, keep: usize) {
+    let mut files = log_files(dir);
+    let Some(excess) = files.len().checked_sub(keep.max(1)) else {
+        return;
+    };
+
+    files.truncate(excess);
+    for path in files {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Copies every log file from `from` into `to`, and returns how many.
+///
+/// Copies rather than moves: the newest file is open and being written, and a
+/// "save my logs" control that emptied the log directory would take the
+/// evidence with it.
+///
+/// # Errors
+///
+/// If `to` cannot be created or a file cannot be copied into it. A `from` that
+/// does not exist is not an error — it copies nothing and says so — because a
+/// build whose log directory could never be created still has this control, and
+/// the truthful answer there is "there is nothing to save".
+pub fn save(from: &Path, to: &Path) -> std::io::Result<u32> {
+    let files = log_files(from);
+    if files.is_empty() {
+        return Ok(0);
+    }
+
+    std::fs::create_dir_all(to)?;
+
+    let mut copied = 0;
+    for path in files {
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        std::fs::copy(&path, to.join(name))?;
+        copied += 1;
+    }
+
+    Ok(copied)
+}
+
+/// Where the log is, and how much detail it is set to carry.
+///
+/// Held as Tauri managed state rather than persisted here, exactly as
+/// [`crate::window_state`] holds the close behaviour: the front end stores the
+/// preference and re-applies it at startup. There is one setting and it is not
+/// worth a config file of its own.
+///
+/// Managed only when the app-data directory resolved, following
+/// [`crate::models::ModelState`]. If it did not there is no log at all, and a
+/// level control that appeared to work would be the wrong answer.
+pub struct LogState {
+    /// The directory [`init`] was given.
+    dir: PathBuf,
+    /// What [`set_level`] was last told, so Settings can show it.
+    level: Mutex<LogLevel>,
+}
+
+impl LogState {
+    /// Records that logging started in `dir` at `level`.
+    #[must_use]
+    pub const fn new(dir: PathBuf, level: LogLevel) -> Self {
+        Self {
+            dir,
+            level: Mutex::new(level),
+        }
+    }
+
+    /// Where the log files are.
+    #[must_use]
+    pub fn directory(&self) -> &Path {
+        &self.dir
+    }
+
+    /// How much detail the log is currently carrying.
+    #[must_use]
+    pub fn level(&self) -> LogLevel {
+        *self.level.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Records a new setting. Applying it is [`set_level`].
+    pub fn set(&self, level: LogLevel) {
+        *self.level.lock().unwrap_or_else(PoisonError::into_inner) = level;
+    }
+}
+
+/// How much detail the log is currently carrying.
+#[tauri::command]
+#[must_use]
+pub fn log_level(state: State<'_, LogState>) -> LogLevel {
+    state.level()
+}
+
+/// Changes how much detail the log carries, from now on.
+///
+/// Takes effect immediately and without a restart, which is what makes Verbose
+/// usable at all: the problem someone turns it on for is usually one they are
+/// about to reproduce, not one that survives closing the app.
+#[tauri::command]
+pub fn log_set_level(state: State<'_, LogState>, level: LogLevel) {
+    state.set(level);
+    set_level(level);
+}
+
+/// Where the log files are kept.
+///
+/// So Settings can show the folder, the same way it shows where models live.
+/// Deleting it is safe at any time.
+#[tauri::command]
+#[must_use]
+pub fn log_directory(state: State<'_, LogState>) -> String {
+    state.directory().display().to_string()
+}
+
+/// Copies every log file into `path`, and returns how many were copied.
+///
+/// # Errors
+///
+/// If the folder cannot be created or a file cannot be copied into it.
+#[tauri::command]
+pub fn log_save(state: State<'_, LogState>, path: String) -> Result<u32, String> {
+    save(state.directory(), Path::new(&path))
+        .map_err(|error| format!("the logs could not be copied: {error}"))
+}
+
+/// Forwards something the front end did into the one log.
+///
+/// A command rather than a file the webview writes itself, so a session reads
+/// as a single ordered story instead of two files a reader has to interleave by
+/// timestamp — which is the work someone opening a log is trying to avoid
+/// (design §5).
+#[tauri::command]
+pub fn ui_log(kind: UiEventKind) {
+    ui_event(kind);
 }
 
 /// The app finished starting. `probe_gpus` is how many GPUs were found — the
@@ -542,6 +754,168 @@ mod tests {
                 "{level:?} is not scoped to osstat: {directive}"
             );
         }
+    }
+
+    #[test]
+    fn retention_deletes_oldest_first_and_never_todays_file() {
+        // Deleting the file being written truncates the session you are
+        // currently trying to diagnose. The appender holds today's file open,
+        // and its ISO name sorts last, so "newest" and "today's" are the same
+        // file -- which is what makes retaining the newest sufficient.
+        let directory = tempfile::tempdir().unwrap();
+        let days = [
+            "2026-07-25",
+            "2026-07-26",
+            "2026-07-27",
+            "2026-07-28",
+            "2026-07-29",
+            "2026-07-30",
+            "2026-07-31",
+            "2026-08-01",
+            "2026-08-02",
+            "2026-08-03",
+        ];
+        for day in days {
+            std::fs::write(directory.path().join(format!("osstat.{day}.log")), b"x").unwrap();
+        }
+
+        prune(directory.path(), RETENTION);
+
+        let kept: Vec<String> = log_files(directory.path())
+            .iter()
+            .filter_map(|path| path.file_name()?.to_str().map(str::to_owned))
+            .collect();
+        assert_eq!(kept.len(), RETENTION, "kept {kept:?}");
+        assert!(
+            kept.contains(&"osstat.2026-08-03.log".to_owned()),
+            "the file being written was deleted: {kept:?}"
+        );
+        assert!(
+            !kept.contains(&"osstat.2026-07-25.log".to_owned()),
+            "the oldest file survived the cap: {kept:?}"
+        );
+        assert!(
+            !kept.contains(&"osstat.2026-07-27.log".to_owned()),
+            "the cap deleted fewer than it had to: {kept:?}"
+        );
+        assert!(
+            kept.contains(&"osstat.2026-07-28.log".to_owned()),
+            "the cap deleted more than it had to: {kept:?}"
+        );
+    }
+
+    #[test]
+    fn the_file_being_written_survives_even_a_cap_of_zero() {
+        // The floor is in `prune` rather than in its callers, so a retention
+        // figure someone lowers later cannot delete the open file.
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("osstat.2026-08-02.log"), b"old").unwrap();
+        std::fs::write(directory.path().join("osstat.2026-08-03.log"), b"today").unwrap();
+
+        prune(directory.path(), 0);
+
+        assert_eq!(log_files(directory.path()).len(), 1);
+        assert!(directory.path().join("osstat.2026-08-03.log").exists());
+    }
+
+    #[test]
+    fn retention_leaves_a_directory_under_the_cap_alone() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("osstat.2026-08-03.log"), b"today").unwrap();
+
+        prune(directory.path(), RETENTION);
+
+        assert_eq!(log_files(directory.path()).len(), 1);
+    }
+
+    #[test]
+    fn retention_touches_nothing_that_is_not_a_log() {
+        // The log directory is under app data, beside files that are not
+        // disposable. A prefix match is what keeps this an unremarkable
+        // housekeeping step rather than a deletion loop over a directory.
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("models.json"), b"index").unwrap();
+        std::fs::write(directory.path().join("osstat.2026-07-01.log"), b"a").unwrap();
+        std::fs::write(directory.path().join("osstat.2026-07-02.log"), b"b").unwrap();
+
+        prune(directory.path(), 1);
+
+        assert!(
+            directory.path().join("models.json").exists(),
+            "retention deleted something that was not a log"
+        );
+        assert_eq!(log_files(directory.path()).len(), 1);
+    }
+
+    #[test]
+    fn saving_copies_every_log_and_alters_none() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("logs");
+        let destination = directory.path().join("for-the-bug-report");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("osstat.2026-08-02.log"), b"yesterday").unwrap();
+        std::fs::write(source.join("osstat.2026-08-03.log"), b"today").unwrap();
+
+        let copied = save(&source, &destination).unwrap();
+
+        assert_eq!(copied, 2);
+        assert_eq!(
+            std::fs::read_to_string(destination.join("osstat.2026-08-02.log")).unwrap(),
+            "yesterday"
+        );
+        assert_eq!(
+            std::fs::read_to_string(destination.join("osstat.2026-08-03.log")).unwrap(),
+            "today"
+        );
+        // Copied, not moved: the originals are what the running app is still
+        // writing to, and saving must not be a way to lose them.
+        assert_eq!(log_files(&source).len(), 2);
+        assert_eq!(
+            std::fs::read_to_string(source.join("osstat.2026-08-03.log")).unwrap(),
+            "today"
+        );
+    }
+
+    #[test]
+    fn saving_takes_the_logs_and_leaves_everything_else() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("logs");
+        let destination = directory.path().join("elsewhere");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("osstat.2026-08-03.log"), b"today").unwrap();
+        std::fs::write(source.join("notes.txt"), b"not a log").unwrap();
+
+        let copied = save(&source, &destination).unwrap();
+
+        assert_eq!(copied, 1);
+        assert!(!destination.join("notes.txt").exists());
+    }
+
+    #[test]
+    fn saving_from_a_directory_that_never_existed_copies_nothing_rather_than_failing() {
+        // A build whose log directory could not be created still has a Settings
+        // page, and a control that errors there says something is broken when
+        // the truthful answer is that there is nothing to save.
+        let directory = tempfile::tempdir().unwrap();
+
+        let copied = save(
+            &directory.path().join("never-made"),
+            &directory.path().join("out"),
+        )
+        .unwrap();
+
+        assert_eq!(copied, 0);
+    }
+
+    #[test]
+    fn the_level_state_holds_what_it_was_last_set_to() {
+        let state = LogState::new(PathBuf::from("logs"), LogLevel::Info);
+        assert_eq!(state.level(), LogLevel::Info);
+
+        state.set(LogLevel::Verbose);
+
+        assert_eq!(state.level(), LogLevel::Verbose);
+        assert_eq!(state.directory(), Path::new("logs"));
     }
 
     #[test]

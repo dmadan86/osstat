@@ -99,10 +99,20 @@ fn setup(
     // is for, and there is no point starting one after the event worth
     // recording has already happened. A log directory that cannot be made
     // leaves the app running without a log rather than not running.
-    if let Ok(root) = app.path().app_data_dir()
-        && let Some(guard) = log::init(&root.join("logs"), log::LogLevel::default())
-    {
-        app.manage(log::LogGuard::new(guard));
+    if let Ok(root) = app.path().app_data_dir() {
+        let directory = root.join("logs");
+        let level = log::LogLevel::default();
+
+        if let Some(guard) = log::init(&directory, level) {
+            app.manage(log::LogGuard::new(guard));
+        }
+
+        // After `init`, not before. The appender opens today's file when it is
+        // built, so pruning afterwards is what lets retention see that file and
+        // keep it; pruning first would leave yesterday's as the newest and
+        // count one file too few.
+        log::prune(&directory, log::RETENTION);
+        app.manage(log::LogState::new(directory, level));
     }
 
     let sampler = Sampler::start(app.handle().clone(), DEFAULT_INTERVAL)?;
@@ -236,6 +246,11 @@ pub fn run() -> tauri::Result<()> {
             models::models_set_folder,
             models::models_plan_move,
             models::models_move,
+            log::log_level,
+            log::log_set_level,
+            log::log_save,
+            log::log_directory,
+            log::ui_log,
             commands::set_sample_interval,
             commands::set_sampling_paused,
             commands::set_close_behaviour,
