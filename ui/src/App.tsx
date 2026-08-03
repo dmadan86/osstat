@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react';
 
 import type { GpuDevice } from './bindings/GpuDevice';
 import type { MetricsSample } from './bindings/MetricsSample';
+import type { ModelSession } from './bindings/ModelSession';
 import type { SystemDescription } from './bindings/SystemDescription';
 import { EndProcessDialog } from './components/EndProcessDialog';
 import { Navigation } from './components/Navigation';
@@ -45,6 +46,20 @@ export function App(): React.JSX.Element {
   const gpus = useGpuDevices();
   const hiddenToTray = useTrayHidden();
   const [endTarget, setEndTarget] = useState<EndProcessTarget | null>(null);
+  const [openedModel, setOpenedModel] = useState<ModelSession | null>(null);
+
+  /**
+   * Moves to another page, dropping any session the advisor opened.
+   *
+   * Leaving the chat page ends the server — that is `Chat`'s own unmount
+   * effect, and it is what keeps a multi-gigabyte VRAM allocation from
+   * outliving the page holding it. Keeping the session object afterwards would
+   * mean returning to Chat and showing a model bar for a server that is gone.
+   */
+  function navigate(next: Route): void {
+    if (route === 'chat' && next !== 'chat') setOpenedModel(null);
+    setRoute(next);
+  }
 
   // Push the chosen tick rate to the sampler. The backend clamps anything it
   // cannot honour, so a stale stored preference cannot produce a busy loop.
@@ -70,7 +85,7 @@ export function App(): React.JSX.Element {
           user could tab to another row's "End" button behind the dialog and
           reach it with the keyboard. */}
       <div className="contents" inert={endTarget !== null}>
-        <Navigation current={route} onNavigate={setRoute} style={preferences.navigation} />
+        <Navigation current={route} onNavigate={navigate} style={preferences.navigation} />
 
         <main className="min-w-0 flex-1 overflow-auto px-5 py-4">
           {system.status === 'error' && (
@@ -98,6 +113,11 @@ export function App(): React.JSX.Element {
               onPreferenceChange={updatePreferences}
               hiddenToTray={hiddenToTray}
               onEndProcess={setEndTarget}
+              openedModel={openedModel}
+              onModelOpened={(session) => {
+                setOpenedModel(session);
+                setRoute('chat');
+              }}
             />
           )}
         </main>
@@ -152,6 +172,10 @@ interface PageProps {
   hiddenToTray: boolean;
   /** Opens the confirmation dialog for a process the user wants ended. */
   onEndProcess: (target: EndProcessTarget) => void;
+  /** The session the advisor's Run control opened, if the chat is showing one. */
+  openedModel: ModelSession | null;
+  /** Takes the user to the chat with the session Run just opened. */
+  onModelOpened: (session: ModelSession) => void;
 }
 
 /** Chooses the page for the current route. */
@@ -167,6 +191,8 @@ function Page({
   onPreferenceChange,
   hiddenToTray,
   onEndProcess,
+  openedModel,
+  onModelOpened,
 }: PageProps): React.JSX.Element {
   switch (route) {
     case 'overview':
@@ -195,10 +221,10 @@ function Page({
       return <Ports tree={tree} onEndProcess={onEndProcess} />;
 
     case 'llm':
-      return <Llm />;
+      return <Llm onModelOpened={onModelOpened} />;
 
     case 'chat':
-      return <Chat />;
+      return <Chat opened={openedModel} />;
 
     case 'settings':
       return <Settings preferences={preferences} onChange={onPreferenceChange} />;

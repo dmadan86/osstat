@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { FitResult } from '../bindings/FitResult';
 import type { GpuBudget } from '../bindings/GpuBudget';
+import type { ModelCatalogueEntry } from '../bindings/ModelCatalogueEntry';
 import type { ModelEntry } from '../bindings/ModelEntry';
 import type { VerdictKind } from '../bindings/VerdictKind';
 import {
@@ -10,6 +11,7 @@ import {
   countByVerdict,
   exceedsNativeContext,
   formatTokens,
+  indexCatalogue,
   indexResults,
   VERDICTS,
 } from './advisor';
@@ -29,6 +31,7 @@ function model(maxContextLength: number, id = 'test'): ModelEntry {
       maxContextLength,
     },
     sourceNote: 'fixture',
+    downloads: [],
   };
 }
 
@@ -67,6 +70,39 @@ describe('indexResults', () => {
     expect(index.get(cellKey('llama', 'Q4'))?.verdict.kind).toBe('fitsOnGpu');
     expect(index.get(cellKey('llama', 'Q8'))?.verdict.kind).toBe('wontFit');
     expect(index.get(cellKey('llama', 'Q2'))).toBeUndefined();
+  });
+});
+
+describe('indexCatalogue', () => {
+  function entry(modelId: string, quantId: string, publisher: string): ModelCatalogueEntry {
+    return {
+      key: { modelId, quantId },
+      state: 'downloadable',
+      publisher,
+      repo: `${publisher}/whatever-GGUF`,
+      file: 'whatever.gguf',
+      sizeBytes: 4_920_734_688,
+      path: null,
+    };
+  }
+
+  it('finds each pinned cell by the key the matrix uses', () => {
+    const index = indexCatalogue([
+      entry('llama', 'Q4', 'bartowski'),
+      entry('qwen', 'Q4', 'mradermacher'),
+    ]);
+
+    expect(index.get(cellKey('llama', 'Q4'))?.publisher).toBe('bartowski');
+    expect(index.get(cellKey('qwen', 'Q4'))?.publisher).toBe('mradermacher');
+  });
+
+  it('invents nothing for a cell nobody pinned', () => {
+    // The absence is what the matrix renders "not pinned" from. A default entry
+    // here would become a download control whose only outcome is an error.
+    const index = indexCatalogue([entry('llama', 'Q4', 'bartowski')]);
+
+    expect(index.get(cellKey('llama', 'Q8'))).toBeUndefined();
+    expect(index.size).toBe(1);
   });
 });
 
