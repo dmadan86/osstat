@@ -171,7 +171,17 @@ export function ModelFolder(): React.JSX.Element {
   function move(path: string): void {
     setProposal(null);
     setProblem(null);
-    setMoving({ key: null, phase: 'moving', downloadedBytes: 0, totalBytes: 0 });
+    setMoving({
+      key: null,
+      phase: 'moving',
+      downloadedBytes: 0,
+      totalBytes: 0,
+      // A move reports neither. A same-volume move renames rather than copies,
+      // so a byte rate would describe an operation that never touched the
+      // bytes — the backend says the same thing by sending `null` here.
+      bytesPerSecond: null,
+      secondsRemaining: null,
+    });
 
     moveModelLibrary(path).then(
       () => {

@@ -37,6 +37,7 @@ const {
   onModelDone,
   onModelFailed,
   onModelProgress,
+  pauseModelDownload,
 } = vi.hoisted(() => ({
   cancelModelDownload: vi.fn(),
   chatOpenModel: vi.fn(),
@@ -48,6 +49,7 @@ const {
   onModelDone: vi.fn(),
   onModelFailed: vi.fn(),
   onModelProgress: vi.fn(),
+  pauseModelDownload: vi.fn(),
 }));
 
 vi.mock('../lib/ipc', () => ({
@@ -61,6 +63,7 @@ vi.mock('../lib/ipc', () => ({
   onModelDone,
   onModelFailed,
   onModelProgress,
+  pauseModelDownload,
 }));
 
 const { Llm } = await import('./Llm');
@@ -234,6 +237,37 @@ async function cellOf(model: string, quant: string): Promise<HTMLElement> {
   return screen.findByRole('group', { name: `${model} at ${quant}` });
 }
 
+/**
+ * Starts the Llama download and drives it to `downloadedBytes`.
+ *
+ * The rate and estimate are the ones the backend computes over its own window;
+ * the front end renders what it is given rather than deriving them again, so a
+ * fixture is exactly as good as the real figure here.
+ */
+async function downloading(
+  downloadedBytes = 2_460_367_344,
+  pace: Pick<ModelProgress, 'bytesPerSecond' | 'secondsRemaining'> = {
+    bytesPerSecond: 12_582_912,
+    secondsRemaining: 196,
+  }
+): Promise<HTMLElement> {
+  const user = userEvent.setup();
+  const cell = await cellOf('Llama 3 8B', 'Q4_K_M');
+  await user.click(within(cell).getByRole('button', { name: /^download /i }));
+
+  act(() => {
+    progress.fire({
+      key: { modelId: 'llama-3-8b', quantId: 'Q4_K_M' },
+      phase: 'downloading',
+      downloadedBytes,
+      totalBytes: LLAMA_BYTES,
+      ...pace,
+    });
+  });
+
+  return cell;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   onGpusReady.mockResolvedValue(() => undefined);
@@ -244,6 +278,7 @@ beforeEach(() => {
   fetchLlmAdvice.mockResolvedValue(advice());
   fetchModelCatalogue.mockResolvedValue(catalogue());
   downloadModel.mockResolvedValue(undefined);
+  pauseModelDownload.mockResolvedValue(undefined);
   cancelModelDownload.mockResolvedValue(undefined);
   chatOpenModel.mockResolvedValue(session());
 });
@@ -273,22 +308,11 @@ describe('Llm › acquiring a model', () => {
   });
 
   it('shows progress against the pinned size while downloading', async () => {
-    const user = userEvent.setup();
     render(<Llm />);
 
-    const cell = await cellOf('Llama 3 8B', 'Q4_K_M');
-    await user.click(within(cell).getByRole('button', { name: /^download /i }));
+    const cell = await downloading();
 
     expect(downloadModel).toHaveBeenCalledWith('llama-3-8b', 'Q4_K_M');
-
-    act(() => {
-      progress.fire({
-        key: { modelId: 'llama-3-8b', quantId: 'Q4_K_M' },
-        phase: 'downloading',
-        downloadedBytes: 2_460_367_344,
-        totalBytes: LLAMA_BYTES,
-      });
-    });
 
     // Both figures, in the right order. A meter that showed only one, or that
     // swapped them, would still have "a progress readout".
@@ -300,6 +324,227 @@ describe('Llm › acquiring a model', () => {
     const other = await cellOf('Qwen2.5 72B', 'Q4_K_M');
     expect(other).not.toHaveTextContent(/2\.29 GB/);
     expect(within(other).getByRole('button', { name: /^download /i })).toBeInTheDocument();
+  });
+
+  it('shows a progress bar with the fraction downloaded', async () => {
+    // The bar is the feature, and the fraction is what makes it a bar rather
+    // than a decoration. `Meter` is the component the Overview draws CPU and
+    // RAM with, so this is the same control the rest of the app uses.
+    render(<Llm />);
+
+    // Exactly half of the pinned size, so a bar reading anything but 50 is
+    // measuring against something it should not be.
+    const cell = await downloading(LLAMA_BYTES / 2);
+    const bar = within(cell).getByRole('meter');
+
+    expect(bar).toHaveAttribute('aria-valuenow', '50');
+    expect(bar).toHaveAttribute('aria-valuemin', '0');
+    expect(bar).toHaveAttribute('aria-valuemax', '100');
+  });
+
+  it('shows transfer rate and estimated time while downloading', async () => {
+    // A bar with no rate cannot answer "should I wait for this?", which is the
+    // only question anyone asks a download.
+    render(<Llm />);
+
+    const cell = await downloading(2_460_367_344, {
+      bytesPerSecond: 12_582_912,
+      secondsRemaining: 196,
+    });
+
+    expect(cell).toHaveTextContent(/12\.0 MB\/s/);
+    expect(cell).toHaveTextContent(/3 m/);
+  });
+
+  it('says nothing about the rate until there is a rate to report', async () => {
+    // The first progress event has nothing to measure against. A "0 B/s" there
+    // would say the download had stalled the instant it started.
+    render(<Llm />);
+
+    const cell = await downloading(0, { bytesPerSecond: null, secondsRemaining: null });
+
+    expect(cell).not.toHaveTextContent(/\/s/);
+    expect(cell).not.toHaveTextContent(/left/i);
+  });
+
+  it('shows a stall as a stall rather than as a stale estimate', async () => {
+    // The backend reports a zero rate and no estimate for a transfer that has
+    // stopped moving. Carrying on showing the last estimate would be a number
+    // that quietly stopped meaning anything.
+    render(<Llm />);
+
+    const cell = await downloading(2_460_367_344, {
+      bytesPerSecond: 0,
+      secondsRemaining: null,
+    });
+
+    expect(cell).toHaveTextContent(/stalled/i);
+    expect(cell).not.toHaveTextContent(/left/i);
+  });
+
+  it('offers Pause while downloading and Resume once paused', async () => {
+    const user = userEvent.setup();
+    render(<Llm />);
+
+    const cell = await downloading();
+
+    // Asserted on the visible word as well as the accessible name: a test that
+    // checked only that "a button exists" would pass with the two swapped.
+    const pause = within(cell).getByRole('button', { name: /^pause /i });
+    expect(pause).toHaveTextContent(/^Pause$/);
+    expect(within(cell).queryByRole('button', { name: /^resume /i })).toBeNull();
+
+    await user.click(pause);
+    expect(pauseModelDownload).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      failed.fire({
+        key: { modelId: 'llama-3-8b', quantId: 'Q4_K_M' },
+        message: 'the download was paused; resuming continues from where it stopped',
+        retryable: true,
+        verificationFailure: false,
+        stopped: 'pause',
+      });
+    });
+
+    const resume = within(cell).getByRole('button', { name: /^resume /i });
+    expect(resume).toHaveTextContent(/^Resume$/);
+    expect(within(cell).queryByRole('button', { name: /^pause /i })).toBeNull();
+
+    await user.click(resume);
+    expect(downloadModel).toHaveBeenLastCalledWith('llama-3-8b', 'Q4_K_M');
+  });
+
+  it('keeps the progress figure across a pause, so nothing looks lost', async () => {
+    // The partial file is kept on purpose. A bar that dropped to zero would
+    // say the 2.29 GB already on disk had been thrown away.
+    render(<Llm />);
+
+    const cell = await downloading(2_460_367_344);
+    expect(cell).toHaveTextContent(/2\.29 GB of 4\.58 GB/);
+
+    act(() => {
+      failed.fire({
+        key: { modelId: 'llama-3-8b', quantId: 'Q4_K_M' },
+        message: 'the download was paused; resuming continues from where it stopped',
+        retryable: true,
+        verificationFailure: false,
+        stopped: 'pause',
+      });
+    });
+
+    expect(cell).toHaveTextContent(/2\.29 GB of 4\.58 GB/);
+    expect(within(cell).getByRole('meter')).toHaveAttribute('aria-valuenow', '50');
+  });
+
+  it('forgets the progress figure on a cancel, because those bytes are gone', async () => {
+    // The mirror of the pause test, and the reason the payload distinguishes
+    // the two: after a cancel the partial file has been deleted, so a bar
+    // still reading 2.29 GB would promise a resume that would start from zero.
+    render(<Llm />);
+
+    const cell = await downloading(2_460_367_344);
+
+    act(() => {
+      failed.fire({
+        key: { modelId: 'llama-3-8b', quantId: 'Q4_K_M' },
+        message: 'the download was cancelled; what had already arrived was deleted',
+        retryable: true,
+        verificationFailure: false,
+        stopped: 'cancel',
+      });
+    });
+
+    expect(cell).not.toHaveTextContent(/2\.29 GB/);
+    expect(within(cell).queryByRole('meter')).toBeNull();
+    expect(within(cell).getByRole('button', { name: /^download /i })).toBeInTheDocument();
+  });
+
+  it('says a permanent failure is a bad pin, not a network problem', async () => {
+    // The user-visible half of the retry policy. "Download failed, retrying"
+    // for a wrong hash would be a lie, and it would send someone to check
+    // their wifi over what is a supply-chain event.
+    render(<Llm />);
+    await cellOf('Llama 3 8B', 'Q4_K_M');
+
+    act(() => {
+      failed.fire({
+        key: { modelId: 'llama-3-8b', quantId: 'Q4_K_M' },
+        message: 'Meta-Llama-3-8B-Instruct-Q4_K_M.gguf did not match its pinned checksum',
+        retryable: false,
+        verificationFailure: true,
+        stopped: null,
+      });
+    });
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/verification failed/i);
+    expect(alert).not.toHaveTextContent(/network/i);
+    expect(alert).not.toHaveTextContent(/retrying/i);
+    expect(alert).not.toHaveTextContent(/connection/i);
+    // And nowhere on the page, not merely nowhere in the alert: a Retry in the
+    // cell would invite exactly the loop the policy exists to prevent.
+    expect(screen.queryByRole('button', { name: /^retry /i })).toBeNull();
+  });
+
+  it('offers Retry after the attempts are exhausted', async () => {
+    // A `model:failed` carrying `retryable` has already been through the
+    // backoff in Rust, so this control is the manual attempt after the
+    // automatic ones — not a first try the user is being asked to make.
+    const user = userEvent.setup();
+    render(<Llm />);
+    await downloading();
+
+    act(() => {
+      failed.fire({
+        key: { modelId: 'llama-3-8b', quantId: 'Q4_K_M' },
+        message: 'could not fetch the file: connection reset',
+        retryable: true,
+        verificationFailure: false,
+        stopped: null,
+      });
+    });
+
+    const cell = await cellOf('Llama 3 8B', 'Q4_K_M');
+    const retry = within(cell).getByRole('button', { name: /^retry /i });
+    expect(retry).toHaveTextContent(/^Retry$/);
+
+    await user.click(retry);
+    expect(downloadModel).toHaveBeenLastCalledWith('llama-3-8b', 'Q4_K_M');
+  });
+
+  it('offers Cancel alongside Retry, so a failure can be cleared', async () => {
+    const user = userEvent.setup();
+    render(<Llm />);
+    await downloading();
+
+    act(() => {
+      failed.fire({
+        key: { modelId: 'llama-3-8b', quantId: 'Q4_K_M' },
+        message: 'could not fetch the file: connection reset',
+        retryable: true,
+        verificationFailure: false,
+        stopped: null,
+      });
+    });
+
+    const cell = await cellOf('Llama 3 8B', 'Q4_K_M');
+    await user.click(within(cell).getByRole('button', { name: /^cancel /i }));
+
+    expect(within(cell).getByRole('button', { name: /^download /i })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('offers Run once downloaded', async () => {
+    // The last of the six states, and the one the other five exist to reach.
+    fetchModelCatalogue.mockResolvedValue(catalogue({ state: 'downloaded', path: LLAMA_PATH }));
+    render(<Llm />);
+
+    const cell = await cellOf('Llama 3 8B', 'Q4_K_M');
+
+    expect(within(cell).getByRole('button', { name: /^run /i })).toHaveTextContent(/^Run$/);
+    expect(within(cell).queryByRole('meter')).toBeNull();
+    expect(within(cell).queryByRole('button', { name: /^download /i })).toBeNull();
   });
 
   it('offers Run once downloaded, and opens the chat with that path', async () => {
@@ -376,45 +621,45 @@ describe('Llm › acquiring a model', () => {
         message: 'Meta-Llama-3-8B-Instruct-Q4_K_M.gguf did not match its pinned checksum',
         retryable: false,
         verificationFailure: true,
-        cancelled: false,
+        stopped: null,
       });
     });
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/verification failed/i);
     expect(alert).toHaveTextContent(/did not match its pinned checksum/i);
-    expect(within(alert).queryByRole('button', { name: /try again/i })).toBeNull();
+
+    const cell = await cellOf('Llama 3 8B', 'Q4_K_M');
+    expect(within(cell).queryByRole('button', { name: /^retry /i })).toBeNull();
   });
 
-  it('offers a stopped download as resumable rather than as a failure', async () => {
+  it('does not raise an alert for a pause the user asked for', async () => {
+    // A deliberate pause is not a failure, and an alert saying so would train
+    // people to ignore the one that matters.
     render(<Llm />);
-    await cellOf('Llama 3 8B', 'Q4_K_M');
+    await downloading();
 
     act(() => {
       failed.fire({
         key: { modelId: 'llama-3-8b', quantId: 'Q4_K_M' },
-        message: 'the download was stopped; starting it again resumes from where it stopped',
+        message: 'the download was paused; resuming continues from where it stopped',
         retryable: true,
         verificationFailure: false,
-        cancelled: true,
+        stopped: 'pause',
       });
     });
 
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(/stopped/i);
-    expect(alert).not.toHaveTextContent(/verification failed/i);
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('stops the download the user started rather than every download', async () => {
+  it('cancels the download the user started rather than every download', async () => {
     const user = userEvent.setup();
     render(<Llm />);
 
-    const cell = await cellOf('Llama 3 8B', 'Q4_K_M');
-    await user.click(within(cell).getByRole('button', { name: /^download /i }));
-    await user.click(
-      within(cell).getByRole('button', { name: /^stop downloading llama 3 8b at q4_k_m$/i })
-    );
+    const cell = await downloading();
+    await user.click(within(cell).getByRole('button', { name: /^cancel /i }));
 
     expect(cancelModelDownload).toHaveBeenCalledTimes(1);
+    expect(pauseModelDownload).not.toHaveBeenCalled();
   });
 });
