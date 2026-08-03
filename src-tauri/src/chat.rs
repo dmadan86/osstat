@@ -42,13 +42,25 @@ pub const CHAT_COMPLETE_EVENT: &str = "chat:complete";
 /// Emitted once when a reply could not be finished at all.
 pub const CHAT_FAILED_EVENT: &str = "chat:failed";
 
-/// How much of a model file is read to parse its header.
+/// How much of a model file the first attempt at its header reads.
 ///
-/// A GGUF holds the weights after the header and can be 30 GB or more. Reading
-/// the file whole to look at its first few kilobytes would stall the command
-/// for minutes and take the machine's memory with it; the header itself is
-/// orders of magnitude smaller than this bound.
-const HEADER_BYTES: u64 = 1024 * 1024;
+/// Enough for a small vocabulary, and small enough to cost nothing when it is.
+const FIRST_HEADER_READ: u64 = 1024 * 1024;
+
+/// The most of a model file that will ever be read looking for its header.
+///
+/// A GGUF holds the weights after the header and can be 30 GB or more, so the
+/// file cannot be read whole: that would stall the command for minutes and take
+/// the machine's memory with it. But the header is not a fixed size either. Its
+/// metadata carries the entire tokenizer vocabulary — Qwen2.5 declares about
+/// 152k tokens and Llama 3 about 128k — so `tokenizer.ggml.tokens` alone runs to
+/// several megabytes before the tensor table is even reached. A single fixed
+/// guess is therefore either too small for real models or wastefully large for
+/// every one of them, which is why [`read_header`] grows instead.
+///
+/// This is where growing stops. It is a rounding error against a 5 GB model and
+/// leaves room for a vocabulary several times larger than anything shipping.
+const MAX_HEADER_READ: u64 = 64 * 1024 * 1024;
 
 /// The file naming a running child, inside the app-data directory.
 const SESSION_RECORD: &str = "session.json";
@@ -217,37 +229,70 @@ impl ChatState {
     }
 }
 
-/// Puts the path into a parse failure that could not know it.
-///
-/// `gguf::parse` works over bytes and has no path to name, so it returns
-/// `NotAGguf` with an empty one. Leaving it empty would show the user a
-/// sentence about a file that is not identified.
-fn named(error: ChatError, path: &Path) -> ChatError {
-    match error {
-        ChatError::NotAGguf { reason, .. } => ChatError::NotAGguf {
-            file: path.to_path_buf(),
-            reason,
-        },
-        other => other,
-    }
-}
-
 /// Reads a model file's header and its size on disk.
 fn read_header(path: &Path) -> Result<(ModelFile, u64), ChatError> {
+    read_header_into(path, &mut Vec::new())
+}
+
+/// The read proper, leaving behind the bytes it took.
+///
+/// The header is read in growing prefixes rather than at one fixed size,
+/// because no fixed size is right — see [`MAX_HEADER_READ`]. Each attempt
+/// doubles, and the growth stops the moment the parser has enough, the file
+/// ends, or the ceiling is reached.
+///
+/// What makes growing safe is that [`osstat_chat::parse_prefix`] distinguishes
+/// a header that continues past the prefix from bytes that are not a header at
+/// all. Reading on after the second would turn any wrong file the user picks
+/// into a 64 MiB read, so `Malformed` returns at once and only `NeedMoreBytes`
+/// reads further.
+///
+/// `header` is left holding exactly what was read, on success and on failure
+/// alike. That is what the tests measure: that a real vocabulary grows the
+/// read, and — the direction that matters more — that nothing else does.
+fn read_header_into(path: &Path, header: &mut Vec<u8>) -> Result<(ModelFile, u64), ChatError> {
     use std::io::Read as _;
 
     let unreadable = || ChatError::ModelUnreadable(path.to_path_buf());
+    let refuse = |reason| ChatError::NotAGguf {
+        file: path.to_path_buf(),
+        reason,
+    };
 
-    let file = std::fs::File::open(path).map_err(|_| unreadable())?;
+    let mut file = std::fs::File::open(path).map_err(|_| unreadable())?;
     let file_size = file.metadata().map_err(|_| unreadable())?.len();
+    let mut limit = FIRST_HEADER_READ;
 
-    let mut header = Vec::new();
-    file.take(HEADER_BYTES)
-        .read_to_end(&mut header)
-        .map_err(|_| unreadable())?;
+    loop {
+        let held = u64::try_from(header.len()).map_err(|_| unreadable())?;
+        let wanted = limit.saturating_sub(held);
+        let read = file
+            .by_ref()
+            .take(wanted)
+            .read_to_end(header)
+            .map_err(|_| unreadable())?;
+        // Less than was asked for means the file ended, so there is nothing
+        // left to grow into and the header does not fit inside its own file.
+        let exhausted = u64::try_from(read).map_err(|_| unreadable())? < wanted;
 
-    let model = osstat_chat::parse(&header).map_err(|error| named(error, path))?;
-    Ok((model, file_size))
+        match osstat_chat::parse_prefix(header) {
+            Ok(model) => return Ok((model, file_size)),
+            Err(osstat_chat::GgufNeed::Malformed) => {
+                return Err(refuse(
+                    "the header is malformed or missing a field the launch needs",
+                ));
+            }
+            Err(osstat_chat::GgufNeed::NeedMoreBytes) if exhausted => {
+                return Err(refuse("the header runs past the end of the file"));
+            }
+            Err(osstat_chat::GgufNeed::NeedMoreBytes) if limit >= MAX_HEADER_READ => {
+                return Err(refuse("the header is larger than this reads of a model"));
+            }
+            Err(osstat_chat::GgufNeed::NeedMoreBytes) => {
+                limit = limit.saturating_mul(2).min(MAX_HEADER_READ);
+            }
+        }
+    }
 }
 
 /// What to call a model, from its filename.
@@ -684,28 +729,145 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn a_parse_failure_names_the_file_the_parser_could_not_know() {
-        // `gguf::parse` works over bytes and returns an empty path. Shown to
-        // the user unchanged, that is a sentence about no file in particular.
-        let error = ChatError::NotAGguf {
-            file: PathBuf::new(),
-            reason: "the header is truncated",
-        };
+    /// Builds a GGUF header byte by byte, laid out the way a converter writes
+    /// one: magic, counts, the metadata pairs, then the tensor table.
+    ///
+    /// A real model file is gigabytes and its header alone is megabytes, so
+    /// neither can be checked in. This is deliberately a second, smaller
+    /// builder than the one in `osstat_chat::gguf`'s own tests — what is under
+    /// test here is how much of the file gets read, not how it parses.
+    struct Gguf {
+        kv: Vec<u8>,
+        kv_count: u64,
+        tensors: Vec<u8>,
+        tensor_count: u64,
+    }
 
-        let named = named(error, Path::new("/models/mistral.gguf"));
+    impl Gguf {
+        fn new() -> Self {
+            Self {
+                kv: Vec::new(),
+                kv_count: 0,
+                tensors: Vec::new(),
+                tensor_count: 0,
+            }
+        }
 
-        assert!(
-            named.to_string().contains("mistral.gguf"),
-            "the path was not filled in: {named}"
-        );
+        fn string(target: &mut Vec<u8>, value: &str) {
+            target.extend_from_slice(&(value.len() as u64).to_le_bytes());
+            target.extend_from_slice(value.as_bytes());
+        }
+
+        fn kv_string(mut self, key: &str, value: &str) -> Self {
+            Self::string(&mut self.kv, key);
+            self.kv.extend_from_slice(&8_u32.to_le_bytes());
+            Self::string(&mut self.kv, value);
+            self.kv_count += 1;
+            self
+        }
+
+        fn kv_u32(mut self, key: &str, value: u32) -> Self {
+            Self::string(&mut self.kv, key);
+            self.kv.extend_from_slice(&4_u32.to_le_bytes());
+            self.kv.extend_from_slice(&value.to_le_bytes());
+            self.kv_count += 1;
+            self
+        }
+
+        /// An array of strings — the shape a tokenizer vocabulary takes, and
+        /// the reason a real header is megabytes rather than kilobytes.
+        fn kv_strings(mut self, key: &str, count: usize) -> Self {
+            Self::string(&mut self.kv, key);
+            self.kv.extend_from_slice(&9_u32.to_le_bytes()); // array
+            self.kv.extend_from_slice(&8_u32.to_le_bytes()); // of strings
+            self.kv.extend_from_slice(&(count as u64).to_le_bytes());
+            for index in 0..count {
+                Self::string(&mut self.kv, &format!("t{index:05}"));
+            }
+            self.kv_count += 1;
+            self
+        }
+
+        fn tensor(mut self, name: &str, dims: &[u64]) -> Self {
+            Self::string(&mut self.tensors, name);
+            self.tensors
+                .extend_from_slice(&(u32::try_from(dims.len()).unwrap()).to_le_bytes());
+            for dim in dims {
+                self.tensors.extend_from_slice(&dim.to_le_bytes());
+            }
+            self.tensors.extend_from_slice(&0_u32.to_le_bytes()); // type
+            self.tensors.extend_from_slice(&0_u64.to_le_bytes()); // offset
+            self.tensor_count += 1;
+            self
+        }
+
+        fn build(self) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&0x4655_4747_u32.to_le_bytes());
+            bytes.extend_from_slice(&3_u32.to_le_bytes());
+            bytes.extend_from_slice(&self.tensor_count.to_le_bytes());
+            bytes.extend_from_slice(&self.kv_count.to_le_bytes());
+            bytes.extend_from_slice(&self.kv);
+            bytes.extend_from_slice(&self.tensors);
+            bytes
+        }
+    }
+
+    /// A Qwen2.5-shaped header carrying a vocabulary of `tokens` entries.
+    ///
+    /// The vocabulary is what pushes a real header past any fixed guess:
+    /// Qwen2.5 declares roughly 152k tokens and Llama 3 roughly 128k, so
+    /// `tokenizer.ggml.tokens` alone is several megabytes.
+    fn header_with_vocabulary(tokens: usize) -> Vec<u8> {
+        Gguf::new()
+            .kv_string("general.architecture", "qwen2")
+            .kv_u32("qwen2.block_count", 28)
+            .kv_u32("qwen2.context_length", 32_768)
+            .kv_u32("qwen2.embedding_length", 3584)
+            .kv_u32("qwen2.attention.head_count", 28)
+            .kv_u32("qwen2.attention.head_count_kv", 4)
+            .kv_u32("qwen2.attention.key_length", 128)
+            .kv_u32("general.file_type", 15)
+            .kv_strings("tokenizer.ggml.tokens", tokens)
+            .tensor("token_embd.weight", &[3584, 152_064])
+            .tensor("blk.0.attn_q.weight", &[3584, 3584])
+            .build()
     }
 
     #[test]
-    fn a_failure_that_is_not_a_parse_failure_is_left_alone() {
-        let named = named(ChatError::NoRuntime, Path::new("/models/mistral.gguf"));
+    fn a_header_wider_than_the_first_read_is_still_parsed() {
+        // The bug the user hit: pressing Run on a real, verified model file
+        // reported it as truncated. A GGUF header carries the whole tokenizer
+        // vocabulary, so for any current model it is several megabytes -- and
+        // a read fixed at one was simply too short to reach the tensor table.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("qwen2.5-7b-instruct-q4_k_m.gguf");
+        let bytes = header_with_vocabulary(200_000);
+        let size = u64::try_from(bytes.len()).unwrap();
+        assert!(
+            size > FIRST_HEADER_READ,
+            "the fixture has to exceed the first read to test anything; it is {size} bytes"
+        );
+        std::fs::write(&path, &bytes).unwrap();
 
-        assert!(matches!(named, ChatError::NoRuntime));
+        let mut taken = Vec::new();
+        let outcome = read_header_into(&path, &mut taken);
+        assert!(
+            outcome.is_ok(),
+            "a real-sized header was refused: {outcome:?}"
+        );
+        let (model, file_size) = outcome.unwrap();
+
+        assert_eq!(model.architecture, "qwen2");
+        assert_eq!(model.block_count, 28);
+        assert_eq!(model.context_length, 32_768);
+        assert_eq!(model.parameters, 3584 * 152_064 + 3584 * 3584);
+        assert_eq!(file_size, size);
+        assert!(
+            u64::try_from(taken.len()).unwrap() > FIRST_HEADER_READ,
+            "the read never grew past its first attempt; it took {} bytes",
+            taken.len()
+        );
     }
 
     #[test]
@@ -727,21 +889,50 @@ mod tests {
     }
 
     #[test]
-    fn only_the_first_megabyte_of_a_model_is_read() {
-        // A GGUF can be 30 GB. Reading one whole to look at its header would
-        // stall the command for minutes and exhaust memory doing it, so the
-        // bound is the difference between usable and unusable rather than a
-        // tidiness.
+    fn a_file_that_is_not_a_model_is_refused_on_the_first_read() {
+        // The other half of the adaptive read. Growing is only affordable
+        // because it happens for good files; a file whose magic number is
+        // wrong is not a GGUF at any length, and reading on would turn every
+        // stray file the user points at into a 64 MiB read.
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("large.gguf");
-        let oversized = vec![0_u8; usize::try_from(HEADER_BYTES).unwrap() * 3];
+        let oversized = vec![0_u8; usize::try_from(FIRST_HEADER_READ).unwrap() * 3];
         std::fs::write(&path, &oversized).unwrap();
 
-        // The read is bounded, so this refuses on the contents rather than
-        // hanging: the size it reports is still the whole file's.
-        let outcome = read_header(&path);
+        let mut taken = Vec::new();
+        let outcome = read_header_into(&path, &mut taken);
 
         assert!(outcome.is_err(), "a file of zeroes parsed as a model");
+        assert_eq!(
+            u64::try_from(taken.len()).unwrap(),
+            FIRST_HEADER_READ,
+            "a malformed file grew the read instead of being refused outright"
+        );
+    }
+
+    #[test]
+    fn a_truncated_model_file_is_refused_rather_than_read_to_the_ceiling() {
+        // A good header cut short by a failed copy. It can never parse, and
+        // the file ending is what says so -- without that, the read would go
+        // on doubling until it hit the ceiling on a file far smaller than it.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("half-copied.gguf");
+        let bytes = header_with_vocabulary(200_000);
+        let cut = bytes.len() / 2;
+        std::fs::write(&path, &bytes[..cut]).unwrap();
+
+        let mut taken = Vec::new();
+        let outcome = read_header_into(&path, &mut taken);
+
+        assert!(
+            matches!(outcome, Err(ChatError::NotAGguf { .. })),
+            "a truncated header was not refused: {outcome:?}"
+        );
+        assert_eq!(
+            taken.len(),
+            cut,
+            "the file was read past its own end rather than stopping at it"
+        );
     }
 
     #[test]

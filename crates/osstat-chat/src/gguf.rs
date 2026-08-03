@@ -40,7 +40,31 @@ pub struct ModelFile {
 /// GGUF's magic number, `"GGUF"` little-endian.
 const MAGIC: u32 = 0x4655_4747;
 
+/// Why a header could not be read out of a prefix of a file.
+///
+/// The distinction is the whole point of [`parse_prefix`]. A caller reads a
+/// prefix because a model file is gigabytes, and it has no way to know in
+/// advance how long the header is — the tokenizer vocabulary alone is several
+/// megabytes for a current model. Told only "this did not parse", the caller
+/// must either give up on a good file or keep reading a bad one. Told which of
+/// the two happened, it can grow the read exactly when growing can help.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GgufNeed {
+    /// The header ran off the end of the prefix. A longer prefix may parse.
+    NeedMoreBytes,
+    /// These bytes are not a header this crate can read, and no quantity more
+    /// of them would change that.
+    Malformed,
+}
+
+/// A read that either produced a value or said why it could not.
+type Need<T> = Result<T, GgufNeed>;
+
 /// A bounds-checked cursor over the header bytes.
+///
+/// Every method distinguishes the two failures: running past the end of the
+/// slice is [`GgufNeed::NeedMoreBytes`], and anything the bytes themselves get
+/// wrong is [`GgufNeed::Malformed`].
 struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
@@ -51,24 +75,38 @@ impl<'a> Reader<'a> {
         Self { bytes, at: 0 }
     }
 
-    fn take(&mut self, count: usize) -> Option<&'a [u8]> {
-        let end = self.at.checked_add(count)?;
-        let slice = self.bytes.get(self.at..end)?;
+    fn take(&mut self, count: usize) -> Need<&'a [u8]> {
+        // An offset that overflows came from a declared length no file could
+        // ever satisfy, so it is the file being wrong rather than short.
+        let end = self.at.checked_add(count).ok_or(GgufNeed::Malformed)?;
+        let slice = self
+            .bytes
+            .get(self.at..end)
+            .ok_or(GgufNeed::NeedMoreBytes)?;
         self.at = end;
-        Some(slice)
+        Ok(slice)
     }
 
-    fn u32(&mut self) -> Option<u32> {
-        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    fn u32(&mut self) -> Need<u32> {
+        let bytes = self.take(4)?;
+        bytes
+            .try_into()
+            .map(u32::from_le_bytes)
+            .map_err(|_| GgufNeed::Malformed)
     }
 
-    fn u64(&mut self) -> Option<u64> {
-        Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
+    fn u64(&mut self) -> Need<u64> {
+        let bytes = self.take(8)?;
+        bytes
+            .try_into()
+            .map(u64::from_le_bytes)
+            .map_err(|_| GgufNeed::Malformed)
     }
 
-    fn string(&mut self) -> Option<String> {
-        let length = usize::try_from(self.u64()?).ok()?;
-        String::from_utf8(self.take(length)?.to_vec()).ok()
+    fn string(&mut self) -> Need<String> {
+        let length = usize::try_from(self.u64()?).map_err(|_| GgufNeed::Malformed)?;
+        let bytes = self.take(length)?.to_vec();
+        String::from_utf8(bytes).map_err(|_| GgufNeed::Malformed)
     }
 
     /// Skips a value of the given type without interpreting it.
@@ -77,7 +115,7 @@ impl<'a> Reader<'a> {
     /// tokenizer vocabularies especially, which are large arrays. Skipping
     /// still has to walk them, because the next key's position depends on
     /// this value's length.
-    fn skip_value(&mut self, kind: u32) -> Option<()> {
+    fn skip_value(&mut self, kind: u32) -> Need<()> {
         match kind {
             0 | 1 | 7 => self.take(1).map(|_| ()),
             2 | 3 => self.take(2).map(|_| ()),
@@ -90,9 +128,11 @@ impl<'a> Reader<'a> {
                 for _ in 0..count {
                     self.skip_value(element)?;
                 }
-                Some(())
+                Ok(())
             }
-            _ => None,
+            // A type tag GGUF does not define. Reading on would be guessing at
+            // the width of a value, and every following offset would be wrong.
+            _ => Err(GgufNeed::Malformed),
         }
     }
 }
@@ -112,18 +152,36 @@ enum Value {
 /// buffer, and a header missing a field the launch arithmetic requires. The
 /// `file` field is filled by the caller, which knows the path.
 pub fn parse(bytes: &[u8]) -> Result<ModelFile, ChatError> {
-    read(bytes).ok_or(ChatError::NotAGguf {
+    parse_prefix(bytes).map_err(|_| ChatError::NotAGguf {
         file: std::path::PathBuf::new(),
         reason: "the header is truncated, malformed, or missing a required field",
     })
 }
 
-/// The parse proper, as an `Option` so every bounds check is a `?`.
-fn read(bytes: &[u8]) -> Option<ModelFile> {
+/// Parses a GGUF header out of a prefix of a file, saying which way it failed.
+///
+/// This is [`parse`] with the one distinction its caller needs kept: whether a
+/// longer prefix could succeed. A caller reading a multi-gigabyte file cannot
+/// read it whole and cannot know the header's length in advance, so it reads a
+/// prefix and grows it — and it can only do that safely if a file that will
+/// never parse says so on the first read.
+///
+/// # Errors
+///
+/// [`GgufNeed::NeedMoreBytes`] if the header runs past the end of `bytes`, and
+/// [`GgufNeed::Malformed`] for a bad magic number, an undefined value type, a
+/// declared length that could not fit any file, a key that is not UTF-8, or a
+/// complete metadata block missing a field the launch arithmetic requires.
+///
+/// One case is deliberately [`GgufNeed::NeedMoreBytes`] though it can never be
+/// satisfied: a corrupt count that claims more pairs or tensors than the file
+/// holds is indistinguishable from a header that simply continues past the
+/// prefix. The caller's ceiling is what bounds that, not this.
+pub fn parse_prefix(bytes: &[u8]) -> Need<ModelFile> {
     let mut reader = Reader::new(bytes);
 
     if reader.u32()? != MAGIC {
-        return None;
+        return Err(GgufNeed::Malformed);
     }
     let _version = reader.u32()?;
     let tensor_count = reader.u64()?;
@@ -159,13 +217,17 @@ fn read(bytes: &[u8]) -> Option<ModelFile> {
         })
     };
 
-    let architecture = text("general.architecture")?;
+    // Every pair the file declared has been read by now, so a field that is
+    // still missing is missing from the file rather than from the prefix.
+    let missing = || GgufNeed::Malformed;
+
+    let architecture = text("general.architecture").ok_or_else(missing)?;
     let key = |suffix: &str| format!("{architecture}.{suffix}");
 
-    let block_count = unsigned(&key("block_count"))?;
-    let context_length = unsigned(&key("context_length"))?;
-    let embedding_length = unsigned(&key("embedding_length"))?;
-    let head_count = unsigned(&key("attention.head_count"))?;
+    let block_count = unsigned(&key("block_count")).ok_or_else(missing)?;
+    let context_length = unsigned(&key("context_length")).ok_or_else(missing)?;
+    let embedding_length = unsigned(&key("embedding_length")).ok_or_else(missing)?;
+    let head_count = unsigned(&key("attention.head_count")).ok_or_else(missing)?;
     // Models without grouped-query attention omit head_count_kv; it equals the
     // query head count there.
     let head_count_kv = unsigned(&key("attention.head_count_kv")).unwrap_or(head_count);
@@ -173,7 +235,11 @@ fn read(bytes: &[u8]) -> Option<ModelFile> {
     let declared = unsigned(&key("attention.key_length"));
     let head_dim = match declared {
         Some(value) => value,
-        None => embedding_length.checked_div(head_count)?,
+        // A file declaring no attention heads is a file that cannot describe a
+        // transformer, not a file that is short.
+        None => embedding_length
+            .checked_div(head_count)
+            .ok_or_else(missing)?,
     };
 
     let mut parameters = 0_u64;
@@ -182,14 +248,16 @@ fn read(bytes: &[u8]) -> Option<ModelFile> {
         let dimensions = reader.u32()?;
         let mut product = 1_u64;
         for _ in 0..dimensions {
-            product = product.checked_mul(reader.u64()?)?;
+            product = product
+                .checked_mul(reader.u64()?)
+                .ok_or(GgufNeed::Malformed)?;
         }
         let _kind = reader.u32()?;
         let _offset = reader.u64()?;
-        parameters = parameters.checked_add(product)?;
+        parameters = parameters.checked_add(product).ok_or(GgufNeed::Malformed)?;
     }
 
-    Some(ModelFile {
+    Ok(ModelFile {
         architecture,
         block_count,
         context_length,
@@ -362,6 +430,67 @@ mod tests {
                 "a header cut at {cut} bytes should not have parsed"
             );
         }
+    }
+
+    #[test]
+    fn a_prefix_that_stops_mid_header_asks_for_more_rather_than_condemning_the_file() {
+        // The distinction the adaptive read in `chat.rs` is built on. Every one
+        // of these cuts is a good file read too early, and answering
+        // `Malformed` for any of them would tell the caller to give up on a
+        // model that is perfectly fine.
+        let full = complete()
+            .tensor("token_embd.weight", &[4096, 32_000])
+            .build();
+
+        for cut in [4, 12, 20, full.len() / 2, full.len() - 1] {
+            assert_eq!(
+                parse_prefix(&full[..cut]),
+                Err(GgufNeed::NeedMoreBytes),
+                "a header cut at {cut} bytes should have asked for more"
+            );
+        }
+
+        assert!(parse_prefix(&full).is_ok(), "the whole header should parse");
+    }
+
+    #[test]
+    fn a_bad_magic_is_malformed_however_few_bytes_there_are() {
+        // The case that must never grow a read. A file whose first four bytes
+        // are not "GGUF" is not a GGUF at any length, and treating it as a
+        // short read would turn a wrong file into a 64 MiB one.
+        assert_eq!(
+            parse_prefix(b"not a model at all"),
+            Err(GgufNeed::Malformed)
+        );
+
+        // Even where the rest of the header is impeccable.
+        let mut bytes = complete().build();
+        bytes[..4].copy_from_slice(&0xDEAD_BEEF_u32.to_le_bytes());
+        assert_eq!(parse_prefix(&bytes), Err(GgufNeed::Malformed));
+    }
+
+    #[test]
+    fn a_complete_header_missing_a_required_field_is_malformed_rather_than_short() {
+        // Every declared pair was read, so the field is absent from the file.
+        // Asking for more bytes here would read the weights looking for a key
+        // that the metadata block has already finished without.
+        let bytes = Builder::new()
+            .kv_string("general.architecture", "llama")
+            .kv_u32("llama.context_length", 8192)
+            .build();
+
+        assert_eq!(parse_prefix(&bytes), Err(GgufNeed::Malformed));
+    }
+
+    #[test]
+    fn an_undefined_value_type_is_malformed() {
+        // GGUF defines types 0..=12. Anything else means the width of the
+        // value is unknown, so every offset after it would be a guess.
+        let mut bytes = Builder::new().kv_u32("llama.block_count", 32).build();
+        let kind_at = bytes.len() - 8;
+        bytes[kind_at..kind_at + 4].copy_from_slice(&99_u32.to_le_bytes());
+
+        assert_eq!(parse_prefix(&bytes), Err(GgufNeed::Malformed));
     }
 
     #[test]
