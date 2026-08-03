@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import type { CloseBehaviour } from '../bindings/CloseBehaviour';
+import type { LogLevel } from '../bindings/LogLevel';
 import { coercePanelLayout, type PanelLayout } from './panelLayout';
 
 /** Where the primary navigation lives. */
@@ -36,6 +37,8 @@ export interface Preferences {
   historySeconds: number;
   /** What closing the window does. */
   closeBehaviour: CloseBehaviour;
+  /** How much detail the log carries. */
+  logLevel: LogLevel;
   /** Whether the one-time explanation of the tray has been dismissed. */
   hasSeenTrayNotice: boolean;
   /**
@@ -73,6 +76,29 @@ export const CHOICES = {
     { value: 'hide', label: 'Hide to the notification area' },
     { value: 'quit', label: 'Quit osstat' },
   ],
+  // The only setting whose choices carry a description of their own. The three
+  // levels differ in what they *capture*, which a one-word label cannot say,
+  // and the difference is the whole basis for picking one — so `Logging`
+  // renders these itself rather than through `Choice`.
+  logLevel: [
+    {
+      value: 'info',
+      label: 'Info',
+      description: 'Starting up, model sessions, downloads and their outcomes.',
+    },
+    {
+      value: 'debug',
+      label: 'Debug',
+      description:
+        'Adds each page you open, each setting you change, and every command that failed.',
+    },
+    {
+      value: 'verbose',
+      label: 'Verbose',
+      description:
+        'Adds a line for every measurement, one every couple of seconds. Turn this on to reproduce a problem rather than leaving it on.',
+    },
+  ],
 } as const;
 
 /** What a fresh install uses. */
@@ -82,6 +108,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   refreshMs: 2000,
   historySeconds: 300,
   closeBehaviour: 'hide',
+  logLevel: 'info',
   hasSeenTrayNotice: false,
   overviewPanels: [],
 };
@@ -128,6 +155,13 @@ export function coercePreferences(raw: unknown): Preferences {
     closeBehaviour: isAllowed('closeBehaviour', candidate.closeBehaviour)
       ? candidate.closeBehaviour
       : DEFAULT_PREFERENCES.closeBehaviour,
+    // Falling back to Info rather than to whatever was stored matters more here
+    // than for the other settings: an unrecognised value would otherwise be
+    // pushed to the backend, and the quietest level is the safe direction to
+    // fail in for a setting whose loudest one writes continuously.
+    logLevel: isAllowed('logLevel', candidate.logLevel)
+      ? candidate.logLevel
+      : DEFAULT_PREFERENCES.logLevel,
     // A plain boolean rather than a CHOICES entry: it is a record of something
     // that happened, not a setting anyone picks.
     hasSeenTrayNotice: candidate.hasSeenTrayNotice === true,
