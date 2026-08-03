@@ -27,21 +27,69 @@ presenting both tiers as equally checked.
 pinned one, with no visible difference, would quietly retire a guarantee
 SECURITY.md still makes.
 
-## 2. What the advisor can and cannot say about a searched model
+## 2. What the advisor can say about a searched model
+
+> **Correction.** This section previously stated: _"The header is only available
+> after downloading. So a searched result shows its file size and nothing
+> more."_ **The first sentence was false, and the second followed from it.** A
+> GGUF header sits at the **start** of the file, and HTTP has had a way to ask
+> for the start of a file since 1999. osstat already had both halves of what
+> that needs: `download_resumable` issues `Range` requests, and
+> `osstat_chat::gguf::parse_prefix` reads a header out of a prefix while saying
+> whether more bytes would help. Nothing had to be invented; the two pieces had
+> simply not been put together.
+>
+> The original reasoning conflated "osstat has not read the header" with "the
+> header cannot be read". Only the second would have justified withholding a
+> verdict, and it was never true.
 
 The fit matrix prices a model from its architecture — layer count, head counts,
 context length — which lives in the registry for the seven pinned models and in
-the **GGUF header** for everything else. The header is only available after
-downloading.
+the **GGUF header** for everything else. That header is fetched with a `Range`
+request against the candidate file, so a searched result is priced by the same
+`plan_launch` a downloaded model is priced by, over the same bytes.
 
-So a searched result shows its **file size** and nothing more. It does **not**
-show a fit verdict, a speed tier, or a layer estimate.
+**There is one pricing path.** A searched result and the same file once
+downloaded produce identical verdicts, because the only difference between them
+is where the header bytes came from and `plan_launch` cannot tell.
 
-This is the honest answer and it must not be softened. Deriving a parameter
-count from file size and quantization bits would produce a number that looks
-like the calculator's and is a guess — precisely the failure ADR-008 names as
-the worst thing this feature could do. Once downloaded, the header is read and
-the model is priced properly, the same as any imported file.
+### Why a range-fetched header, and not Hugging Face's `gguf` metadata
+
+The API does expose a `gguf` field carrying `architecture`, `context_length` and
+a `total` parameter count. It is not enough and must not be relied on: it
+reports **no layer count, no head counts and no head dimension**, which are
+three of the five terms the KV-cache and `-ngl` arithmetic needs. A verdict
+assembled from it would be part measurement and part guess, with nothing in the
+answer saying which part was which — a worse failure than showing no verdict,
+because it would look exactly like the calculator's output.
+
+Reading the header instead reads the actual bytes of the actual file, works for
+any host rather than one API, and matches how osstat treats every other
+measurement.
+
+### What the ceiling is for
+
+The read starts at 4 MiB and grows only while `parse_prefix` reports
+`NeedMoreBytes`, stopping at the same **64 MiB** ceiling `src-tauri/src/chat.rs`
+uses for a local file. A server that ignores `Range` and answers `200` with the
+whole body is detected from the status, read to the ceiling and no further, and
+the connection dropped mid-body — the result is then reported as **unpriced**.
+That is the honest answer for a file whose header did not arrive, and it costs
+64 MiB rather than thirty gigabytes.
+
+### What is still forbidden
+
+Deriving a parameter count from file size and quantization bits. That would
+produce a number that looks like the calculator's and is a guess — precisely the
+failure ADR-008 names as the worst thing this feature could do. **The rule was
+never "show no verdict"; it was "never present a guess as a measurement."** The
+range-fetch satisfies it by measuring. A row whose header could not be read
+shows its size alone and says why, rather than filling the gap with arithmetic
+over a quantization tag.
+
+Because each read is a network request against a multi-gigabyte file, it is made
+**per result and on demand** — when a row is expanded — and never eagerly for a
+page of results.
 
 ## 3. Scope
 
@@ -182,10 +230,21 @@ regenerated bindings first.
 
 ```tsx
 it('shows a searched result with its size and publisher', async () => {});
-it('does not show a fit verdict for a searched result', async () => {
-  // The advisor cannot price a model whose architecture it has not read.
-  // A verdict here would be a guess wearing the calculator's clothes.
+it('shows no verdict for a searched result until its header is asked for', async () => {
+  // Replaces a test that asserted a searched result must NEVER show one —
+  // see the correction in §2. The line that actually matters is narrower and
+  // still holds: no verdict for a header that was not read. An unexpanded row
+  // has not cost a request, so it has nothing to say beyond its size.
 });
+it('prices a searched result from its header when the row is expanded', async () => {
+  // The same `plan_launch` a downloaded model is opened with, over a header
+  // range-fetched from the front of the actual file.
+});
+it('falls back to the size alone when the header cannot be read', async () => {
+  // A server that ignores `Range` produces this. Guessing a verdict from the
+  // size to fill the gap is the one thing ADR-008 forbids.
+});
+it('reads a header once however often a row is opened and shut', async () => {});
 it('marks a searched model as unreviewed, distinctly from a pinned one', async () => {
   // The label IS the feature. Without it this quietly retires a guarantee
   // SECURITY.md still makes.
