@@ -44,6 +44,17 @@ pub struct Message {
     pub usage: Option<Usage>,
     /// Whether generation was stopped before the model finished.
     pub stopped: bool,
+    /// Wall-clock seconds the assistant turn took, where it was measured.
+    ///
+    /// `None` on a user turn, which takes as long as the person typing it, and
+    /// on any assistant turn written before this field existed.
+    ///
+    /// `#[serde(default)]` is what makes that second case work rather than
+    /// throw: conversations are files on disk that a user already has, and a
+    /// missing field must read as "not measured" rather than fail the load and
+    /// take the whole conversation with it.
+    #[serde(default)]
+    pub elapsed_seconds: Option<f64>,
 }
 
 /// One conversation.
@@ -180,6 +191,7 @@ mod tests {
                 content: "hello".to_owned(),
                 usage: None,
                 stopped: false,
+                elapsed_seconds: None,
             }],
         }
     }
@@ -242,6 +254,69 @@ mod tests {
             );
             assert!(store.delete(hostile).is_err());
         }
+    }
+
+    #[test]
+    fn a_conversation_written_before_response_times_existed_still_loads() {
+        // The one that cannot be allowed to regress. Adding a field to
+        // `Message` changes an on-disk format that users already have files
+        // in, and a load that rejected them would lose real conversations to
+        // gain a figure beside them -- a straight downgrade.
+        //
+        // The JSON is written by hand rather than by serialising an older
+        // struct, because what has to keep parsing is the bytes on disk, and a
+        // fixture built from today's type could never be missing the field.
+        let root = tempfile::tempdir().unwrap();
+        let store = ConversationStore::new(root.path().to_path_buf());
+        std::fs::create_dir_all(store.directory()).unwrap();
+        std::fs::write(
+            store.directory().join("old.json"),
+            r#"{
+              "id": "old",
+              "title": "About tea",
+              "modelName": "llama-7b",
+              "messages": [
+                { "role": "user", "content": "how long do you steep it", "usage": null, "stopped": false },
+                {
+                  "role": "assistant",
+                  "content": "three minutes",
+                  "usage": { "promptTokens": 44, "completionTokens": 48 },
+                  "stopped": false
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = store.load("old").unwrap();
+
+        // Everything that was there is still there, and the new field reads as
+        // "not measured" rather than as zero -- a reply that took no time is a
+        // claim the file never made.
+        assert_eq!(loaded.title, "About tea");
+        assert_eq!(loaded.messages.len(), 2);
+        assert_eq!(loaded.messages[1].content, "three minutes");
+        assert_eq!(loaded.messages[1].usage.unwrap().completion_tokens, 48);
+        assert!(loaded.messages[1].elapsed_seconds.is_none());
+        // And it survives being listed, which is the path the UI actually
+        // takes: `list` skips whatever fails to parse, so a broken load would
+        // show as an empty list rather than as an error.
+        assert_eq!(store.list().len(), 1);
+    }
+
+    #[test]
+    fn a_response_time_survives_the_round_trip() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ConversationStore::new(root.path().to_path_buf());
+        let mut timed = conversation("abc");
+        timed.messages[0].elapsed_seconds = Some(6.25);
+
+        store.save(&timed).unwrap();
+
+        assert_eq!(
+            store.load("abc").unwrap().messages[0].elapsed_seconds,
+            Some(6.25)
+        );
     }
 
     #[test]

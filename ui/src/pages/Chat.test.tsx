@@ -99,7 +99,22 @@ const OLDER: Conversation = {
   id: 'c0',
   title: 'About coffee',
   modelName: 'Qwen2.5-3B-Instruct',
-  messages: [{ role: 'user', content: 'why is it bitter', usage: null, stopped: false }],
+  messages: [
+    {
+      role: 'user',
+      content: 'why is it bitter',
+      usage: null,
+      stopped: false,
+      elapsedSeconds: null,
+    },
+    {
+      role: 'assistant',
+      content: 'over-extraction',
+      usage: { promptTokens: 5, completionTokens: 2 },
+      stopped: false,
+      elapsedSeconds: 12.34,
+    },
+  ],
 };
 
 function session(overrides: Partial<ModelSession> = {}): ModelSession {
@@ -192,6 +207,7 @@ describe('Chat', () => {
       usage: { promptTokens: 1024, completionTokens: 24 },
       timings: null,
       stopped: false,
+      elapsedSeconds: 6.25,
     });
 
     // The detail line, not just the meter's presence: a swapped numerator
@@ -214,6 +230,7 @@ describe('Chat', () => {
       usage: { promptTokens: 7, completionTokens: 1 },
       timings: null,
       stopped: false,
+      elapsedSeconds: 6.25,
     });
 
     await waitFor(() => {
@@ -229,9 +246,53 @@ describe('Chat', () => {
       usage: { promptTokens: 44, completionTokens: 48 },
       timings: null,
       stopped: false,
+      elapsedSeconds: 6.25,
     });
 
     expect(await screen.findByText(/44 in · 48 out/)).toBeInTheDocument();
+  });
+
+  it('labels each reply with how long it took, to one decimal', async () => {
+    // The gap the user hit: nothing recorded how long a reply took. The
+    // tokens-per-second beside it is the server's own figure for the time it
+    // spent generating, which is not the wait the person sat through.
+    await renderChat();
+
+    await emit(complete, {
+      conversationId: 'c1',
+      usage: { promptTokens: 44, completionTokens: 48 },
+      timings: null,
+      stopped: false,
+      elapsedSeconds: 6.25,
+    });
+
+    // The rounded figure, not merely that some number is present: whole
+    // seconds would round most replies on this machine to the same value.
+    expect(await screen.findByText('6.3 s')).toBeInTheDocument();
+  });
+
+  it('shows the response time a stored conversation was saved with', async () => {
+    // The figure has to survive the disk, not just the event. A page that
+    // only read `elapsedSeconds` off the completion would show the time for
+    // the reply you just watched and nothing for any reply you scrolled back to.
+    await renderChat();
+
+    await userEvent.click(await within(conversationList()).findByText(OLDER.title));
+
+    expect(await screen.findByText('12.3 s')).toBeInTheDocument();
+  });
+
+  it('shows no response time for a question or for a reply still arriving', async () => {
+    // A question takes as long as the person typing it. A `0.0 s` under either
+    // would be a measurement nobody made.
+    await renderChat();
+
+    await userEvent.type(screen.getByRole('textbox'), 'how long do you steep it');
+    await userEvent.click(screen.getByRole('button', { name: /send/i }));
+    await emit(token, { conversationId: 'c1', delta: 'three', timings: null });
+
+    expect(await screen.findByText('three')).toBeInTheDocument();
+    expect(screen.queryByText(/ s$/)).not.toBeInTheDocument();
   });
 
   it('ignores events belonging to another conversation', async () => {

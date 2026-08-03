@@ -25,4 +25,16 @@ usage: Usage | null,
 /**
  * Whether generation was stopped before the model finished.
  */
-stopped: boolean, };
+stopped: boolean, 
+/**
+ * Wall-clock seconds the assistant turn took, where it was measured.
+ *
+ * `None` on a user turn, which takes as long as the person typing it, and
+ * on any assistant turn written before this field existed.
+ *
+ * `#[serde(default)]` is what makes that second case work rather than
+ * throw: conversations are files on disk that a user already has, and a
+ * missing field must read as "not measured" rather than fail the load and
+ * take the whole conversation with it.
+ */
+elapsedSeconds: number | null, };

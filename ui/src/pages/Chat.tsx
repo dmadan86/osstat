@@ -72,7 +72,13 @@ type Action =
   | { kind: 'ask'; text: string }
   | { kind: 'token'; conversationId: string; delta: string; timings: Timings | null }
   | { kind: 'stopping' }
-  | { kind: 'complete'; conversationId: string; usage: Usage | null; stopped: boolean }
+  | {
+      kind: 'complete';
+      conversationId: string;
+      usage: Usage | null;
+      stopped: boolean;
+      elapsedSeconds: number;
+    }
   | { kind: 'failed'; conversationId: string; message: string };
 
 /** How each role is introduced in the transcript. */
@@ -140,7 +146,15 @@ function reduce(state: Transcript, action: Action): Transcript {
               : state.conversation.title,
           messages: [
             ...state.conversation.messages,
-            { role: 'user', content: action.text, usage: null, stopped: false },
+            {
+              role: 'user',
+              content: action.text,
+              usage: null,
+              stopped: false,
+              // A question takes as long as the person typing it, which is not
+              // a generation time and not osstat's to measure.
+              elapsedSeconds: null,
+            },
           ],
         },
         pending: { content: '', stopped: false },
@@ -177,6 +191,7 @@ function reduce(state: Transcript, action: Action): Transcript {
         content: state.pending?.content ?? '',
         usage: action.usage,
         stopped: action.stopped || (state.pending?.stopped ?? false),
+        elapsedSeconds: action.elapsedSeconds,
       };
 
       return {
@@ -202,7 +217,17 @@ function reduce(state: Transcript, action: Action): Transcript {
           ? state.conversation.messages
           : [
               ...state.conversation.messages,
-              { role: 'assistant' as const, content: partial, usage: null, stopped: true },
+              {
+                role: 'assistant' as const,
+                content: partial,
+                usage: null,
+                stopped: true,
+                // The backend measured this turn and saved it with a time, but
+                // a failure carries no figures with it. The stored message has
+                // one; this on-screen copy of it does not, and inventing a
+                // number to fill the gap would be worse than the gap.
+                elapsedSeconds: null,
+              },
             ];
 
       return {
@@ -411,6 +436,7 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
         conversationId: payload.conversationId,
         usage: payload.usage,
         stopped: payload.stopped,
+        elapsedSeconds: payload.elapsedSeconds,
       });
       // The reply has been written by the time this arrives, so the list is
       // one entry or one title out of date until it is read again.
@@ -606,6 +632,9 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
                   content: state.pending.content,
                   usage: null,
                   stopped: state.pending.stopped,
+                  // A reply still arriving has no elapsed time yet; the live
+                  // tokens-per-second beside it is what says it is moving.
+                  elapsedSeconds: null,
                 }}
                 timings={state.pending.stopped ? null : state.timings}
               />
@@ -877,6 +906,16 @@ function Turn({
             {`${formatCount(message.usage.promptTokens)} in · ${formatCount(
               message.usage.completionTokens
             )} out`}
+          </span>
+        )}
+
+        {/* One decimal, because a reply is over in single-digit seconds often
+            enough that whole seconds would round half the answers to the same
+            number. `formatDuration` is for uptime and floors to the second,
+            which is why this does not use it. */}
+        {message.elapsedSeconds !== null && (
+          <span data-selectable className="font-mono text-[11px] text-neutral-600">
+            {`${message.elapsedSeconds.toFixed(1)} s`}
           </span>
         )}
 

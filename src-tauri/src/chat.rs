@@ -144,6 +144,15 @@ pub struct ChatComplete {
     pub timings: Option<Timings>,
     /// Whether the user stopped it rather than the model finishing.
     pub stopped: bool,
+    /// Wall-clock seconds the turn took, measured here rather than reported.
+    ///
+    /// Distinct from [`Timings`], which is the server's own tokens-per-second
+    /// and covers only the time it spent generating. This is what the person
+    /// waiting actually experienced — prompt processing, generation and the
+    /// trip through this process included — which is the figure they mean when
+    /// they ask how long a reply took. Carried alongside the counts so the
+    /// stored message and the event agree on one number from one clock.
+    pub elapsed_seconds: f64,
 }
 
 /// A reply that could not be finished.
@@ -464,6 +473,9 @@ pub fn chat_send(
         content: text,
         usage: None,
         stopped: false,
+        // A question takes as long as the person typing it, which is not a
+        // generation time and not osstat's business to measure.
+        elapsed_seconds: None,
     });
     // Saved before the reply is asked for, so a crash mid-generation loses the
     // answer rather than the question.
@@ -501,6 +513,11 @@ async fn stream_reply(
     let id = conversation.id.clone();
     let text = Arc::new(Mutex::new(String::new()));
     let figures = Arc::new(Mutex::new((None::<Usage>, None::<Timings>)));
+    // Started before the request goes out, so the figure covers the wait the
+    // user actually sat through: queueing, prompt processing and generation.
+    // Reading it only once, below, is what keeps the stored message and the
+    // completion event from disagreeing about the same reply.
+    let started = std::time::Instant::now();
 
     let outcome = {
         let text = Arc::clone(&text);
@@ -553,6 +570,7 @@ async fn stream_reply(
 
     let content = text.lock().map(|held| held.clone()).unwrap_or_default();
     let (usage, timings) = figures.lock().map_or((None, None), |held| *held);
+    let elapsed_seconds = started.elapsed().as_secs_f64();
 
     match &outcome {
         Ok(()) | Err(ChatError::Cancelled) => {
@@ -562,6 +580,7 @@ async fn stream_reply(
                 content,
                 usage,
                 stopped,
+                elapsed_seconds: Some(elapsed_seconds),
             });
             save_or_report(&store, &conversation);
             let _ = app.emit(
@@ -571,6 +590,7 @@ async fn stream_reply(
                     usage,
                     timings,
                     stopped,
+                    elapsed_seconds,
                 },
             );
         }
@@ -584,6 +604,10 @@ async fn stream_reply(
                     content,
                     usage,
                     stopped: true,
+                    // How long it ran before it died is the more useful figure
+                    // here, not the less: a session that fails after four
+                    // minutes failed differently from one that failed at once.
+                    elapsed_seconds: Some(elapsed_seconds),
                 });
                 save_or_report(&store, &conversation);
             }
@@ -978,6 +1002,7 @@ mod tests {
                 content: "hello".to_owned(),
                 usage: None,
                 stopped: false,
+                elapsed_seconds: None,
             });
 
             assert_eq!(wire.role, expected);
@@ -1041,6 +1066,7 @@ mod tests {
             }),
             timings: None,
             stopped: false,
+            elapsed_seconds: 6.25,
         })
         .unwrap();
         assert_eq!(complete["usage"]["promptTokens"], serde_json::json!(44));
@@ -1048,6 +1074,11 @@ mod tests {
             complete["usage"]["completionTokens"],
             serde_json::json!(48),
             "swapping these would still render a meter, so the test names both"
+        );
+        assert_eq!(
+            complete["elapsedSeconds"],
+            serde_json::json!(6.25),
+            "the response time has to reach the UI under the name it reads"
         );
 
         let failed = serde_json::to_value(ChatFailure {
