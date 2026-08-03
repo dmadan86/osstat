@@ -15,6 +15,7 @@
  */
 
 import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -29,6 +30,7 @@ import type { ModelSession } from '../bindings/ModelSession';
 const {
   cancelModelDownload,
   chatOpenModel,
+  chatStatus,
   downloadModel,
   fetchLlmAdvice,
   fetchModelCatalogue,
@@ -41,6 +43,7 @@ const {
 } = vi.hoisted(() => ({
   cancelModelDownload: vi.fn(),
   chatOpenModel: vi.fn(),
+  chatStatus: vi.fn(),
   downloadModel: vi.fn(),
   fetchLlmAdvice: vi.fn(),
   fetchModelCatalogue: vi.fn(),
@@ -55,6 +58,7 @@ const {
 vi.mock('../lib/ipc', () => ({
   cancelModelDownload,
   chatOpenModel,
+  chatStatus,
   downloadModel,
   fetchLlmAdvice,
   fetchModelCatalogue,
@@ -283,6 +287,7 @@ beforeEach(() => {
   pauseModelDownload.mockResolvedValue(undefined);
   cancelModelDownload.mockResolvedValue(undefined);
   chatOpenModel.mockResolvedValue(session());
+  chatStatus.mockResolvedValue(null);
 });
 
 describe('Llm › acquiring a model', () => {
@@ -663,5 +668,156 @@ describe('Llm › acquiring a model', () => {
 
     expect(cancelModelDownload).toHaveBeenCalledTimes(1);
     expect(pauseModelDownload).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * What a cell offers while a model is loaded.
+ *
+ * The session now survives navigating away from the chat (ADR-013), so "a model
+ * is already loaded" is the ordinary state of this page rather than a rare one —
+ * and a Run control in that state invites the user to load what is loaded. At
+ * best that is a click whose no-op cannot be told from a broken button; at worst
+ * it is a close-and-reopen that throws away a live conversation to arrive back
+ * where it started.
+ *
+ * Everything here is driven from `chat_status` through the shell, because that
+ * is the claim being tested: the cell reports what Rust says is open, not what
+ * this page last did. The harness below is the same wiring `App` does, so a
+ * status the front end never asked for cannot reach a cell.
+ */
+describe('a cell whose model is loaded', () => {
+  /** A second downloaded model, so "one cell only" has something to be wrong about. */
+  const QWEN_PATH = 'D:\\models\\Qwen2.5-72B-Instruct-Q4_K_M.gguf';
+
+  /** Both pinned models downloaded, which is when the two states are visible at once. */
+  function bothDownloaded(): ModelCatalogueEntry[] {
+    return catalogue({ state: 'downloaded', path: LLAMA_PATH }).map((entry) =>
+      entry.key.modelId === 'qwen2.5-72b'
+        ? { ...entry, state: 'downloaded' as const, path: QWEN_PATH }
+        : entry
+    );
+  }
+
+  /**
+   * The page wired to the shell the way `App` wires it.
+   *
+   * The session lives above this page, is seeded from `chat_status`, and is
+   * handed back down — so what a cell draws and what the chat page draws come
+   * from one answer rather than two guesses.
+   */
+  function Wired({
+    onModelOpened,
+  }: {
+    onModelOpened: (s: ModelSession) => void;
+  }): React.JSX.Element {
+    const [open, setOpen] = useState<ModelSession | null>(null);
+
+    return <Llm openedModel={open} onSessionChange={setOpen} onModelOpened={onModelOpened} />;
+  }
+
+  it('reports the status instead of offering to run it again', async () => {
+    chatStatus.mockResolvedValue(session());
+    fetchModelCatalogue.mockResolvedValue(catalogue({ state: 'downloaded', path: LLAMA_PATH }));
+    render(<Wired onModelOpened={() => undefined} />);
+
+    const cell = await cellOf('Llama 3 8B', 'Q4_K_M');
+
+    // Content, not presence: a control that said "Run" and behaved differently
+    // would pass a test that only counted buttons.
+    await waitFor(() => {
+      expect(within(cell).getByRole('button', { name: /is loaded/i })).toHaveTextContent(
+        /^Loaded$/
+      );
+    });
+    expect(within(cell).queryByRole('button', { name: /^run /i })).toBeNull();
+  });
+
+  it('goes to the chat when the status is clicked', async () => {
+    // Something sensible rather than nothing. There is nothing to open -- the
+    // model is open -- so the only thing left to want is the conversation.
+    const user = userEvent.setup();
+    const onModelOpened = vi.fn();
+    chatStatus.mockResolvedValue(session());
+    fetchModelCatalogue.mockResolvedValue(catalogue({ state: 'downloaded', path: LLAMA_PATH }));
+    render(<Wired onModelOpened={onModelOpened} />);
+
+    const cell = await cellOf('Llama 3 8B', 'Q4_K_M');
+    const status = await within(cell).findByRole('button', { name: /is loaded/i });
+    await user.click(status);
+
+    expect(onModelOpened).toHaveBeenCalledWith(session());
+    // Nothing is re-opened. A status that quietly restarted the server would be
+    // the defect this control was introduced to remove.
+    expect(chatOpenModel).not.toHaveBeenCalled();
+  });
+
+  it('leaves every other downloaded model offering Run', async () => {
+    // One session at a time, so exactly one cell may ever say so. Asserted
+    // across the whole table rather than on the one cell, because the failure
+    // this guards against is a second cell agreeing.
+    chatStatus.mockResolvedValue(session());
+    fetchModelCatalogue.mockResolvedValue(bothDownloaded());
+    render(<Wired onModelOpened={() => undefined} />);
+
+    const other = await cellOf('Qwen2.5 72B', 'Q4_K_M');
+    await waitFor(() => {
+      expect(within(other).getByRole('button', { name: /^run /i })).toHaveTextContent(/^Run$/);
+    });
+    expect(within(other).queryByRole('button', { name: /is loaded/i })).toBeNull();
+
+    expect(screen.getAllByRole('button', { name: /is loaded/i })).toHaveLength(1);
+  });
+
+  it('goes back to Run when the model is unloaded', async () => {
+    // The status is a reading, not a latch. Unloading happens on the chat page,
+    // and this page has to stop claiming a model is running the moment it is
+    // not -- otherwise the only way back to Run would be a restart.
+    chatStatus.mockResolvedValue(session());
+    fetchModelCatalogue.mockResolvedValue(catalogue({ state: 'downloaded', path: LLAMA_PATH }));
+
+    function Unloadable(): React.JSX.Element {
+      const [open, setOpen] = useState<ModelSession | null>(null);
+
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(null);
+            }}
+          >
+            Unload elsewhere
+          </button>
+          <Llm openedModel={open} onSessionChange={setOpen} />
+        </>
+      );
+    }
+
+    const user = userEvent.setup();
+    render(<Unloadable />);
+
+    const cell = await cellOf('Llama 3 8B', 'Q4_K_M');
+    await within(cell).findByRole('button', { name: /is loaded/i });
+
+    await user.click(screen.getByRole('button', { name: 'Unload elsewhere' }));
+
+    await waitFor(() => {
+      expect(within(cell).getByRole('button', { name: /^run /i })).toHaveTextContent(/^Run$/);
+    });
+    expect(within(cell).queryByRole('button', { name: /is loaded/i })).toBeNull();
+  });
+
+  it('shows no status at all when Rust says nothing is open', async () => {
+    // The direction that costs the user something. A status drawn from a stale
+    // front-end flag would hide the Run control for a model nothing is holding.
+    chatStatus.mockResolvedValue(null);
+    fetchModelCatalogue.mockResolvedValue(bothDownloaded());
+    render(<Wired onModelOpened={() => undefined} />);
+
+    const cell = await cellOf('Llama 3 8B', 'Q4_K_M');
+
+    expect(within(cell).getByRole('button', { name: /^run /i })).toHaveTextContent(/^Run$/);
+    expect(screen.queryByRole('button', { name: /is loaded/i })).toBeNull();
   });
 });

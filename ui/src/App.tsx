@@ -280,7 +280,13 @@ function Page({
       return <Ports tree={tree} onEndProcess={onEndProcess} />;
 
     case 'llm':
-      return <Llm onModelOpened={onModelOpened} />;
+      return (
+        <Llm
+          onModelOpened={onModelOpened}
+          openedModel={openedModel}
+          onSessionChange={onSessionChange}
+        />
+      );
 
     case 'chat':
       return <Chat opened={openedModel} onSessionChange={onSessionChange} />;

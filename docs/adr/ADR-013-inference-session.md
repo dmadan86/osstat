@@ -142,11 +142,28 @@ reaped on next launch by the path that already existed.
 **What the user gives up, stated rather than hidden.** A loaded model is now
 invisible while you are on another tab, so osstat can be holding several
 gigabytes with nothing on screen saying so. That is the real cost of the
-reversal, and it is paid down rather than accepted: the navigation marks the Chat
-entry with a dot, in all three navigation styles, for as long as a model is
-loaded. The idle-footprint budget is qualified in ROADMAP.md and SECURITY.md
-rather than left standing as a claim that is no longer true while a model is
-open.
+reversal, and it is paid down rather than accepted, in two places:
+
+- The navigation marks the Chat entry with a dot, in all three navigation
+  styles, for as long as a model is loaded. This is the cross-page half — it is
+  the only thing visible from the Overview, Processes, Ports and Settings pages.
+- **The LLM tab's fit matrix shows a loaded model's status instead of a Run
+  control.** A downloaded cell now has two states rather than one. This is not
+  only an indicator: a Run control over a model that is already loaded invites
+  the user to load what is loaded, which is at best a click whose no-op cannot
+  be told from a broken button and at worst a close-and-reopen that discards a
+  live conversation. Before the reversal that state was rare; now it is the
+  ordinary state of the LLM tab whenever anyone is using the chat. Clicking the
+  status goes to the chat, because a running model has nothing else to offer.
+
+Both read the same session, which the shell holds and seeds from `chat_status`,
+so they cannot disagree. Only one model can be loaded at a time, so the loaded
+cell is derived once for the whole page rather than once per cell — that is what
+makes "at most one cell reports a status" a property of the code rather than a
+coincidence of the data.
+
+The idle-footprint budget is qualified in ROADMAP.md and SECURITY.md rather than
+left standing as a claim that is no longer true while a model is open.
 
 **Why conversations are files rather than a database.** The directory is meant
 to be readable: a user can open it and see exactly what osstat kept. That is the

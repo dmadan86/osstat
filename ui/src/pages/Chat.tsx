@@ -36,6 +36,7 @@ import type { Timings } from '../bindings/Timings';
 import type { Usage } from '../bindings/Usage';
 import { Meter } from '../components/Meter';
 import { formatCount, formatTimeOfDay } from '../lib/format';
+import { stemOf } from '../lib/modelFile';
 import {
   chatClose,
   chatDelete,
@@ -147,23 +148,6 @@ interface Downloaded {
   path: string;
   /** Which verification tier fetched it. */
   provenance: Provenance;
-}
-
-/**
- * A model file's name, the way `chat_open_model` reports it back.
- *
- * The Rust side names a session from the file stem, so this drops the directory
- * and the extension to match. Both separators are handled because a Windows
- * path is what this application mostly sees and a POSIX one is what its tests
- * and its Linux builds mostly see.
- */
-function stemOf(path: string): string {
-  const name = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1);
-  const dot = name.lastIndexOf('.');
-
-  // `dot <= 0` rather than `=== -1`: a name that is nothing but an extension
-  // keeps it, which is what `Path::file_stem` does with the same input.
-  return dot <= 0 ? name : name.slice(0, dot);
 }
 
 /**
