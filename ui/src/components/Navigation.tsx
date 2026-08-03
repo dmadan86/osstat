@@ -50,8 +50,8 @@ function Item({ item, active, showLabel, onSelect }: ItemProps): React.JSX.Eleme
         'flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors',
         showLabel ? 'w-full' : 'justify-center',
         active
-          ? 'bg-white/[0.07] text-neutral-50 shadow-[inset_2px_0_0_var(--color-accent)]'
-          : 'text-neutral-400 hover:bg-white/[0.04] hover:text-neutral-200',
+          ? 'bg-white/[0.07] text-text shadow-[inset_2px_0_0_var(--color-accent)]'
+          : 'text-text-muted hover:bg-white/[0.04] hover:text-text',
         unbuilt && !active ? 'opacity-45' : '',
       ].join(' ')}
     >
@@ -60,7 +60,7 @@ function Item({ item, active, showLabel, onSelect }: ItemProps): React.JSX.Eleme
       </span>
       {showLabel && <span className="truncate">{item.label}</span>}
       {showLabel && unbuilt && (
-        <span className="ml-auto rounded-full border border-edge px-1.5 font-mono text-[10px] text-neutral-500">
+        <span className="ml-auto rounded-full border border-edge px-1.5 font-mono text-[10px] text-text-muted">
           {item.milestone}
         </span>
       )}
@@ -82,7 +82,7 @@ function Rail({
       }`}
     >
       {showLabels && (
-        <span className="px-2.5 pb-2 pt-1 text-[10px] font-semibold uppercase tracking-widest text-neutral-600">
+        <span className="px-2.5 pb-2 pt-1 text-[10px] font-semibold uppercase tracking-widest text-text-faint">
           osstat
         </span>
       )}
@@ -135,8 +135,8 @@ function Tabs({ current, onNavigate }: NavigationProps): React.JSX.Element {
             className={[
               '-mb-px border-b-2 px-3 py-2 text-sm transition-colors',
               active
-                ? 'border-accent text-neutral-50'
-                : 'border-transparent text-neutral-400 hover:text-neutral-200',
+                ? 'border-accent text-text'
+                : 'border-transparent text-text-muted hover:text-text',
               unbuilt && !active ? 'opacity-45' : '',
             ].join(' ')}
           >

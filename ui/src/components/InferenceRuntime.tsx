@@ -171,18 +171,18 @@ export function InferenceRuntime(): React.JSX.Element {
   return (
     <section aria-label="Inference runtime" className="border-t border-edge p-3">
       <p className="text-sm">Inference runtime</p>
-      <p className="mt-0.5 text-xs text-neutral-500">
+      <p className="mt-0.5 text-xs text-text-muted">
         The llama.cpp server osstat runs models with. It is downloaded when you ask for it, never
         before, and osstat refuses to run a build whose checksum does not match the one pinned in
         its source.
       </p>
 
       {state.status === 'loading' && (
-        <p className="mt-3 text-xs text-neutral-500">Checking what is installed…</p>
+        <p className="mt-3 text-xs text-text-muted">Checking what is installed…</p>
       )}
 
       {state.status === 'probing' && (
-        <p className="mt-3 text-xs text-neutral-500">
+        <p className="mt-3 text-xs text-text-muted">
           Waiting for the GPU probe. Recommending a build before it answers would mean offering a
           CPU runtime to a machine that has a graphics card.
         </p>
@@ -205,8 +205,8 @@ export function InferenceRuntime(): React.JSX.Element {
                 >
                   <span className="font-mono text-xs">
                     <span data-selectable>{runtime.artifactId}</span>
-                    <span className="ml-2 text-neutral-500">{runtime.tag}</span>
-                    <span className="ml-2 text-neutral-500">{formatBytes(runtime.sizeBytes)}</span>
+                    <span className="ml-2 text-text-muted">{runtime.tag}</span>
+                    <span className="ml-2 text-text-muted">{formatBytes(runtime.sizeBytes)}</span>
                   </span>
                   <button
                     type="button"
@@ -214,7 +214,7 @@ export function InferenceRuntime(): React.JSX.Element {
                     onClick={() => {
                       remove(runtime.tag, runtime.artifactId);
                     }}
-                    className="rounded-md border border-edge px-2 py-0.5 text-xs text-neutral-400 hover:bg-white/[0.04] disabled:opacity-40"
+                    className="rounded-md border border-edge px-2 py-0.5 text-xs text-text-muted hover:bg-white/[0.04] disabled:opacity-40"
                   >
                     Delete
                   </button>
@@ -252,7 +252,7 @@ export function InferenceRuntime(): React.JSX.Element {
           )}
 
           {state.runtime.cudaAlternative !== null && !busy && (
-            <p className="mt-2 text-[11px] text-neutral-600">
+            <p className="mt-2 text-[11px] text-text-faint">
               CUDA is faster on NVIDIA hardware. It is not the default because it is a much larger
               download — the CUDA runtime ships as a second archive.
             </p>
@@ -261,7 +261,7 @@ export function InferenceRuntime(): React.JSX.Element {
       )}
 
       {progress !== null && (
-        <p role="status" className="mt-3 font-mono text-xs text-neutral-400">
+        <p role="status" className="mt-3 font-mono text-xs text-text-muted">
           {PHASES[progress.phase] ?? 'Working'}
           {progress.totalBytes > 0 &&
             ` — ${formatBytes(progress.downloadedBytes)} of ${formatBytes(progress.totalBytes)}`}
@@ -276,14 +276,14 @@ export function InferenceRuntime(): React.JSX.Element {
               ? 'Verification failed. osstat did not unpack or run anything, and removed what it downloaded.'
               : 'The download did not finish.'}
           </p>
-          <p className="mt-1 font-mono text-[11px] text-neutral-500">{failure.message}</p>
+          <p className="mt-1 font-mono text-[11px] text-text-muted">{failure.message}</p>
           {failure.retryable && (
             <button
               type="button"
               onClick={() => {
                 install(false);
               }}
-              className="mt-2 rounded-md border border-edge px-2 py-0.5 text-xs text-neutral-300 hover:bg-white/[0.04]"
+              className="mt-2 rounded-md border border-edge px-2 py-0.5 text-xs text-text hover:bg-white/[0.04]"
             >
               Try again
             </button>
@@ -311,7 +311,7 @@ function InstallButton({
       className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
         recommended
           ? 'border-accent bg-accent/10 text-accent'
-          : 'border-edge text-neutral-400 hover:bg-white/[0.04]'
+          : 'border-edge text-text-muted hover:bg-white/[0.04]'
       }`}
     >
       Install {option.backend}

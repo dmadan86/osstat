@@ -87,7 +87,7 @@ export function Collapsible({
             </span>
             <span className="truncate text-sm font-semibold">{section.title}</span>
             {section.summary !== undefined && (
-              <span className="ml-auto truncate font-mono text-sm text-neutral-300">
+              <span className="ml-auto truncate font-mono text-sm text-text">
                 {section.summary}
               </span>
             )}

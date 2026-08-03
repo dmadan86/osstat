@@ -55,8 +55,8 @@ export interface OverviewProps {
 function Fact({ label, value }: { label: string; value: string }): React.JSX.Element {
   return (
     <div className="flex justify-between gap-4 py-0.5 text-sm">
-      <span className="text-neutral-500">{label}</span>
-      <span data-selectable className="font-mono text-neutral-200">
+      <span className="text-text-muted">{label}</span>
+      <span data-selectable className="font-mono text-text">
         {value}
       </span>
     </div>
@@ -66,7 +66,7 @@ function Fact({ label, value }: { label: string; value: string }): React.JSX.Ele
 /** Says a section has nothing to show yet, without pretending it is empty. */
 function Waiting({ children }: { children: string }): React.JSX.Element {
   return (
-    <p role="status" className="py-6 text-center text-sm text-neutral-500">
+    <p role="status" className="py-6 text-center text-sm text-text-muted">
       {children}
     </p>
   );
@@ -134,7 +134,7 @@ function sectionsFor(props: OverviewProps): SectionSpec[] {
 
             {latest !== null && latest.cpuPerCore.length > 0 && (
               <div className="mt-3">
-                <p className="mb-1.5 text-[10px] uppercase tracking-wider text-neutral-600">
+                <p className="mb-1.5 text-[10px] uppercase tracking-wider text-text-faint">
                   Per core — {latest.cpuPerCore.length} logical
                 </p>
                 <Chart
@@ -236,13 +236,13 @@ function sectionsFor(props: OverviewProps): SectionSpec[] {
                   height={heightOf('network')}
                   label={`Throughput on ${interfaceName}`}
                 />
-                <div className="mt-1.5 flex gap-4 text-[11px] text-neutral-500">
+                <div className="mt-1.5 flex gap-4 text-[11px] text-text-muted">
                   <span className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-sm bg-[#3987e5]" aria-hidden="true" />
+                    <span className="h-2 w-2 rounded-sm bg-chart-down" aria-hidden="true" />
                     Down
                   </span>
                   <span className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-sm bg-[#d95926]" aria-hidden="true" />
+                    <span className="h-2 w-2 rounded-sm bg-chart-up" aria-hidden="true" />
                     Up
                   </span>
                 </div>
@@ -343,7 +343,7 @@ function GpuContent({
               <span data-selectable className="text-sm">
                 {gpu.name}
               </span>
-              <span className="font-mono text-xs text-neutral-500">
+              <span className="font-mono text-xs text-text-muted">
                 {gpu.kind}
                 {gpu.backend === null ? '' : ` · ${gpu.backend}`}
               </span>
@@ -355,7 +355,7 @@ function GpuContent({
               // than a number invented from a device limit — ADR-008 names
               // presenting a heuristic as a measurement the worst thing this
               // feature could do.
-              <p className="text-xs text-neutral-500">
+              <p className="text-xs text-text-muted">
                 Video memory is not reported by this source
                 {gpu.backend === null ? '' : ` (${gpu.backend})`}.
               </p>
@@ -417,7 +417,7 @@ export function Overview(props: OverviewProps): React.JSX.Element {
         <div
           role="status"
           aria-label="osstat keeps running in the notification area"
-          className="flex items-start gap-3 rounded-lg border border-edge bg-surface-raised px-4 py-2.5 text-xs text-neutral-300"
+          className="flex items-start gap-3 rounded-lg border border-edge bg-surface-raised px-4 py-2.5 text-xs text-text"
         >
           <span className="flex-1">
             osstat kept running in the notification area when you closed the window. You can change
@@ -427,7 +427,7 @@ export function Overview(props: OverviewProps): React.JSX.Element {
             type="button"
             aria-label="Dismiss"
             onClick={props.onTrayNoticeSeen}
-            className="text-neutral-500 hover:text-neutral-200"
+            className="text-text-muted hover:text-text"
           >
             ✕
           </button>
@@ -438,7 +438,7 @@ export function Overview(props: OverviewProps): React.JSX.Element {
         <h2 data-selectable className="text-lg font-semibold">
           {system.hostName ?? 'This machine'}
         </h2>
-        <p data-selectable className="text-xs text-neutral-500">
+        <p data-selectable className="text-xs text-text-muted">
           {[system.osName, system.osVersion, system.kernelVersion].filter(Boolean).join(' · ')}
           {' · up '}
           {formatDuration(system.uptimeSeconds)}

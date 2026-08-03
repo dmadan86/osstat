@@ -51,7 +51,7 @@ export function Meter({
     <div className="flex flex-col gap-1">
       <div className="flex items-baseline justify-between gap-3 text-sm">
         <span className="truncate">{label}</span>
-        <span data-selectable className="font-mono text-xs text-neutral-300">
+        <span data-selectable className="font-mono text-xs text-text">
           {formatFraction(safe)}
         </span>
       </div>
@@ -73,7 +73,7 @@ export function Meter({
 
       <div className="flex items-center justify-between gap-3">
         {detail !== undefined && (
-          <span data-selectable className="text-xs text-neutral-500">
+          <span data-selectable className="text-xs text-text-muted">
             {detail}
           </span>
         )}

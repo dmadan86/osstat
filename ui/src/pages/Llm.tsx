@@ -546,7 +546,7 @@ export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
       {state.status === 'loading' && (
         <p
           role="status"
-          className="rounded-xl border border-edge p-6 text-center text-sm text-neutral-500"
+          className="rounded-xl border border-edge p-6 text-center text-sm text-text-muted"
         >
           Reading the model registry…
         </p>
@@ -555,7 +555,7 @@ export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
       {state.status === 'probing' && (
         <p
           role="status"
-          className="rounded-xl border border-edge p-6 text-center text-sm text-neutral-500"
+          className="rounded-xl border border-edge p-6 text-center text-sm text-text-muted"
         >
           Looking for a GPU… the fit matrix waits for the probe rather than reporting “no GPU” on a
           machine that has one.
@@ -627,7 +627,7 @@ function ContextControl({
 }): React.JSX.Element {
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <span className="text-xs text-neutral-500">Context length</span>
+      <span className="text-xs text-text-muted">Context length</span>
       <div role="group" aria-label="Context length" className="flex flex-wrap gap-1">
         {CONTEXT_LENGTHS.map((tokens) => (
           <button
@@ -640,14 +640,14 @@ function ContextControl({
             className={`rounded-md border px-2.5 py-1 font-mono text-xs transition-colors ${
               tokens === value
                 ? 'border-accent bg-accent/10 text-accent'
-                : 'border-edge text-neutral-400 hover:bg-white/[0.04]'
+                : 'border-edge text-text-muted hover:bg-white/[0.04]'
             }`}
           >
             {formatTokens(tokens)}
           </button>
         ))}
       </div>
-      <p className="text-[11px] text-neutral-600">
+      <p className="text-[11px] text-text-faint">
         Longer context means a larger KV cache, which is memory the weights no longer get.
       </p>
     </div>
@@ -694,7 +694,7 @@ function HardwareCard({ advice }: { advice: LlmAdvice }): React.JSX.Element {
 function Figure({ label, value }: { label: string; value: string }): React.JSX.Element {
   return (
     <div className="flex flex-col">
-      <span className="text-[10px] uppercase tracking-wider text-neutral-500">{label}</span>
+      <span className="text-[10px] uppercase tracking-wider text-text-muted">{label}</span>
       <span data-selectable className="font-mono">
         {value}
       </span>
@@ -738,7 +738,7 @@ function Matrix({
           context
         </caption>
         <thead>
-          <tr className="text-[10px] uppercase tracking-wider text-neutral-500">
+          <tr className="text-[10px] uppercase tracking-wider text-text-muted">
             <th scope="col" className="sticky top-0 bg-surface-raised px-3 py-2 text-left">
               Model
             </th>
@@ -762,7 +762,7 @@ function Matrix({
               <tr key={model.id} className="border-t border-edge hover:bg-white/[0.02]">
                 <th scope="row" className="px-3 py-1.5 text-left font-normal">
                   <span data-selectable>{model.name}</span>
-                  <span className="ml-2 font-mono text-[10px] text-neutral-600">
+                  <span className="ml-2 font-mono text-[10px] text-text-faint">
                     {model.parametersBillion}B
                   </span>
                   {beyondNative && (
@@ -795,7 +795,7 @@ function Matrix({
                         className="flex flex-col items-start gap-1"
                       >
                         {result === undefined ? (
-                          <span className="text-neutral-700">—</span>
+                          <span className="text-text-faint">—</span>
                         ) : (
                           <button
                             type="button"
@@ -850,7 +850,7 @@ const UNREVIEWED_DETAIL =
 
 /** How a small control in a cell is styled. Repeated on six buttons otherwise. */
 const CONTROL =
-  'rounded-md border border-edge px-1.5 text-[10px] text-neutral-400 hover:bg-white/[0.04]';
+  'rounded-md border border-edge px-1.5 text-[10px] text-text-muted hover:bg-white/[0.04]';
 
 /**
  * Which of the six states this cell is in.
@@ -922,7 +922,7 @@ function Acquisition({
     return (
       <span
         title="No file is pinned for this cell, so there is nothing osstat could verify what it downloaded against."
-        className="text-[10px] text-neutral-600"
+        className="text-[10px] text-text-faint"
       >
         Not pinned
       </span>
@@ -1132,14 +1132,14 @@ function SearchPanel({
           onChange={(event) => {
             onTerm(event.target.value);
           }}
-          className="min-w-56 flex-1 rounded-md border border-edge bg-transparent px-2 py-1 text-xs text-neutral-200 placeholder:text-neutral-600"
+          className="min-w-56 flex-1 rounded-md border border-edge bg-transparent px-2 py-1 text-xs text-text placeholder:text-text-faint"
         />
         <button type="submit" className={CONTROL}>
           Search
         </button>
       </form>
 
-      <p className="mt-2 text-[11px] text-neutral-500">
+      <p className="mt-2 text-[11px] text-text-muted">
         Anything found here is checked against a hash Hugging Face reports beside the file, which is
         a weaker promise than the pinned models below carry. Check fit reads the header off the
         front of a file without downloading it, and prices it exactly as a downloaded model is
@@ -1147,13 +1147,13 @@ function SearchPanel({
       </p>
 
       {state.status === 'searching' && (
-        <p role="status" className="mt-2 text-xs text-neutral-500">
+        <p role="status" className="mt-2 text-xs text-text-muted">
           Searching…
         </p>
       )}
 
       {state.status === 'empty' && (
-        <p role="status" className="mt-2 text-xs text-neutral-500">
+        <p role="status" className="mt-2 text-xs text-text-muted">
           Nothing on Hugging Face matched that. Only whole, hashed GGUF files are offered, so a
           repository holding a split model or no GGUF at all will not appear.
         </p>
@@ -1270,13 +1270,13 @@ function FoundRow({
       aria-label={name}
       className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-edge px-2 py-1.5"
     >
-      <span data-selectable className="font-mono text-[11px] text-neutral-300">
+      <span data-selectable className="font-mono text-[11px] text-text">
         {name}
       </span>
-      <span className="font-mono text-[11px] text-neutral-500">{formatBytes(sizeBytes)}</span>
-      <span className="text-[11px] text-neutral-500">via {publisher}</span>
+      <span className="font-mono text-[11px] text-text-muted">{formatBytes(sizeBytes)}</span>
+      <span className="text-[11px] text-text-muted">via {publisher}</span>
       {quantHint !== null && (
-        <span className="rounded-full border border-edge px-1.5 font-mono text-[10px] text-neutral-500">
+        <span className="rounded-full border border-edge px-1.5 font-mono text-[10px] text-text-muted">
           {quantHint}
         </span>
       )}
@@ -1299,7 +1299,7 @@ function FoundRow({
             if (!open) onCheckFit();
             setOpen(!open);
           }}
-          className="rounded-md border border-edge px-1.5 text-[10px] text-neutral-400 hover:bg-white/[0.04]"
+          className="rounded-md border border-edge px-1.5 text-[10px] text-text-muted hover:bg-white/[0.04]"
         >
           Check fit
         </button>
@@ -1346,7 +1346,7 @@ function FoundRow({
 function FoundFit({ fit, name }: { fit: FitState | undefined; name: string }): React.JSX.Element {
   if (fit === undefined || fit.status === 'checking') {
     return (
-      <span role="status" className="text-[11px] text-neutral-500">
+      <span role="status" className="text-[11px] text-text-muted">
         Checking the fit… osstat is reading this file&rsquo;s header without downloading it.
       </span>
     );
@@ -1369,18 +1369,18 @@ function FoundFit({ fit, name }: { fit: FitState | undefined; name: string }): R
           ? `Fits entirely in VRAM: all ${String(blockCount)} layers on GPU.`
           : `${String(gpuLayers)} of ${String(blockCount)} layers on GPU, the rest on the CPU.`}
       </span>
-      <span className="text-neutral-500">
+      <span className="text-text-muted">
         Context {formatTokens(contextLength)}. Read from this file&rsquo;s own header and priced by
         the same arithmetic the pinned models use — not estimated from its size.
       </span>
       {!fits && (
-        <span className="text-neutral-500">
+        <span className="text-text-muted">
           Generation will be slower. The figure is an estimate, which is why this is a warning
           rather than a refusal.
         </span>
       )}
       {headDimDerived && (
-        <span className="text-neutral-600">
+        <span className="text-text-faint">
           This model&rsquo;s header declares no attention key length, so the KV-cache arithmetic
           derived one. That is correct for standard attention and wrong for models that diverge.
         </span>
@@ -1499,7 +1499,7 @@ function Pace({
   paused: boolean;
 }): React.JSX.Element | null {
   if (paused) {
-    return <span className="font-mono text-[10px] text-neutral-500">Paused</span>;
+    return <span className="font-mono text-[10px] text-text-muted">Paused</span>;
   }
 
   const rate = transfer?.bytesPerSecond ?? null;
@@ -1516,7 +1516,7 @@ function Pace({
   const remaining = transfer?.secondsRemaining ?? null;
 
   return (
-    <span role="status" className="font-mono text-[10px] text-neutral-500">
+    <span role="status" className="font-mono text-[10px] text-text-muted">
       {formatRate(rate)}
       {remaining !== null && ` · ${formatDuration(remaining)} left`}
     </span>
@@ -1550,7 +1550,7 @@ function AcquisitionFailure({ failure }: { failure: ModelFailure }): React.JSX.E
             ? 'The download did not finish, and the automatic attempts are used up.'
             : 'The download did not finish.'}
       </p>
-      <p data-selectable className="mt-1 font-mono text-[11px] text-neutral-500">
+      <p data-selectable className="mt-1 font-mono text-[11px] text-text-muted">
         {failure.message}
       </p>
     </div>
@@ -1579,15 +1579,15 @@ function Drawer({
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="text-sm">
-            {model.name} <span className="font-mono text-neutral-500">{quant.label}</span>
+            {model.name} <span className="font-mono text-text-muted">{quant.label}</span>
           </h2>
-          <p className="mt-0.5 text-xs text-neutral-400">{presentation.label}.</p>
+          <p className="mt-0.5 text-xs text-text-muted">{presentation.label}.</p>
         </div>
         <button
           type="button"
           onClick={onClose}
           aria-label="Close the explanation"
-          className="rounded-md border border-edge px-2 py-0.5 text-xs text-neutral-400 hover:bg-white/[0.04]"
+          className="rounded-md border border-edge px-2 py-0.5 text-xs text-text-muted hover:bg-white/[0.04]"
         >
           Close
         </button>
@@ -1627,7 +1627,7 @@ function Drawer({
         <Term label="Speed" value={SPEED_TIERS[verdict.tier]} />
       </dl>
 
-      <p className="mt-3 border-t border-edge pt-2 text-[11px] text-neutral-500">
+      <p className="mt-3 border-t border-edge pt-2 text-[11px] text-text-muted">
         {quant.description} The speed line is a classification, not a measurement — real throughput
         depends on the runtime, memory bandwidth and thermals, none of which osstat measures.
         Figures come from {model.sourceNote}.
@@ -1656,8 +1656,8 @@ function Term({
 }): React.JSX.Element {
   return (
     <div className="flex justify-between gap-3 border-b border-edge/50 py-0.5">
-      <dt className="text-neutral-500">{label}</dt>
-      <dd data-selectable className={`font-mono ${emphasis ? 'text-neutral-100' : ''}`}>
+      <dt className="text-text-muted">{label}</dt>
+      <dd data-selectable className={`font-mono ${emphasis ? 'text-text' : ''}`}>
         {value}
       </dd>
     </div>

@@ -110,7 +110,7 @@ export function App(): React.JSX.Element {
           )}
 
           {system.status === 'loading' && (
-            <p role="status" className="text-sm text-neutral-400">
+            <p role="status" className="text-sm text-text-muted">
               Reading system information…
             </p>
           )}

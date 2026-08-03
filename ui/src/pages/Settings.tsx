@@ -54,7 +54,7 @@ function StartAtSignIn(): React.JSX.Element {
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-sm">Start osstat when I sign in</p>
-          <p className="text-xs text-neutral-500">
+          <p className="text-xs text-text-muted">
             Starts in the notification area, with no window.
           </p>
         </div>
@@ -72,7 +72,7 @@ function StartAtSignIn(): React.JSX.Element {
         >
           <span
             aria-hidden="true"
-            className={`block h-3.5 w-3.5 rounded-full bg-neutral-200 transition-transform ${
+            className={`block h-3.5 w-3.5 rounded-full bg-text transition-transform ${
               enabled === true ? 'translate-x-4.5' : 'translate-x-0.5'
             }`}
           />
@@ -114,7 +114,7 @@ function Choice<K extends keyof typeof CHOICES>({
     <div className="flex flex-col gap-2 border-b border-edge px-4 py-3 last:border-b-0">
       <div>
         <p className="text-sm">{label}</p>
-        <p className="text-xs text-neutral-500">{description}</p>
+        <p className="text-xs text-text-muted">{description}</p>
       </div>
 
       <div role="radiogroup" aria-label={label} className="flex flex-wrap gap-1.5">
@@ -131,8 +131,8 @@ function Choice<K extends keyof typeof CHOICES>({
               }}
               className={`rounded-md border px-3 py-1 text-xs transition-colors ${
                 selected
-                  ? 'border-accent bg-accent/10 text-neutral-50'
-                  : 'border-edge text-neutral-400 hover:bg-white/[0.04] hover:text-neutral-200'
+                  ? 'border-accent bg-accent/10 text-text'
+                  : 'border-edge text-text-muted hover:bg-white/[0.04] hover:text-text'
               }`}
             >
               {choice.label}
@@ -152,7 +152,7 @@ function Panels({ preferences, onChange }: SettingsProps): React.JSX.Element {
     <div className="flex flex-col gap-2 border-b border-edge px-4 py-3 last:border-b-0">
       <div>
         <p className="text-sm">Panels</p>
-        <p className="text-xs text-neutral-500">
+        <p className="text-xs text-text-muted">
           Which sections the Overview shows. Order and size are set from each panel&rsquo;s own
           menu.
         </p>
@@ -162,7 +162,7 @@ function Panels({ preferences, onChange }: SettingsProps): React.JSX.Element {
         {OVERVIEW_PANELS.map((panel) => {
           const hidden = panels.find((entry) => entry.id === panel.id)?.hidden ?? false;
           return (
-            <label key={panel.id} className="flex items-center gap-2 text-xs text-neutral-300">
+            <label key={panel.id} className="flex items-center gap-2 text-xs text-text">
               <input
                 type="checkbox"
                 checked={!hidden}
@@ -186,7 +186,7 @@ function Panels({ preferences, onChange }: SettingsProps): React.JSX.Element {
             // from the sections that exist, which is the one place that knows.
             onChange({ overviewPanels: [] });
           }}
-          className="rounded-md border border-edge px-3 py-1 text-xs text-neutral-400 hover:bg-white/[0.04] hover:text-neutral-200"
+          className="rounded-md border border-edge px-3 py-1 text-xs text-text-muted hover:bg-white/[0.04] hover:text-text"
         >
           Reset Overview layout
         </button>
@@ -205,7 +205,7 @@ export function Settings({ preferences, onChange }: SettingsProps): React.JSX.El
     <div className="flex max-w-2xl flex-col gap-4">
       <header>
         <h2 className="text-lg font-semibold">Settings</h2>
-        <p className="text-xs text-neutral-500">
+        <p className="text-xs text-text-muted">
           Stored on this machine only. osstat makes no network request unless you ask it to —
           downloading an inference runtime, or a model from the advisor, are the only things that
           do.

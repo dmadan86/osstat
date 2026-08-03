@@ -199,13 +199,13 @@ export function ModelFolder(): React.JSX.Element {
   return (
     <section aria-label="Where models are kept" className="border-t border-edge p-3">
       <p className="text-sm">Model folder</p>
-      <p className="mt-0.5 text-xs text-neutral-500">
+      <p className="mt-0.5 text-xs text-text-muted">
         Where downloaded models are kept. A single model is gigabytes, so this can be pointed at
         whichever disk has room. Nothing is created until the first download.
       </p>
 
       {state.status === 'loading' && (
-        <p className="mt-3 text-xs text-neutral-500">Reading where models are kept…</p>
+        <p className="mt-3 text-xs text-text-muted">Reading where models are kept…</p>
       )}
 
       {state.status === 'error' && (
@@ -216,7 +216,7 @@ export function ModelFolder(): React.JSX.Element {
 
       {current !== null && (
         <>
-          <p data-selectable className="mt-3 break-all font-mono text-xs text-neutral-300">
+          <p data-selectable className="mt-3 break-all font-mono text-xs text-text">
             {current}
           </p>
 
@@ -224,7 +224,7 @@ export function ModelFolder(): React.JSX.Element {
             <div className="flex min-w-0 flex-1 flex-col gap-1">
               <label
                 htmlFor="model-folder"
-                className="text-[10px] uppercase tracking-wider text-neutral-500"
+                className="text-[10px] uppercase tracking-wider text-text-muted"
               >
                 Model folder
               </label>
@@ -243,7 +243,7 @@ export function ModelFolder(): React.JSX.Element {
               type="button"
               disabled={draft.trim() === '' || draft.trim() === current || moving !== null}
               onClick={propose}
-              className="rounded-md border border-edge px-2.5 py-1 text-xs text-neutral-300 hover:bg-white/[0.04] disabled:opacity-40"
+              className="rounded-md border border-edge px-2.5 py-1 text-xs text-text hover:bg-white/[0.04] disabled:opacity-40"
             >
               Use this folder
             </button>
@@ -264,7 +264,7 @@ export function ModelFolder(): React.JSX.Element {
       )}
 
       {moving !== null && (
-        <p role="status" className="mt-3 font-mono text-xs text-neutral-400">
+        <p role="status" className="mt-3 font-mono text-xs text-text-muted">
           Moving the library
           {moving.totalBytes > 0 &&
             ` — ${formatBytes(moving.downloadedBytes)} of ${formatBytes(moving.totalBytes)}`}
@@ -299,7 +299,7 @@ function MoveQuestion({
       aria-label="Move the model library"
       className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3"
     >
-      <p className="text-xs text-neutral-200">
+      <p className="text-xs text-text">
         {countedFiles(plan.files)}, {formatBytes(plan.bytes)}, are in the old folder. Move them to{' '}
         <span data-selectable className="font-mono break-all">
           {path}
@@ -307,7 +307,7 @@ function MoveQuestion({
         ?
       </p>
 
-      <p className="mt-1 text-[11px] text-neutral-500">
+      <p className="mt-1 text-[11px] text-text-muted">
         {plan.sameVolume
           ? 'Everything is on the same volume, so each file is renamed rather than copied — this takes moments.'
           : 'This is a different volume, so each file is copied and verified before the original is removed. Nothing is deleted until its copy has verified, and a library this size can take a long time.'}
@@ -324,13 +324,13 @@ function MoveQuestion({
         <button
           type="button"
           onClick={onKeep}
-          className="rounded-md border border-edge px-2.5 py-1 text-xs text-neutral-300 hover:bg-white/[0.04]"
+          className="rounded-md border border-edge px-2.5 py-1 text-xs text-text hover:bg-white/[0.04]"
         >
           Leave them where they are
         </button>
       </div>
 
-      <p className="mt-2 text-[11px] text-neutral-600">
+      <p className="mt-2 text-[11px] text-text-faint">
         Leaving them still points new downloads at the new folder. Every record carries an absolute
         path, so models already downloaded stay runnable wherever they sit.
       </p>

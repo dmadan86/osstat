@@ -43,7 +43,7 @@ export interface PanelControls {
 /** A group heading inside the menu. */
 function Group({ children }: { children: string }): React.JSX.Element {
   return (
-    <p className="px-3 pb-1 pt-2 text-[10px] uppercase tracking-wider text-neutral-600">
+    <p className="px-3 pb-1 pt-2 text-[10px] uppercase tracking-wider text-text-faint">
       {children}
     </p>
   );
@@ -105,7 +105,7 @@ export function PanelMenu({
         onClick={() => {
           setOpen((current) => !current);
         }}
-        className="rounded px-1.5 py-1 text-neutral-500 hover:bg-white/[0.06] hover:text-neutral-200"
+        className="rounded px-1.5 py-1 text-text-muted hover:bg-white/[0.06] hover:text-text"
       >
         <span aria-hidden="true">⋮</span>
       </button>
@@ -126,7 +126,7 @@ export function PanelMenu({
                   type="button"
                   role="menuitemradio"
                   aria-checked={candidate === span}
-                  className={`${ROW} ${candidate === span ? 'text-accent' : 'text-neutral-300'}`}
+                  className={`${ROW} ${candidate === span ? 'text-accent' : 'text-text'}`}
                   onClick={() => {
                     onSpan(candidate);
                     setOpen(false);
@@ -143,7 +143,7 @@ export function PanelMenu({
                   type="button"
                   role="menuitemradio"
                   aria-checked={candidate === height}
-                  className={`${ROW} ${candidate === height ? 'text-accent' : 'text-neutral-300'}`}
+                  className={`${ROW} ${candidate === height ? 'text-accent' : 'text-text'}`}
                   onClick={() => {
                     onHeight(candidate);
                     setOpen(false);
@@ -160,7 +160,7 @@ export function PanelMenu({
             type="button"
             role="menuitem"
             disabled={!canMoveUp}
-            className={`${ROW} text-neutral-300`}
+            className={`${ROW} text-text`}
             onClick={() => {
               onMove(-1);
               setOpen(false);
@@ -172,7 +172,7 @@ export function PanelMenu({
             type="button"
             role="menuitem"
             disabled={!canMoveDown}
-            className={`${ROW} text-neutral-300`}
+            className={`${ROW} text-text`}
             onClick={() => {
               onMove(1);
               setOpen(false);
@@ -185,7 +185,7 @@ export function PanelMenu({
           <button
             type="button"
             role="menuitem"
-            className={`${ROW} text-neutral-300`}
+            className={`${ROW} text-text`}
             onClick={() => {
               onHide();
               setOpen(false);
