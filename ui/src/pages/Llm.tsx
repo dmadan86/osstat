@@ -6,12 +6,18 @@
  * and a drawer showing the arithmetic behind whichever cell you pick.
  *
  * Every cell also carries the one thing a verdict cannot do on its own: a way
- * to actually get the file. Four states, and the difference between them is the
+ * to actually get the file. Six states, and the difference between them is the
  * feature — *not pinned* says so rather than offering a control that would
  * fail, *downloadable* names the publisher because these are community
  * re-quantizations rather than the vendors' own uploads, *downloading* counts
- * against the pinned size, and *downloaded* offers Run, which hands the
- * record's absolute path to the same `chat_open_model` the file picker uses.
+ * against the pinned size and offers Pause and Cancel, *paused* keeps that
+ * figure and offers Resume, *failed* offers Retry once the automatic attempts
+ * are used up, and *downloaded* offers Run, which hands the record's absolute
+ * path to the same `chat_open_model` the file picker uses.
+ *
+ * Pause and Cancel are both offered because they do different things to the
+ * disk: Pause keeps the partial file and Cancel deletes it. A single Stop would
+ * make that choice on the user's behalf, silently, with several gigabytes.
  *
  * **A download is offered even where the verdict says the model will not fit.**
  * The calculator is an estimate — ADR-008 says so in its first paragraph — and
