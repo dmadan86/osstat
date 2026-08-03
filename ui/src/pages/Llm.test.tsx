@@ -21,6 +21,7 @@ vi.mock('../lib/ipc', () => ({
   downloadModel: (): Promise<void> => Promise.resolve(),
   cancelModelDownload: (): Promise<void> => Promise.resolve(),
   chatOpenModel: (): Promise<never> => Promise.reject(new Error('not used here')),
+  chatStatus: (): Promise<null> => Promise.resolve(null),
   onModelProgress: (): Promise<() => void> => Promise.resolve(() => undefined),
   onModelDone: (): Promise<() => void> => Promise.resolve(() => undefined),
   onModelFailed: (): Promise<() => void> => Promise.resolve(() => undefined),

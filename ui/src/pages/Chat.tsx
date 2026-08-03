@@ -36,6 +36,7 @@ import type { Timings } from '../bindings/Timings';
 import type { Usage } from '../bindings/Usage';
 import { Meter } from '../components/Meter';
 import { formatCount, formatTimeOfDay } from '../lib/format';
+import { stemOf } from '../lib/modelFile';
 import {
   chatClose,
   chatDelete,
@@ -147,23 +148,6 @@ interface Downloaded {
   path: string;
   /** Which verification tier fetched it. */
   provenance: Provenance;
-}
-
-/**
- * A model file's name, the way `chat_open_model` reports it back.
- *
- * The Rust side names a session from the file stem, so this drops the directory
- * and the extension to match. Both separators are handled because a Windows
- * path is what this application mostly sees and a POSIX one is what its tests
- * and its Linux builds mostly see.
- */
-function stemOf(path: string): string {
-  const name = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1);
-  const dot = name.lastIndexOf('.');
-
-  // `dot <= 0` rather than `=== -1`: a name that is nothing but an extension
-  // keeps it, which is what `Path::file_stem` does with the same input.
-  return dot <= 0 ? name : name.slice(0, dot);
 }
 
 /**
@@ -487,81 +471,40 @@ function useStickyScroll(dependency: unknown): React.RefObject<HTMLDivElement | 
   return ref;
 }
 
-/**
- * How long a close waits after this page unmounts, in milliseconds.
- *
- * Long enough that a page which is coming straight back cancels it, short
- * enough that a user who has genuinely left does not notice the model outliving
- * their leaving. Nothing in the app schedules work in this window, so the only
- * thing that ever lands inside it is a remount.
- */
-const CLOSE_GRACE_MS = 150;
-
-/**
- * The close a previous unmount scheduled, or `null` when none is pending.
- *
- * Module scope rather than a ref, and deliberately so: what this records is
- * "no chat page is mounted", which is a fact about the page and not about one
- * mounting of it. A ref would be replaced by the very remount that needs to
- * cancel the close — which is the case that matters, since a fresh instance is
- * exactly what a return to this page produces.
- */
-let pendingClose: ReturnType<typeof setTimeout> | null = null;
-
-/** Calls off a close a previous unmount scheduled, if one is still pending. */
-function keepSessionOpen(): void {
-  if (pendingClose === null) return;
-
-  clearTimeout(pendingClose);
-  pendingClose = null;
-}
-
-/**
- * Schedules the close that leaving this page performs.
- *
- * Deferred rather than immediate, which is the whole of the fix. Unmounting is
- * not the same event as leaving: React's development double-invoke unmounts and
- * mounts again on purpose, and returning to the page does the same across a
- * navigation. A close fired straight from the cleanup ended the server in both
- * of those, and the page that came back could still see a session it no longer
- * had — the model bar was drawn and every message was refused with "no model is
- * open". Waiting a moment lets a remount say "still here" (ADR-013 keeps its
- * property: nobody who actually leaves keeps a multi-gigabyte allocation).
- */
-function closeSessionShortly(): void {
-  keepSessionOpen();
-
-  pendingClose = setTimeout(() => {
-    pendingClose = null;
-    chatClose().catch(() => {
-      // Nothing useful to say to a page that is already gone.
-    });
-  }, CLOSE_GRACE_MS);
-}
-
 /** What the chat page needs from the shell. */
 export interface ChatProps {
   /**
-   * A session the advisor's Run control already opened, or `null`.
+   * A session already open, or `null`.
    *
    * The model is opened by whoever pressed Run, through the same
    * `chat_open_model` the file picker calls, so this page receives a session
-   * rather than a second path to open. The shell drops it when the user
-   * navigates away, because leaving this page ends the server.
+   * rather than a second path to open. The shell keeps holding it while the
+   * user is elsewhere, which is what makes coming back instant rather than a
+   * frame of the no-model form over a model that is loaded.
    *
    * A head start rather than the truth: `chat_status` is asked on mount and its
-   * answer wins. Rust owns the session, and a prop cannot know that the page
-   * was mounted a second time or that the server has since stopped.
+   * answer wins. Rust owns the session, and a prop cannot know that the server
+   * has since stopped.
    */
   opened?: ModelSession | null;
+  /**
+   * Reports what is open, whenever that changes.
+   *
+   * The shell is what stays mounted, so it is the only thing in a position to
+   * remember a session across a navigation and to say so — the marker on the
+   * Chat tab is drawn from this. Called with `null` when the model is unloaded,
+   * which is the half that matters: a marker for a model nobody is holding
+   * would be worse than no marker at all.
+   */
+  onSessionChange?: (session: ModelSession | null) => void;
 }
 
 /**
  * Renders the chat page.
  *
- * @param props A session opened elsewhere, if there is one.
+ * @param props A session opened elsewhere, and where to report changes to it.
  */
-export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
+export function Chat({ opened = null, onSessionChange }: ChatProps = {}): React.JSX.Element {
   const [state, dispatch] = useReducer(reduce, null, () => ({
     conversation: freshConversation(''),
     pending: null,
@@ -577,6 +520,16 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
   const [models, setModels] = useState<readonly Downloaded[]>([]);
   /** The model a switch is loading, or `null` when none is. */
   const [switchingTo, setSwitchingTo] = useState<string | null>(null);
+  /**
+   * How many replies have finished, which is the cue to focus the composer.
+   *
+   * A count rather than a flag because two replies in a row have to be two
+   * events: a boolean set to `true` twice does not change, so the second reply
+   * would leave the cursor wherever the user's last click put it.
+   */
+  const [finished, setFinished] = useState(0);
+  /** The message box, so a finished reply can put the cursor back in it. */
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   // Whether this page has opened or closed a model itself since it mounted.
   // The adoption below is a question asked on mount and answered a tick later,
   // and an answer that arrived after the user had already acted would undo what
@@ -701,6 +654,11 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
       // The reply has been written by the time this arrives, so the list is
       // one entry or one title out of date until it is read again.
       refresh();
+      // Counted rather than focused from here. The composer is disabled while a
+      // reply streams, and focusing an element the same render is about to
+      // enable does nothing at all -- so the focus has to wait for a render,
+      // which is what the effect below is.
+      setFinished((count) => count + 1);
     });
 
     return () => {
@@ -736,16 +694,34 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
     };
   }, []);
 
-  // Leaving the page ends the server. A loaded model holds several gigabytes of
-  // VRAM; osstat itself holds a fraction of that, and a monitoring application
-  // that quietly kept the larger allocation alive would be the worst neighbour
-  // on the machine. Mounting cancels the close the last unmount scheduled,
-  // which is what tells a remount apart from a departure -- see
-  // `closeSessionShortly`.
+  // **Leaving the page closes nothing.** ADR-013 originally ended the server
+  // here; the user has since used it and asked for the model to survive moving
+  // between tabs, and this is where that reversal lives. The session now ends in
+  // exactly two places: the Unload control below, and the application exiting
+  // (`chat::stop_on_exit`, from `RunEvent::Exit`). There is deliberately no
+  // unmount cleanup left to get wrong.
+  //
+  // What the shell is told, so a tab the user is not looking at can still say a
+  // model is loaded. Keyed on the session rather than fired from each setter:
+  // there are five of those and one of them would eventually be missed.
   useEffect(() => {
-    keepSessionOpen();
-    return closeSessionShortly;
-  }, []);
+    onSessionChange?.(session);
+  }, [session, onSessionChange]);
+
+  // The cursor goes back in the message box when a reply finishes, so the next
+  // question can be typed without reaching for the mouse. **On completion only.**
+  // Doing it per token would be the opposite of a courtesy: tokens arrive
+  // several times a second, and a page that grabbed focus on each one would take
+  // the caret out of whatever the user was doing, several times a second.
+  //
+  // `finished` starts at zero and is only ever incremented by the completion
+  // handler, so this cannot fire on mount and steal focus from a page the user
+  // has only just opened.
+  useEffect(() => {
+    if (finished === 0) return;
+
+    composerRef.current?.focus();
+  }, [finished]);
 
   const streaming = state.pending !== null;
   const switching = switchingTo !== null;
@@ -882,10 +858,11 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
     });
   }
 
-  // Unloading ends the server and returns the page to its no-model state.
-  // Navigating away already does this (ADR-013), but a 7B model holds around
-  // five gigabytes resident and needing to leave the page to give that back is
-  // not a way to ask for it. A reply still streaming ends as a failure, because
+  // Unloading ends the server and returns the page to its no-model state. It is
+  // now the only way a user can give the memory back without quitting osstat —
+  // navigating away used to do it and deliberately no longer does (ADR-013) —
+  // which is why it stays in the model bar rather than behind a menu. A reply
+  // still streaming ends as a failure, because
   // the stream it was reading no longer has a server behind it — which is the
   // truth, and better than a transcript waiting forever on a dead process.
   function unload(): void {
@@ -982,6 +959,7 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
           draft={draft}
           streaming={streaming}
           switching={switching}
+          inputRef={composerRef}
           onDraftChange={setDraft}
           onSend={send}
         />
@@ -1013,7 +991,7 @@ function EmptyTranscript({
       <p className="max-w-sm text-xs text-text-muted">
         {hasModel
           ? 'Type below and press Enter to send. Shift+Enter starts a new line.'
-          : 'Open a GGUF model file above. Nothing is downloaded and nothing leaves this machine — the model runs as a local server osstat starts and stops with this page.'}
+          : 'Open a GGUF model file above. Nothing is downloaded and nothing leaves this machine — the model runs as a local server osstat starts, keeps running while you look at other tabs, and stops when you unload it or quit.'}
       </p>
 
       {hasStored && (
@@ -1493,6 +1471,7 @@ function Composer({
   draft,
   streaming,
   switching,
+  inputRef,
   onDraftChange,
   onSend,
 }: {
@@ -1500,6 +1479,8 @@ function Composer({
   streaming: boolean;
   /** Whether a model switch is loading, which is also nothing to talk to. */
   switching: boolean;
+  /** The page's handle on the box, for putting the cursor back in it. */
+  inputRef: React.RefObject<HTMLTextAreaElement | null>;
   onDraftChange: (value: string) => void;
   onSend: () => void;
 }): React.JSX.Element {
@@ -1525,6 +1506,7 @@ function Composer({
       </label>
       <textarea
         id="chat-message"
+        ref={inputRef}
         rows={2}
         value={draft}
         disabled={busy}

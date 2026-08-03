@@ -30,11 +30,13 @@
  */
 
 import { render, screen, waitFor, within } from '@testing-library/react';
+import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { LlmAdvice } from '../bindings/LlmAdvice';
 import type { ModelCatalogueEntry } from '../bindings/ModelCatalogueEntry';
+import type { ModelSession } from '../bindings/ModelSession';
 import type { ModelRegistry } from '../bindings/ModelRegistry';
 import type { SearchedFit } from '../bindings/SearchedFit';
 import type { SearchResult } from '../bindings/SearchResult';
@@ -42,6 +44,7 @@ import type { SearchResult } from '../bindings/SearchResult';
 const {
   cancelModelDownload,
   chatOpenModel,
+  chatStatus,
   downloadModel,
   downloadSearchedModel,
   fetchLlmAdvice,
@@ -57,6 +60,7 @@ const {
 } = vi.hoisted(() => ({
   cancelModelDownload: vi.fn(),
   chatOpenModel: vi.fn(),
+  chatStatus: vi.fn(),
   downloadModel: vi.fn(),
   downloadSearchedModel: vi.fn(),
   fetchLlmAdvice: vi.fn(),
@@ -74,6 +78,7 @@ const {
 vi.mock('../lib/ipc', () => ({
   cancelModelDownload,
   chatOpenModel,
+  chatStatus,
   downloadModel,
   downloadSearchedModel,
   fetchLlmAdvice,
@@ -223,6 +228,7 @@ function resultsSection(): HTMLElement {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  chatStatus.mockResolvedValue(null);
   fetchModelRegistry.mockResolvedValue(registry());
   fetchLlmAdvice.mockResolvedValue(advice());
   fetchModelCatalogue.mockResolvedValue(catalogue());
@@ -522,5 +528,54 @@ describe('Llm › searching Hugging Face', () => {
 
     expect(row).toHaveTextContent(/not reviewed/i);
     expect(within(row).getByRole('button', { name: /^Run /i })).toBeInTheDocument();
+  });
+
+  it('keeps the unreviewed label on a searched model that is loaded', async () => {
+    // The label is a security distinction, not a decoration on one control, so
+    // it must not fall off the row when the row changes what it offers. A model
+    // that lost its tier by being run would be indistinguishable from a
+    // reviewed one for exactly as long as it was the one in use.
+    const path = 'D:\\models\\Mistral-Nemo-Instruct-Q5_K_M.gguf';
+    chatStatus.mockResolvedValue({
+      modelName: 'Mistral-Nemo-Instruct-Q5_K_M',
+      gpuLayers: 32,
+      contextLength: 8192,
+      fits: true,
+      headDimDerived: false,
+    });
+    fetchModelCatalogue.mockResolvedValue(
+      catalogue([
+        {
+          key: {
+            modelId: 'TheOtherOne/Mistral-Nemo-GGUF',
+            quantId: 'Mistral-Nemo-Instruct-Q5_K_M.gguf',
+          },
+          state: 'downloaded',
+          publisher: 'TheOtherOne',
+          repo: 'TheOtherOne/Mistral-Nemo-GGUF',
+          file: 'Mistral-Nemo-Instruct-Q5_K_M.gguf',
+          sizeBytes: 8_727_493_120,
+          path,
+          provenance: 'searched',
+        },
+      ])
+    );
+
+    function Wired(): React.JSX.Element {
+      const [open, setOpen] = useState<ModelSession | null>(null);
+
+      return <Llm openedModel={open} onSessionChange={setOpen} />;
+    }
+
+    render(<Wired />);
+    await screen.findByRole('table');
+
+    const row = await screen.findByRole('group', {
+      name: /Mistral-Nemo-Instruct-Q5_K_M\.gguf/,
+    });
+
+    await within(row).findByRole('button', { name: /is loaded/i });
+    expect(row).toHaveTextContent(/not reviewed/i);
+    expect(within(row).queryByRole('button', { name: /^Run /i })).toBeNull();
   });
 });

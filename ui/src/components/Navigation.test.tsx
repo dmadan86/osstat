@@ -10,7 +10,9 @@ const STYLES: NavigationStyle[] = ['sidebar', 'tabs', 'rail'];
 
 describe('Navigation', () => {
   it.each(STYLES)('reaches every page in %s style', (style) => {
-    render(<Navigation current="overview" onNavigate={() => {}} style={style} />);
+    render(
+      <Navigation current="overview" onNavigate={() => {}} style={style} modelLoaded={false} />
+    );
 
     // The point of driving all three from one NAV_ITEMS model: they cannot
     // drift apart about what the app contains.
@@ -20,13 +22,17 @@ describe('Navigation', () => {
   });
 
   it.each(STYLES)('offers settings in %s style', (style) => {
-    render(<Navigation current="overview" onNavigate={() => {}} style={style} />);
+    render(
+      <Navigation current="overview" onNavigate={() => {}} style={style} modelLoaded={false} />
+    );
 
     expect(screen.getByTitle('Settings')).toBeInTheDocument();
   });
 
   it.each(STYLES)('marks the current page in %s style', (style) => {
-    render(<Navigation current="processes" onNavigate={() => {}} style={style} />);
+    render(
+      <Navigation current="processes" onNavigate={() => {}} style={style} modelLoaded={false} />
+    );
 
     expect(screen.getByTitle('Processes')).toHaveAttribute('aria-current', 'page');
     expect(screen.getByTitle('Settings')).not.toHaveAttribute('aria-current');
@@ -34,7 +40,9 @@ describe('Navigation', () => {
 
   it.each(STYLES)('navigates on click in %s style', async (style) => {
     const onNavigate = vi.fn();
-    render(<Navigation current="overview" onNavigate={onNavigate} style={style} />);
+    render(
+      <Navigation current="overview" onNavigate={onNavigate} style={style} modelLoaded={false} />
+    );
 
     await userEvent.click(screen.getByTitle('Processes'));
 
@@ -44,7 +52,9 @@ describe('Navigation', () => {
   it('keeps unbuilt pages reachable rather than disabling them', async () => {
     // Their placeholder says what is coming; a disabled button says nothing.
     const onNavigate = vi.fn();
-    render(<Navigation current="overview" onNavigate={onNavigate} style="sidebar" />);
+    render(
+      <Navigation current="overview" onNavigate={onNavigate} style="sidebar" modelLoaded={false} />
+    );
 
     const cleaner = screen.getByTitle(/Cleaner/);
     expect(cleaner).not.toBeDisabled();
@@ -54,13 +64,17 @@ describe('Navigation', () => {
   });
 
   it('names the milestone of an unbuilt page', () => {
-    render(<Navigation current="overview" onNavigate={() => {}} style="sidebar" />);
+    render(
+      <Navigation current="overview" onNavigate={() => {}} style="sidebar" modelLoaded={false} />
+    );
 
     expect(screen.getByTitle('Cleaner — arrives in M3')).toBeInTheDocument();
   });
 
   it('hides labels in the icon rail but keeps them accessible', () => {
-    render(<Navigation current="overview" onNavigate={() => {}} style="rail" />);
+    render(
+      <Navigation current="overview" onNavigate={() => {}} style="rail" modelLoaded={false} />
+    );
 
     // Nothing is visibly labelled, but every control is still named.
     expect(screen.queryByText('Processes')).not.toBeInTheDocument();
@@ -68,7 +82,9 @@ describe('Navigation', () => {
   });
 
   it('shows labels in the sidebar', () => {
-    render(<Navigation current="overview" onNavigate={() => {}} style="sidebar" />);
+    render(
+      <Navigation current="overview" onNavigate={() => {}} style="sidebar" modelLoaded={false} />
+    );
 
     expect(screen.getByText('Processes')).toBeInTheDocument();
   });

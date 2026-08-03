@@ -134,6 +134,76 @@ fn the_process_is_gone_after_stop() {
 }
 
 #[test]
+fn the_process_is_gone_after_a_kill_with_no_runtime_to_wait_on() {
+    // The teardown the application's own exit uses, and since ADR-013's
+    // reversal the only thing standing between quitting osstat and a
+    // `llama-server` holding several gigabytes of VRAM. `stop` cannot serve
+    // here: it awaits, and the event loop thread that runs `RunEvent::Exit` has
+    // no runtime left to await on.
+    let runtime = runtime();
+    let session = runtime.block_on(start(launch())).unwrap();
+    let key = session.record();
+    let port: u16 = session.base.rsplit(':').next().unwrap().parse().unwrap();
+
+    session.kill();
+    // Dropped before the wait, so nothing of the runtime's is left that could
+    // be doing the reaping instead of the signal under test.
+    drop(runtime);
+
+    assert!(
+        port_freed_within(port, std::time::Duration::from_secs(10)),
+        "port {port} is still held; pid {} outlived the kill",
+        key.pid
+    );
+}
+
+#[test]
+fn a_kill_leaves_the_record_for_the_next_launch_to_reap() {
+    // The deliberate difference from `stop`. Nothing confirms the child is gone
+    // by the time `kill` returns, so removing the record would be osstat
+    // asserting something it did not check -- and the one case that costs
+    // anything is the one where the kill did not land.
+    let directory = tempfile::tempdir().unwrap();
+    let record = directory.path().join("session.json");
+
+    let runtime = runtime();
+    let session = runtime
+        .block_on(start(Launch {
+            record: Some(record.clone()),
+            ..launch()
+        }))
+        .unwrap();
+
+    session.kill();
+    drop(runtime);
+
+    assert!(
+        record.exists(),
+        "the record was removed by a teardown that never confirmed the child had gone"
+    );
+}
+
+/// Whether `port` becomes bindable again inside `budget`.
+///
+/// Polled rather than asserted once: a kill signals the kernel and returns, so
+/// the child releasing its socket is a moment later by definition. The budget is
+/// far longer than the wait ever is, because a slow CI machine failing this test
+/// would be reporting on its own load rather than on the teardown.
+fn port_freed_within(port: u16, budget: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + budget;
+
+    loop {
+        if std::net::TcpListener::bind(format!("127.0.0.1:{port}")).is_ok() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+#[test]
 fn a_child_that_dies_mid_stream_does_not_take_the_process_with_it() {
     // THE load-bearing test. ADR-012 chose a subprocess so that an inference
     // OOM would not be "a crash of the whole app -- taking down the tray and

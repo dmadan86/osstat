@@ -283,6 +283,28 @@ impl Session {
             .unwrap_or_default()
     }
 
+    /// Ends the server without waiting for it, for a process that is exiting.
+    ///
+    /// [`Session::stop`] is the ordinary path and the better one: it waits for
+    /// the child to be gone before it forgets the record. This is the one place
+    /// that cannot wait. It runs from the event loop's own thread as the
+    /// application comes down, where there is no async runtime left to drive a
+    /// wait on and blocking would turn a quit into a hang.
+    ///
+    /// So it signals and returns. The signal is `TerminateProcess` on Windows
+    /// and `SIGKILL` elsewhere — neither is refusable and neither needs the
+    /// parent to stay alive for the kernel to finish the job.
+    ///
+    /// **The record is deliberately left behind**, which is the difference from
+    /// [`Session::stop`] that matters. Nothing here confirms the child is gone,
+    /// so removing the file would be osstat asserting something it did not
+    /// check; leaving it means the next launch reaps whatever survived. A record
+    /// naming a process that did die costs that launch one refused terminate —
+    /// `reap` re-reads the start time — and the file is removed either way.
+    pub fn kill(mut self) {
+        let _ = self.child.start_kill();
+    }
+
     /// Stops the server and waits for it to be gone.
     ///
     /// # Errors

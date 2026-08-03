@@ -13,7 +13,7 @@ import type { ModelSession } from './bindings/ModelSession';
 import type { SystemDescription } from './bindings/SystemDescription';
 import { EndProcessDialog } from './components/EndProcessDialog';
 import { Navigation } from './components/Navigation';
-import { logUiEvent, setCloseBehaviour, setSampleInterval } from './lib/ipc';
+import { chatStatus, logUiEvent, setCloseBehaviour, setSampleInterval } from './lib/ipc';
 import { samplesInWindow, usePreferences, type Preferences } from './lib/preferences';
 import type { ProcessTree } from './lib/processTree';
 import type { EndProcessTarget } from './lib/termination';
@@ -49,16 +49,40 @@ export function App(): React.JSX.Element {
   const [endTarget, setEndTarget] = useState<EndProcessTarget | null>(null);
   const [openedModel, setOpenedModel] = useState<ModelSession | null>(null);
 
+  // What is loaded when the app opens, which is normally nothing: a session is
+  // reaped at startup if a previous run left one. Asked anyway, because the
+  // shell is now the thing that remembers a model across pages and starting
+  // that memory from a guess rather than from Rust is how the marker ends up
+  // describing a server that is not there.
+  useEffect(() => {
+    let cancelled = false;
+
+    chatStatus().then(
+      (open) => {
+        if (!cancelled) setOpenedModel(open);
+      },
+      () => {
+        // A status that cannot be read leaves the marker off. Drawing one for a
+        // session nobody could confirm would be the wrong way round.
+      }
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   /**
-   * Moves to another page, dropping any session the advisor opened.
+   * Moves to another page, keeping any open session.
    *
-   * Leaving the chat page ends the server — that is `Chat`'s own unmount
-   * effect, and it is what keeps a multi-gigabyte VRAM allocation from
-   * outliving the page holding it. Keeping the session object afterwards would
-   * mean returning to Chat and showing a model bar for a server that is gone.
+   * **This used to drop it**, because leaving the chat page ended the server.
+   * ADR-013 recorded that and has been reversed: the model now survives moving
+   * between tabs, so the shell holds on to what is open and hands it straight
+   * back on return. That is what makes coming back instant rather than a frame
+   * of the no-model form over a model that is loaded — and it is what the
+   * navigation's marker is drawn from while the user is somewhere else.
    */
   function navigate(next: Route): void {
-    if (route === 'chat' && next !== 'chat') setOpenedModel(null);
     setRoute(next);
   }
 
@@ -111,7 +135,12 @@ export function App(): React.JSX.Element {
           user could tab to another row's "End" button behind the dialog and
           reach it with the keyboard. */}
       <div className="contents" inert={endTarget !== null}>
-        <Navigation current={route} onNavigate={navigate} style={preferences.navigation} />
+        <Navigation
+          current={route}
+          onNavigate={navigate}
+          style={preferences.navigation}
+          modelLoaded={openedModel !== null}
+        />
 
         <main className="min-w-0 flex-1 overflow-auto px-5 py-4">
           {system.status === 'error' && (
@@ -140,6 +169,7 @@ export function App(): React.JSX.Element {
               hiddenToTray={hiddenToTray}
               onEndProcess={setEndTarget}
               openedModel={openedModel}
+              onSessionChange={setOpenedModel}
               onModelOpened={(session) => {
                 setOpenedModel(session);
                 setRoute('chat');
@@ -198,8 +228,10 @@ interface PageProps {
   hiddenToTray: boolean;
   /** Opens the confirmation dialog for a process the user wants ended. */
   onEndProcess: (target: EndProcessTarget) => void;
-  /** The session the advisor's Run control opened, if the chat is showing one. */
+  /** The session that is open, wherever it was opened from. */
   openedModel: ModelSession | null;
+  /** Records what the chat page opened, unloaded or adopted. */
+  onSessionChange: (session: ModelSession | null) => void;
   /** Takes the user to the chat with the session Run just opened. */
   onModelOpened: (session: ModelSession) => void;
 }
@@ -218,6 +250,7 @@ function Page({
   hiddenToTray,
   onEndProcess,
   openedModel,
+  onSessionChange,
   onModelOpened,
 }: PageProps): React.JSX.Element {
   switch (route) {
@@ -247,10 +280,16 @@ function Page({
       return <Ports tree={tree} onEndProcess={onEndProcess} />;
 
     case 'llm':
-      return <Llm onModelOpened={onModelOpened} />;
+      return (
+        <Llm
+          onModelOpened={onModelOpened}
+          openedModel={openedModel}
+          onSessionChange={onSessionChange}
+        />
+      );
 
     case 'chat':
-      return <Chat opened={openedModel} />;
+      return <Chat opened={openedModel} onSessionChange={onSessionChange} />;
 
     case 'settings':
       return <Settings preferences={preferences} onChange={onPreferenceChange} />;

@@ -88,6 +88,7 @@ import { formatBytes, formatDuration, formatRate } from '../lib/format';
 import {
   cancelModelDownload,
   chatOpenModel,
+  chatStatus,
   downloadModel,
   downloadSearchedModel,
   fetchLlmAdvice,
@@ -101,6 +102,7 @@ import {
   priceSearchedModel,
   searchModels,
 } from '../lib/ipc';
+import { stemOf } from '../lib/modelFile';
 import { UNREVIEWED } from '../lib/provenance';
 import { Meter } from '../components/Meter';
 
@@ -194,6 +196,24 @@ export interface LlmProps {
    * path through a second caller would be a second way in.
    */
   onModelOpened?: (session: ModelSession) => void;
+  /**
+   * The session that is open right now, or `null`.
+   *
+   * Held by the shell rather than by this page, and seeded from `chat_status`,
+   * so this and the chat page cannot disagree about what is loaded. A cell reads
+   * it to decide between offering Run and reporting the model's status; see
+   * {@link loadedCellOf} for why that decision is made once for the whole page
+   * rather than once per cell.
+   */
+  openedModel?: ModelSession | null;
+  /**
+   * Hands back what Rust says is open, once this page has asked.
+   *
+   * Asked on arrival rather than assumed from whatever the shell was holding: a
+   * server can stop on its own, and a Run control replaced by a status for a
+   * model that is no longer loaded is worse than the button it replaced.
+   */
+  onSessionChange?: (session: ModelSession | null) => void;
 }
 
 /** Renders an unknown thrown value as a message. */
@@ -224,7 +244,11 @@ async function loadAdvice(tokens: number): Promise<LoadState> {
  *
  * @param props Where an opened session should be sent.
  */
-export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
+export function Llm({
+  onModelOpened,
+  openedModel = null,
+  onSessionChange,
+}: LlmProps = {}): React.JSX.Element {
   const [contextLength, setContextLength] = useState(4096);
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   const [selected, setSelected] = useState<Selection | null>(null);
@@ -360,6 +384,9 @@ export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
   }, []);
 
   const entries = useMemo(() => indexCatalogue(catalogue), [catalogue]);
+  // Which cell, if any, is the loaded model. One derivation for the page --
+  // see `loadedCellOf` for why that is what makes "at most one" true.
+  const loadedCell = useMemo(() => loadedCellOf(entries, openedModel), [entries, openedModel]);
 
   /**
    * Starts or continues fetching one pinned file.
@@ -504,6 +531,39 @@ export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
     });
   }
 
+  // What Rust says is open, asked on arrival at this tab. The shell holds the
+  // answer; this page only reports it, so the status a cell shows and the model
+  // the chat page draws cannot come from two different ideas of the truth.
+  useEffect(() => {
+    let cancelled = false;
+
+    chatStatus().then(
+      (open) => {
+        if (!cancelled) onSessionChange?.(open);
+      },
+      () => {
+        // A status that cannot be read leaves the cells offering Run, which is
+        // the state that costs least when it is wrong: a Run on an already-open
+        // model is a wasted click, and a status on a model nothing is holding
+        // would be osstat reporting a measurement it does not have.
+      }
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, [onSessionChange]);
+
+  /**
+   * Takes the user to the chat, where the loaded model already is.
+   *
+   * Reuses the callback Run reports through, with the session the shell is
+   * already holding rather than a fresh one: there is nothing to open.
+   */
+  function showLoaded(): void {
+    if (openedModel !== null) onModelOpened?.(openedModel);
+  }
+
   /**
    * Opens a downloaded model and hands the session to the shell.
    *
@@ -581,6 +641,8 @@ export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
         onPause={pause}
         onCancel={cancel}
         onRun={run}
+        loadedCell={loadedCell}
+        onShowLoaded={showLoaded}
         fits={fits}
         onCheckFit={checkFit}
       />
@@ -600,6 +662,8 @@ export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
             onPause={pause}
             onCancel={cancel}
             onRun={run}
+            loadedCell={loadedCell}
+            onShowLoaded={showLoaded}
           />
         </>
       )}
@@ -715,6 +779,8 @@ function Matrix({
   onPause,
   onCancel,
   onRun,
+  loadedCell,
+  onShowLoaded,
 }: {
   registry: ModelRegistry;
   advice: LlmAdvice;
@@ -727,6 +793,10 @@ function Matrix({
   onPause: () => void;
   onCancel: () => void;
   onRun: (entry: ModelCatalogueEntry) => void;
+  /** The cell holding the loaded model, or `null` when none is. */
+  loadedCell: string | null;
+  /** Takes the user to the chat, where the loaded model already is. */
+  onShowLoaded: () => void;
 }): React.JSX.Element {
   const index = useMemo(() => indexResults(advice.results), [advice.results]);
 
@@ -824,6 +894,8 @@ function Matrix({
                           onPause={onPause}
                           onCancel={onCancel}
                           onRun={onRun}
+                          loaded={key === loadedCell}
+                          onShowLoaded={onShowLoaded}
                         />
                       </div>
                     </td>
@@ -851,6 +923,73 @@ const UNREVIEWED_DETAIL =
 /** How a small control in a cell is styled. Repeated on six buttons otherwise. */
 const CONTROL =
   'rounded-md border border-edge px-1.5 text-[10px] text-text-muted hover:bg-white/[0.04]';
+
+/**
+ * Which cell holds the model that is loaded, or `null` when none does.
+ *
+ * **Derived once for the whole page, deliberately.** Only one model can be
+ * loaded at a time — Rust holds one session and opening a second closes the
+ * first — so at most one cell may ever report a status, and that has to be a
+ * property of the code rather than a coincidence of the data. Asking each cell
+ * "am I the loaded one?" would make it a coincidence: two pinned files whose
+ * names happen to share a stem would both answer yes, and the page would claim
+ * to be running two models.
+ *
+ * Matched on the stem because that is all a session reports — the path it was
+ * opened from is not part of `ModelSession`, and putting it there would hand the
+ * webview a file path it has no use for. {@link stemOf} is the same derivation
+ * Rust names the session with.
+ *
+ * @param catalogue Every catalogue entry, indexed by cell.
+ * @param session What Rust says is open, or `null`.
+ * @returns The cell key of the loaded model, or `null`.
+ */
+function loadedCellOf(
+  catalogue: Map<string, ModelCatalogueEntry>,
+  session: ModelSession | null
+): string | null {
+  if (session === null) return null;
+
+  for (const [cell, entry] of catalogue) {
+    if (
+      entry.state === 'downloaded' &&
+      entry.path !== null &&
+      stemOf(entry.path) === session.modelName
+    ) {
+      return cell;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * What a cell says instead of Run while its model is the loaded one.
+ *
+ * Not a disabled Run and not a second Run. A Run control over a model that is
+ * already loaded is an invitation to load what is loaded: at best a click whose
+ * no-op is indistinguishable from a broken button, at worst a close-and-reopen
+ * that discards a live conversation to arrive back where it started. Since the
+ * session now survives navigation (ADR-013) that is no longer a rare state — it
+ * is the state the LLM tab is in whenever anyone is using the chat.
+ *
+ * Clicking it goes to the chat, which is the only thing a user can want from a
+ * model that is already running. That makes it a control rather than a label,
+ * which is why it is a `button` and says where it leads.
+ */
+function LoadedStatus({ where, onShow }: { where: string; onShow: () => void }): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      aria-label={`${where} is loaded. Go to the chat.`}
+      title="This model is loaded and holding memory. Go to the chat, or unload it there."
+      onClick={onShow}
+      className="rounded-md border border-accent bg-accent/10 px-1.5 text-[10px] text-accent hover:bg-accent/20"
+    >
+      Loaded
+    </button>
+  );
+}
 
 /**
  * Which of the six states this cell is in.
@@ -904,6 +1043,8 @@ function Acquisition({
   onPause,
   onCancel,
   onRun,
+  loaded,
+  onShowLoaded,
 }: {
   model: ModelEntry;
   quant: QuantLevel;
@@ -914,6 +1055,10 @@ function Acquisition({
   onPause: () => void;
   onCancel: () => void;
   onRun: (entry: ModelCatalogueEntry) => void;
+  /** Whether this cell is the one holding the loaded model. */
+  loaded: boolean;
+  /** Takes the user to the chat, where the loaded model already is. */
+  onShowLoaded: () => void;
 }): React.JSX.Element {
   const phase = phaseOf(entry, transfer, failure);
   const where = `${model.name} at ${quant.label}`;
@@ -984,6 +1129,10 @@ function Acquisition({
   }
 
   if (phase === 'downloaded') {
+    // Two states, not one: a downloaded model that is running says so, and only
+    // a downloaded model that is not offers to start it.
+    if (loaded) return <LoadedStatus where={where} onShow={onShowLoaded} />;
+
     return (
       <button
         type="button"
@@ -1084,6 +1233,8 @@ function SearchPanel({
   onPause,
   onCancel,
   onRun,
+  loadedCell,
+  onShowLoaded,
   fits,
   onCheckFit,
 }: {
@@ -1097,6 +1248,10 @@ function SearchPanel({
   onPause: () => void;
   onCancel: () => void;
   onRun: (entry: ModelCatalogueEntry) => void;
+  /** The cell holding the loaded model, or `null` when none is. */
+  loadedCell: string | null;
+  /** Takes the user to the chat, where the loaded model already is. */
+  onShowLoaded: () => void;
   fits: Map<string, FitState>;
   onCheckFit: (result: SearchResult) => void;
 }): React.JSX.Element {
@@ -1183,6 +1338,8 @@ function SearchPanel({
                 onPause={onPause}
                 onCancel={onCancel}
                 onRun={onRun}
+                loadedCell={loadedCell}
+                onShowLoaded={onShowLoaded}
                 fit={fits.get(cellKey(result.repo, result.file))}
                 onCheckFit={() => {
                   onCheckFit(result);
@@ -1211,6 +1368,8 @@ function SearchPanel({
                 onPause={onPause}
                 onCancel={onCancel}
                 onRun={onRun}
+                loadedCell={loadedCell}
+                onShowLoaded={onShowLoaded}
               />
             </li>
           ))}
@@ -1245,6 +1404,8 @@ function FoundRow({
   onPause,
   onCancel,
   onRun,
+  loadedCell,
+  onShowLoaded,
   fit,
   onCheckFit,
 }: {
@@ -1259,6 +1420,10 @@ function FoundRow({
   onPause: () => void;
   onCancel: () => void;
   onRun: (entry: ModelCatalogueEntry) => void;
+  /** The cell holding the loaded model, or `null` when none is. */
+  loadedCell: string | null;
+  /** Takes the user to the chat, where the loaded model already is. */
+  onShowLoaded: () => void;
   fit?: FitState | undefined;
   onCheckFit?: (() => void) | undefined;
 }): React.JSX.Element {
@@ -1317,6 +1482,8 @@ function FoundRow({
           onPause={onPause}
           onCancel={onCancel}
           onRun={onRun}
+          loadedCell={loadedCell}
+          onShowLoaded={onShowLoaded}
         />
       </span>
 
@@ -1412,6 +1579,8 @@ function FoundControl({
   onPause,
   onCancel,
   onRun,
+  loadedCell,
+  onShowLoaded,
 }: {
   name: string;
   cell: string;
@@ -1423,9 +1592,22 @@ function FoundControl({
   onPause: () => void;
   onCancel: () => void;
   onRun: (entry: ModelCatalogueEntry) => void;
+  /** The cell holding the loaded model, or `null` when none is. */
+  loadedCell: string | null;
+  /** Takes the user to the chat, where the loaded model already is. */
+  onShowLoaded: () => void;
 }): React.JSX.Element {
   if (entry !== undefined && entry.state === 'downloaded' && entry.path !== null) {
     const path = entry.path;
+
+    // The same two states the pinned matrix draws, for the same reason. A
+    // searched model is reached through a different control, not a different
+    // session -- there is one, and offering to start what is already running
+    // here would contradict the matrix a few pixels above.
+    if (cellKey(entry.key.modelId, entry.key.quantId) === loadedCell) {
+      return <LoadedStatus where={name} onShow={onShowLoaded} />;
+    }
+
     return (
       <button
         type="button"

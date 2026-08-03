@@ -159,10 +159,20 @@ The server osstat starts:
   default; osstat does not put an unrequested web app on a local port.
 - Is **never** given `--tools` or `--agent`, which enable built-in tools
   including `exec_shell_command` and `write_file`.
-- Dies when you leave the chat page, and is reaped on next launch if osstat was
-  killed before it could. Reaping re-reads the recorded PID's start time and
-  refuses on a mismatch, so a recycled PID is never signalled (threat 1's
-  identity check, reused).
+- **Keeps running until you unload the model or quit osstat.** It used to stop
+  when you left the chat page; that made the rest of the application unusable
+  while a model was loaded, and ADR-013 records the reversal. Quitting ends it
+  from `RunEvent::Exit`, and it is reaped on next launch if osstat was killed
+  before it could. Reaping re-reads the recorded PID's start time and refuses on
+  a mismatch, so a recycled PID is never signalled (threat 1's identity check,
+  reused).
+- **Holds its weights the whole time it is loaded**, which is several gigabytes
+  for a 7B model and more for a larger one. osstat's stated budget of idle RAM
+  under 150 MB describes osstat, not a model it is running for you; while one is
+  loaded the machine is holding both. The navigation marks the Chat tab for as
+  long as that is true, so a loaded model is never something osstat is holding
+  silently — but the memory is genuinely held, and Unload is how you get it
+  back without quitting.
 
 What the chat stores:
 

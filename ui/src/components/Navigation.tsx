@@ -17,6 +17,17 @@ export interface NavigationProps {
   onNavigate: (route: Route) => void;
   /** Which style to render. */
   style: NavigationStyle;
+  /**
+   * Whether a model is loaded right now.
+   *
+   * The navigation is the only thing on screen in every page, which is what
+   * makes it the place for this. A loaded model holds several gigabytes and is
+   * now kept until it is unloaded or osstat quits (ADR-013), so from any other
+   * tab there would otherwise be nothing at all to say it is there — and a
+   * multi-gigabyte allocation a monitoring utility does not mention is the one
+   * thing this application must never be.
+   */
+  modelLoaded: boolean;
 }
 
 /** Props for one entry. */
@@ -27,8 +38,33 @@ interface ItemProps {
   active: boolean;
   /** Whether to show the label beside the icon. */
   showLabel: boolean;
+  /** Whether to mark this entry as holding a loaded model. */
+  loaded: boolean;
   /** Called when picked. */
   onSelect: () => void;
+}
+
+/** What the marker is called, in the one place all three styles read it from. */
+const LOADED_LABEL = 'A model is loaded';
+
+/**
+ * The mark on the Chat entry while a model is held.
+ *
+ * A dot rather than a word: the rail style is fourteen pixels wide with no room
+ * for text, and a marker that only appeared in two of the three styles would
+ * make the styles differ in what they can tell you rather than in how they look.
+ * It is not decoration, so it is not `aria-hidden` — the accessible name is what
+ * carries it to a screen reader, where a coloured dot says nothing.
+ */
+function LoadedMark(): React.JSX.Element {
+  return (
+    <span
+      role="img"
+      aria-label={LOADED_LABEL}
+      title={LOADED_LABEL}
+      className="size-1.5 shrink-0 rounded-full bg-accent"
+    />
+  );
 }
 
 /**
@@ -37,7 +73,7 @@ interface ItemProps {
  * Unbuilt pages are dimmed but remain reachable. Disabling them would hide what
  * the app is going to be, and their placeholder pages say something useful.
  */
-function Item({ item, active, showLabel, onSelect }: ItemProps): React.JSX.Element {
+function Item({ item, active, showLabel, loaded, onSelect }: ItemProps): React.JSX.Element {
   const unbuilt = item.milestone !== undefined;
 
   return (
@@ -59,6 +95,7 @@ function Item({ item, active, showLabel, onSelect }: ItemProps): React.JSX.Eleme
         {item.icon}
       </span>
       {showLabel && <span className="truncate">{item.label}</span>}
+      {loaded && <LoadedMark />}
       {showLabel && unbuilt && (
         <span className="ml-auto rounded-full border border-edge px-1.5 font-mono text-[10px] text-text-muted">
           {item.milestone}
@@ -72,6 +109,7 @@ function Item({ item, active, showLabel, onSelect }: ItemProps): React.JSX.Eleme
 function Rail({
   current,
   onNavigate,
+  modelLoaded,
   showLabels,
 }: NavigationProps & { showLabels: boolean }): React.JSX.Element {
   return (
@@ -93,6 +131,7 @@ function Rail({
           item={item}
           active={item.route === current}
           showLabel={showLabels}
+          loaded={modelLoaded && item.route === 'chat'}
           onSelect={() => {
             onNavigate(item.route);
           }}
@@ -105,6 +144,7 @@ function Rail({
         item={SETTINGS_ITEM}
         active={current === SETTINGS_ITEM.route}
         showLabel={showLabels}
+        loaded={false}
         onSelect={() => {
           onNavigate(SETTINGS_ITEM.route);
         }}
@@ -114,7 +154,7 @@ function Rail({
 }
 
 /** A horizontal tab bar. */
-function Tabs({ current, onNavigate }: NavigationProps): React.JSX.Element {
+function Tabs({ current, onNavigate, modelLoaded }: NavigationProps): React.JSX.Element {
   const items = [...NAV_ITEMS, SETTINGS_ITEM];
 
   return (
@@ -137,10 +177,12 @@ function Tabs({ current, onNavigate }: NavigationProps): React.JSX.Element {
               active
                 ? 'border-accent text-text'
                 : 'border-transparent text-text-muted hover:text-text',
+              'flex items-center gap-2',
               unbuilt && !active ? 'opacity-45' : '',
             ].join(' ')}
           >
             {item.label}
+            {modelLoaded && item.route === 'chat' && <LoadedMark />}
           </button>
         );
       })}
