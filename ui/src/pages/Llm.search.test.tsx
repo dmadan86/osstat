@@ -9,11 +9,19 @@
  * A search result that downloaded exactly like a pinned one, with no visible
  * difference, would quietly retire a guarantee SECURITY.md still makes.
  *
- * The second idea: a searched result shows its **file size and nothing else**.
- * No fit verdict, no speed tier, no layer estimate. The advisor prices a model
- * from architecture it has not read yet, and a number derived from file size
- * and quantization bits would look like the calculator's output while being a
- * guess — the failure ADR-008 names as the worst thing this feature could do.
+ * The second idea, **corrected**: a searched result shows its file size until
+ * somebody asks for the fit, and then it shows a real verdict. This file used to
+ * assert the opposite — that a searched result must never show one — on the
+ * belief that the architecture is only available after downloading. That belief
+ * was wrong: a GGUF header sits at the *start* of the file, so Rust fetches it
+ * with a `Range` request and prices it with the same `plan_launch` a downloaded
+ * model gets. ADR-008's rule stands untouched; what changed is that the number
+ * is now measured rather than unavailable, so declining to show it is no longer
+ * the honest answer, it is just a missing feature.
+ *
+ * What must still never appear is a verdict for a header that was **not** read.
+ * A row nobody expanded, and a row whose header could not be fetched, both show
+ * the size alone — see the two tests below that hold that line.
  *
  * Assertions are on **content**, as in `Llm.download.test.tsx`: a test that
  * only checked "a section exists" would pass with the label deleted, which is
@@ -28,6 +36,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LlmAdvice } from '../bindings/LlmAdvice';
 import type { ModelCatalogueEntry } from '../bindings/ModelCatalogueEntry';
 import type { ModelRegistry } from '../bindings/ModelRegistry';
+import type { SearchedFit } from '../bindings/SearchedFit';
 import type { SearchResult } from '../bindings/SearchResult';
 
 const {
@@ -43,6 +52,7 @@ const {
   onModelFailed,
   onModelProgress,
   pauseModelDownload,
+  priceSearchedModel,
   searchModels,
 } = vi.hoisted(() => ({
   cancelModelDownload: vi.fn(),
@@ -57,6 +67,7 @@ const {
   onModelFailed: vi.fn(),
   onModelProgress: vi.fn(),
   pauseModelDownload: vi.fn(),
+  priceSearchedModel: vi.fn(),
   searchModels: vi.fn(),
 }));
 
@@ -73,6 +84,7 @@ vi.mock('../lib/ipc', () => ({
   onModelFailed,
   onModelProgress,
   pauseModelDownload,
+  priceSearchedModel,
   searchModels,
 }));
 
@@ -179,6 +191,24 @@ function result(overrides: Partial<SearchResult> = {}): SearchResult {
   };
 }
 
+/**
+ * A verdict of the shape `models_price_searched` returns.
+ *
+ * Every field is one `plan_launch` produced over a header read off the front of
+ * the file — the same call and the same struct a downloaded model is opened
+ * with. Nothing here is derived from `sizeBytes`, which is the whole point.
+ */
+function fit(overrides: Partial<SearchedFit> = {}): SearchedFit {
+  return {
+    gpuLayers: 40,
+    blockCount: 40,
+    contextLength: 8192,
+    fits: true,
+    headDimDerived: false,
+    ...overrides,
+  };
+}
+
 /** Types a term into the search box and submits it. */
 async function search(term = 'mistral'): Promise<void> {
   const user = userEvent.setup();
@@ -219,9 +249,11 @@ describe('Llm › searching Hugging Face', () => {
     expect(row).toHaveTextContent('TheOtherOne');
   });
 
-  it('does not show a fit verdict for a searched result', async () => {
-    // The advisor cannot price a model whose architecture it has not read.
-    // A verdict here would be a guess wearing the calculator's clothes.
+  it('shows no verdict for a searched result until its header is asked for', async () => {
+    // The replacement for a test that asserted a searched result must NEVER
+    // show a verdict. The line that actually matters is narrower and still
+    // holds: no verdict for a header nobody has read. An unexpanded row has not
+    // cost a request, so it has nothing to say beyond its size.
     searchModels.mockResolvedValue([result()]);
     render(<Llm />);
     await screen.findByRole('table');
@@ -231,31 +263,145 @@ describe('Llm › searching Hugging Face', () => {
     const section = resultsSection();
     await within(section).findByRole('group', { name: /Mistral-Nemo/ });
 
-    // The pinned matrix's whole vocabulary for pricing a model: the four
-    // verdict labels, the four short badges, the three speed tiers and the
-    // terms of the arithmetic. None of it is anything this page could justify
-    // for a file whose header it has not read.
+    // The vocabulary a verdict is made of. None of it can be justified before
+    // the header has been read, and none of it appears.
     for (const verdict of [
       /fits entirely in vram/i,
-      /fits across vram/i,
-      /fits in system memory/i,
-      /larger than this machine/i,
-      /\bvram\b/i,
-      /\bgpu\b/i,
-      /\bcpu\b/i,
-      /offload/i,
-      /\bfast\b/i,
-      /\bmoderate\b/i,
-      /\bslow\b/i,
-      /layer/i,
-      /kv cache/i,
+      /layers on gpu/i,
+      /rest on the cpu/i,
+      /\bcontext\b/i,
     ]) {
       expect(within(section).queryByText(verdict)).toBeNull();
     }
 
-    // And the honest positive: a size, and no second figure beside it.
     expect(section).toHaveTextContent('8.13 GB');
-    expect(within(section).getByText(/size is all osstat can say/i)).toBeInTheDocument();
+    // Nothing was fetched, which is the property that keeps a page of results
+    // from becoming a page of requests.
+    expect(priceSearchedModel).not.toHaveBeenCalled();
+  });
+
+  it('prices a searched result from its header when the row is expanded', async () => {
+    // The correction this file exists to record. The header is at the front of
+    // the file, so the verdict is the real one -- the same `plan_launch` a
+    // downloaded model is opened with, over the same bytes.
+    searchModels.mockResolvedValue([result()]);
+    priceSearchedModel.mockResolvedValue(fit());
+    render(<Llm />);
+    await screen.findByRole('table');
+
+    await search();
+
+    const user = userEvent.setup();
+    await user.click(
+      await within(resultsSection()).findByRole('button', {
+        name: /Check fit for Mistral-Nemo-Instruct-Q5_K_M\.gguf/i,
+      })
+    );
+
+    const row = await within(resultsSection()).findByRole('group', { name: /Mistral-Nemo/ });
+    await waitFor(() => {
+      expect(row).toHaveTextContent(/40 of 40 layers|fits entirely in vram/i);
+    });
+
+    // Priced from the actual result, unaltered -- Rust re-validates it, so a
+    // reshaped one would be refused and read as a broken button.
+    expect(priceSearchedModel).toHaveBeenCalledWith(result());
+  });
+
+  it('says a searched result is checking while its header is being read', async () => {
+    // A row that showed nothing between the click and the answer would read as
+    // a control that did not work, over a request that can take seconds.
+    searchModels.mockResolvedValue([result()]);
+    priceSearchedModel.mockReturnValue(new Promise(() => {}));
+    render(<Llm />);
+    await screen.findByRole('table');
+
+    await search();
+
+    const user = userEvent.setup();
+    await user.click(
+      await within(resultsSection()).findByRole('button', { name: /Check fit for Mistral-Nemo/i })
+    );
+
+    expect(await within(resultsSection()).findByText(/checking the fit/i)).toBeInTheDocument();
+  });
+
+  it('shows a partial offload as the fraction it is', async () => {
+    // `fits: false` is a warning and never a refusal -- the arithmetic is an
+    // estimate, and refusing on it would make osstat wrong in a way the user
+    // cannot override. The row has to say so rather than just failing.
+    searchModels.mockResolvedValue([result()]);
+    priceSearchedModel.mockResolvedValue(fit({ gpuLayers: 12, fits: false }));
+    render(<Llm />);
+    await screen.findByRole('table');
+
+    await search();
+
+    const user = userEvent.setup();
+    await user.click(
+      await within(resultsSection()).findByRole('button', { name: /Check fit for Mistral-Nemo/i })
+    );
+
+    const row = await within(resultsSection()).findByRole('group', { name: /Mistral-Nemo/ });
+    await waitFor(() => {
+      expect(row).toHaveTextContent(/12 of 40 layers on GPU/i);
+    });
+    expect(row).toHaveTextContent(/rest on the CPU/i);
+  });
+
+  it('falls back to the size alone when the header cannot be read', async () => {
+    // A server that ignores `Range` sends the whole file, so Rust stops at its
+    // ceiling and reports the result unpriced. Guessing a verdict from the size
+    // instead is the one failure ADR-008 names -- so the row says what it does
+    // not know, which is the honest answer and still leaves Download offered.
+    searchModels.mockResolvedValue([result()]);
+    priceSearchedModel.mockRejectedValue(
+      new Error('the header did not appear in the first 67108864 bytes of the file')
+    );
+    render(<Llm />);
+    await screen.findByRole('table');
+
+    await search();
+
+    const user = userEvent.setup();
+    await user.click(
+      await within(resultsSection()).findByRole('button', { name: /Check fit for Mistral-Nemo/i })
+    );
+
+    const row = await within(resultsSection()).findByRole('group', { name: /Mistral-Nemo/ });
+    await waitFor(() => {
+      expect(row).toHaveTextContent(/header could not be read/i);
+    });
+    expect(row).toHaveTextContent(/first 67108864 bytes/i);
+
+    // The size stays, and no verdict was invented to fill the gap.
+    expect(row).toHaveTextContent('8.13 GB');
+    expect(within(row).queryByText(/layers on gpu/i)).toBeNull();
+    expect(within(row).getByRole('button', { name: /Download Mistral-Nemo/i })).toBeInTheDocument();
+  });
+
+  it('reads a header once however often a row is opened and shut', async () => {
+    // One request per row, not one per click. This is a `Range` request against
+    // a file that can be thirty gigabytes; a toggle that re-fetched would make
+    // an idle fidget expensive.
+    searchModels.mockResolvedValue([result()]);
+    priceSearchedModel.mockResolvedValue(fit());
+    render(<Llm />);
+    await screen.findByRole('table');
+
+    await search();
+
+    const user = userEvent.setup();
+    const toggle = await within(resultsSection()).findByRole('button', {
+      name: /Check fit for Mistral-Nemo/i,
+    });
+    await user.click(toggle);
+    await user.click(toggle);
+    await user.click(toggle);
+
+    await waitFor(() => {
+      expect(priceSearchedModel).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('marks a searched model as unreviewed, distinctly from a pinned one', async () => {

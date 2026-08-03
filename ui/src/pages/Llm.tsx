@@ -41,13 +41,18 @@
  * exactly like a pinned one would quietly retire a guarantee SECURITY.md still
  * makes.
  *
- * A searched row shows its **file size and nothing else**: no verdict, no speed
- * tier, no layer count. Everything the drawer prices comes from a model's
- * architecture, which lives in the registry for the pinned models and in the
- * GGUF header for everything else — and the header only exists once the file is
- * on disk. A figure derived from size and quantization bits would look like the
- * calculator's output and be a guess, which ADR-008 names as the worst thing
- * this feature could do.
+ * A searched row shows its file size, and **Check fit** reads the rest. A GGUF
+ * header sits at the start of the file, so Rust fetches it with a `Range`
+ * request and prices it with the same launch arithmetic a downloaded model gets
+ * — the verdict is measured, not estimated, and ADR-008's rule against a figure
+ * derived from size and quantization bits is kept by reading the architecture
+ * rather than by declining to show one.
+ *
+ * That read is **per row and on demand**, never for a whole page of results: it
+ * is a request against a multi-gigabyte file, and firing one for every row a
+ * search returned would spend a dozen round trips on rows nobody looked at. A
+ * row whose header cannot be read — an unreachable file, or a server that
+ * ignores `Range` — goes back to showing its size alone and says which.
  *
  * Like Ports this fetches rather than following a tick: the answer only
  * changes when the hardware probe finishes or the user moves the context
@@ -65,6 +70,7 @@ import type { ModelKey } from '../bindings/ModelKey';
 import type { ModelRegistry } from '../bindings/ModelRegistry';
 import type { ModelSession } from '../bindings/ModelSession';
 import type { QuantLevel } from '../bindings/QuantLevel';
+import type { SearchedFit } from '../bindings/SearchedFit';
 import type { SearchResult } from '../bindings/SearchResult';
 import {
   budgetCaveat,
@@ -92,6 +98,7 @@ import {
   onModelFailed,
   onModelProgress,
   pauseModelDownload,
+  priceSearchedModel,
   searchModels,
 } from '../lib/ipc';
 import { Meter } from '../components/Meter';
@@ -149,6 +156,22 @@ type SearchState =
   | { status: 'found'; results: SearchResult[] }
   | { status: 'empty' }
   | { status: 'failed'; message: string };
+
+/**
+ * What pricing one searched result has got to.
+ *
+ * A row with no entry has not been asked about — which is not the same as
+ * `unpriced`, and rendering them alike would turn "nobody looked" into "osstat
+ * could not tell", the one being an absence and the other a finding.
+ *
+ * `unpriced` carries its reason because the reasons differ in what they suggest
+ * doing: a file that could not be reached is worth trying again, and a server
+ * that ignores `Range` never will be.
+ */
+type FitState =
+  | { status: 'checking' }
+  | { status: 'priced'; fit: SearchedFit }
+  | { status: 'unpriced'; message: string };
 
 /** Which cell the drawer is open on. */
 interface Selection {
@@ -211,6 +234,7 @@ export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
   const [runProblem, setRunProblem] = useState<string | null>(null);
   const [term, setTerm] = useState('');
   const [found, setFound] = useState<SearchState>({ status: 'idle' });
+  const [fits, setFits] = useState<Map<string, FitState>>(new Map());
 
   useEffect(() => {
     let cancelled = false;
@@ -405,12 +429,47 @@ export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
     });
   }
 
+  /**
+   * Prices one searched result by having Rust read its header.
+   *
+   * Called when a row is expanded and **only** then. This is a network request
+   * against a file that may be thirty gigabytes, and the row it belongs to is
+   * the one somebody asked about; doing it for every result a search returned
+   * would spend a dozen round trips on rows nobody opened.
+   *
+   * Already-answered rows are left alone, so collapsing a row and opening it
+   * again costs nothing. A failure is kept rather than dropped, for the same
+   * reason: a row that re-fetched on every open would ask an unreachable host
+   * again on each one.
+   */
+  function checkFit(result: SearchResult): void {
+    const cell = cellKey(result.repo, result.file);
+    if (fits.has(cell)) return;
+
+    setFits((held) => new Map(held).set(cell, { status: 'checking' }));
+
+    priceSearchedModel(result).then(
+      (fit) => {
+        setFits((held) => new Map(held).set(cell, { status: 'priced', fit }));
+      },
+      (error: unknown) => {
+        setFits((held) =>
+          new Map(held).set(cell, { status: 'unpriced', message: messageOf(error) })
+        );
+      }
+    );
+  }
+
   /** Runs the search, or reports why it could not be made. */
   function runSearch(): void {
     const query = term.trim();
     if (query === '') return;
 
     setFound({ status: 'searching' });
+    // A new search replaces the rows, so verdicts belonging to the old ones
+    // would be answers to questions no longer on screen -- and a cell key
+    // repeated across two searches would show the earlier search's verdict.
+    setFits(new Map());
     searchModels(query).then(
       (results) => {
         setFound(results.length === 0 ? { status: 'empty' } : { status: 'found', results });
@@ -521,6 +580,8 @@ export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
         onPause={pause}
         onCancel={cancel}
         onRun={run}
+        fits={fits}
+        onCheckFit={checkFit}
       />
 
       {state.status === 'ready' && (
@@ -1007,17 +1068,20 @@ function Acquisition({
  * two lists carry different guarantees. Everything in the matrix was pinned in
  * a reviewed pull request; everything here is whatever the search returned.
  *
- * **A result shows its file size and nothing else.** No verdict, no speed, no
- * layer count. The advisor prices a model from its architecture — which lives
- * in the registry for the pinned models and in the GGUF header for everything
- * else, and the header only exists once the file is on disk. A figure derived
- * from size and quantization bits would look like the calculator's output and
- * be a guess, which ADR-008 names as the worst thing this feature could do.
- * After the download the header is read and the model is priced properly.
+ * **A result shows its file size until somebody asks for more.** Check fit has
+ * Rust read the GGUF header off the front of the file with a `Range` request and
+ * price it with the launch arithmetic a downloaded model gets, so the verdict is
+ * the real one rather than a figure derived from size and quantization bits —
+ * which is what ADR-008 names as the worst thing this feature could do.
+ *
+ * The read is per row and only when a row is opened. One request against a
+ * multi-gigabyte file is cheap; a dozen fired at a page of results nobody
+ * expanded is not.
  *
  * The downloaded list below the results is not redundant with them: the results
  * live only as long as the term does, and a model's tier has to outlive the
- * search that found it or a restart would lose it.
+ * search that found it or a restart would lose it. Those rows offer no Check fit
+ * — a downloaded model is priced from the file itself the moment it is Run.
  */
 function SearchPanel({
   term,
@@ -1030,6 +1094,8 @@ function SearchPanel({
   onPause,
   onCancel,
   onRun,
+  fits,
+  onCheckFit,
 }: {
   term: string;
   state: SearchState;
@@ -1041,6 +1107,8 @@ function SearchPanel({
   onPause: () => void;
   onCancel: () => void;
   onRun: (entry: ModelCatalogueEntry) => void;
+  fits: Map<string, FitState>;
+  onCheckFit: (result: SearchResult) => void;
 }): React.JSX.Element {
   const shown = state.status === 'found' ? state.results : [];
   const alreadyShown = new Set(shown.map((result) => cellKey(result.repo, result.file)));
@@ -1083,8 +1151,9 @@ function SearchPanel({
 
       <p className="mt-2 text-[11px] text-neutral-500">
         Anything found here is checked against a hash Hugging Face reports beside the file, which is
-        a weaker promise than the pinned models below carry. The size is all osstat can say about a
-        file it has not opened yet; once downloaded it is measured properly.
+        a weaker promise than the pinned models below carry. Check fit reads the header off the
+        front of a file without downloading it, and prices it exactly as a downloaded model is
+        priced.
       </p>
 
       {state.status === 'searching' && (
@@ -1124,6 +1193,10 @@ function SearchPanel({
                 onPause={onPause}
                 onCancel={onCancel}
                 onRun={onRun}
+                fit={fits.get(cellKey(result.repo, result.file))}
+                onCheckFit={() => {
+                  onCheckFit(result);
+                }}
               />
             </li>
           ))}
@@ -1164,6 +1237,11 @@ function SearchPanel({
  * attached to the model after the search that found it is gone — and so a
  * screen reader hears it as part of the same group as the control, which is the
  * only arrangement in which it can inform the decision it is there to inform.
+ *
+ * `onCheckFit` is absent for a row that came from the catalogue rather than from
+ * a search: a downloaded model is priced from the file on disk when it is Run,
+ * and fetching its header over the network to say the same thing would be a
+ * request for nothing.
  */
 function FoundRow({
   name,
@@ -1177,6 +1255,8 @@ function FoundRow({
   onPause,
   onCancel,
   onRun,
+  fit,
+  onCheckFit,
 }: {
   name: string;
   cell: string;
@@ -1189,7 +1269,11 @@ function FoundRow({
   onPause: () => void;
   onCancel: () => void;
   onRun: (entry: ModelCatalogueEntry) => void;
+  fit?: FitState | undefined;
+  onCheckFit?: (() => void) | undefined;
 }): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+
   return (
     <div
       role="group"
@@ -1213,6 +1297,24 @@ function FoundRow({
         {UNREVIEWED}
       </span>
 
+      {onCheckFit !== undefined && (
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-label={`Check fit for ${name}`}
+          onClick={() => {
+            // The fetch is fired on the way open and never on the way shut, and
+            // `onCheckFit` ignores a row it has already answered — so this
+            // costs one request per row however many times it is toggled.
+            if (!open) onCheckFit();
+            setOpen(!open);
+          }}
+          className="rounded-md border border-edge px-1.5 text-[10px] text-neutral-400 hover:bg-white/[0.04]"
+        >
+          Check fit
+        </button>
+      )}
+
       <span className="ml-auto">
         <FoundControl
           name={name}
@@ -1227,7 +1329,73 @@ function FoundRow({
           onRun={onRun}
         />
       </span>
+
+      {open && (
+        <span className="w-full border-t border-edge pt-1.5">
+          <FoundFit fit={fit} name={name} />
+        </span>
+      )}
     </div>
+  );
+}
+
+/**
+ * The verdict for one searched row, or why there is not one.
+ *
+ * Every figure here came out of the same `plan_launch` a downloaded model is
+ * opened with, over a header read from the front of the actual file. Nothing is
+ * derived from the file size, so the wording can be the plain wording the
+ * session banner uses rather than a hedged version of it — an estimate dressed
+ * as a measurement is the failure ADR-008 names, and the way to avoid it is to
+ * measure, which is what happened.
+ *
+ * An unpriced row falls back to the size the search reported and says which of
+ * the reasons applied. It never shows a partial verdict: half an answer here
+ * would be the guess the whole design refuses.
+ */
+function FoundFit({ fit, name }: { fit: FitState | undefined; name: string }): React.JSX.Element {
+  if (fit === undefined || fit.status === 'checking') {
+    return (
+      <span role="status" className="text-[11px] text-neutral-500">
+        Checking the fit… osstat is reading this file&rsquo;s header without downloading it.
+      </span>
+    );
+  }
+
+  if (fit.status === 'unpriced') {
+    return (
+      <span className="text-[11px] text-amber-400/80">
+        The header could not be read, so {name} shows its size and nothing more: {fit.message}
+      </span>
+    );
+  }
+
+  const { gpuLayers, blockCount, contextLength, fits, headDimDerived } = fit.fit;
+
+  return (
+    <span className="flex flex-col gap-1 text-[11px]">
+      <span className={fits ? 'text-emerald-400/90' : 'text-amber-400/90'}>
+        {fits
+          ? `Fits entirely in VRAM: all ${String(blockCount)} layers on GPU.`
+          : `${String(gpuLayers)} of ${String(blockCount)} layers on GPU, the rest on the CPU.`}
+      </span>
+      <span className="text-neutral-500">
+        Context {formatTokens(contextLength)}. Read from this file&rsquo;s own header and priced by
+        the same arithmetic the pinned models use — not estimated from its size.
+      </span>
+      {!fits && (
+        <span className="text-neutral-500">
+          Generation will be slower. The figure is an estimate, which is why this is a warning
+          rather than a refusal.
+        </span>
+      )}
+      {headDimDerived && (
+        <span className="text-neutral-600">
+          This model&rsquo;s header declares no attention key length, so the KV-cache arithmetic
+          derived one. That is correct for standard attention and wrong for models that diverge.
+        </span>
+      )}
+    </span>
   );
 }
 

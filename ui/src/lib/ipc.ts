@@ -36,6 +36,7 @@ import type { ModelFailure } from '../bindings/ModelFailure';
 import type { ModelProgress } from '../bindings/ModelProgress';
 import type { ModelRegistry } from '../bindings/ModelRegistry';
 import type { ModelSession } from '../bindings/ModelSession';
+import type { SearchedFit } from '../bindings/SearchedFit';
 import type { SearchResult } from '../bindings/SearchResult';
 import type { PortRecord } from '../bindings/PortRecord';
 import type { ProcessDiff } from '../bindings/ProcessDiff';
@@ -76,6 +77,7 @@ export const COMMANDS = {
   modelsCatalogue: 'models_catalogue',
   modelsDownload: 'models_download',
   modelsSearch: 'models_search',
+  modelsPriceSearched: 'models_price_searched',
   modelsDownloadSearched: 'models_download_searched',
   modelsPause: 'models_pause',
   modelsCancel: 'models_cancel',
@@ -382,6 +384,29 @@ export async function downloadModel(modelId: string, quantId: string): Promise<v
  */
 export function searchModels(query: string): Promise<SearchResult[]> {
   return invoke<SearchResult[]>(COMMANDS.modelsSearch, { query });
+}
+
+/**
+ * Prices one searched result, having read its header off the front of the file.
+ *
+ * A GGUF header sits at the start of the file, so Rust fetches it with a `Range`
+ * request and hands it to the same launch arithmetic a downloaded model gets.
+ * **The verdict is therefore the real one, not an estimate** — there is one
+ * calculator in the codebase and this uses it.
+ *
+ * One network request against a multi-gigabyte file, so call it **on demand**
+ * for the result somebody asked about, never in a loop over a page of them.
+ *
+ * Rejects if the GPU probe has not finished, the file could not be reached, or
+ * its header did not arrive within the ceiling Rust reads to — which is what a
+ * server that ignores `Range` produces. A rejection means "unpriced": show the
+ * size alone and say why, rather than guessing a verdict from it.
+ *
+ * @param result A result {@link searchModels} returned, unaltered. Rust checks
+ *   it again rather than trusting it, so an edited one is refused.
+ */
+export function priceSearchedModel(result: SearchResult): Promise<SearchedFit> {
+  return invoke<SearchedFit>(COMMANDS.modelsPriceSearched, { result });
 }
 
 /**
