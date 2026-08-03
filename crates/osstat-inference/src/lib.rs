@@ -36,6 +36,7 @@ pub mod manifest;
 pub mod model_store;
 pub mod models;
 pub mod relocate;
+pub mod search;
 pub mod select;
 pub mod store;
 pub mod target;
@@ -51,6 +52,7 @@ pub use manifest::{Companion, RuntimeArtifact, RuntimeManifest, pinned_manifest}
 pub use model_store::{ModelRecord, ModelStore};
 pub use models::{ModelKey, download_url};
 pub use relocate::{MovePlan, move_library, plan_move};
+pub use search::{SearchResult, search};
 pub use select::{Backend, CudaChoice, GpuCapability, cuda_is_offered, select};
 pub use store::{InstalledRuntime, RuntimeStore};
 pub use target::{Target, TargetArch, TargetOs};
