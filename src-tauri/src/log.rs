@@ -572,6 +572,26 @@ pub fn search_failed(kind: &'static str) {
     warn!(kind, "model search failed");
 }
 
+/// A searched file's header was read off the front of it, in seconds.
+///
+/// The duration is the point: this is a `Range` request against a file that may
+/// be thirty gigabytes, and "how long does pricing a result take" is the one
+/// question the line can answer. **Never the repository or the file name** — the
+/// URL it fetched is built from what the user searched for, so naming it here
+/// would record the browsing history [`search_finished`] is careful not to.
+pub fn header_fetched(seconds: u64) {
+    info!(seconds, "remote model header read");
+}
+
+/// A searched file's header could not be read, so the result stays unpriced.
+///
+/// `kind` is
+/// [`RemoteHeaderError::kind`](osstat_chat::RemoteHeaderError::kind), not the
+/// error's `Display`, for the same reason [`search_failed`] takes a kind.
+pub fn header_fetch_failed(kind: &'static str) {
+    warn!(kind, "remote model header could not be read");
+}
+
 /// An inference runtime is being fetched.
 ///
 /// `cuda` is the only interesting fact about which one: it is the difference
@@ -723,6 +743,8 @@ mod tests {
         download_cancelled();
         search_finished(120, 3);
         search_failed("http_status");
+        header_fetched(6);
+        header_fetch_failed("header_too_large");
         runtime_acquiring(true);
         runtime_acquired(537_835_790, 94);
         runtime_acquire_failed("http_status");

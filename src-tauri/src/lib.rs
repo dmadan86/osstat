@@ -246,6 +246,7 @@ pub fn run() -> tauri::Result<()> {
             models::models_catalogue,
             models::models_download,
             models::models_search,
+            models::models_price_searched,
             models::models_download_searched,
             models::models_pause,
             models::models_cancel,

@@ -753,6 +753,108 @@ pub async fn models_search(query: String) -> Result<Vec<SearchResult>, String> {
     }
 }
 
+/// What the advisor makes of a searched file, having read its header.
+///
+/// Every field comes out of [`osstat_chat::plan_launch`] or out of the header it
+/// was given. Nothing here is derived from the file size and a quantization tag
+/// — that guess is what ADR-008 names as the worst thing this feature could do,
+/// and the reason it is not needed is that the header was read rather than
+/// guessed at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct SearchedFit {
+    /// Layers that would be offloaded to the GPU — what `-ngl` would be given.
+    pub gpu_layers: u32,
+    /// The model's transformer block count, so a partial offload can be shown
+    /// as the fraction it is rather than as a bare number.
+    pub block_count: u32,
+    /// The context window that would be allocated.
+    pub context_length: u32,
+    /// Whether every layer fitted. `false` is a warning, never a refusal.
+    pub fits: bool,
+    /// Whether the KV-cache arithmetic rested on a derived head dimension.
+    ///
+    /// Travels for the same reason it does on [`crate::chat::ModelSession`]: a
+    /// derived figure is right for standard attention and wrong for models that
+    /// diverge, and a mis-sized cache is otherwise a mystery rather than a
+    /// diagnosis.
+    pub head_dim_derived: bool,
+}
+
+/// Prices one searched file, by reading the header off the front of it.
+///
+/// **This is the same verdict a downloaded model gets.** A GGUF header sits at
+/// the start of the file, so the architecture can be fetched with a `Range`
+/// request without the weights behind it, and then handed to the very
+/// [`osstat_chat::plan_launch`] that [`crate::chat::chat_open_model`] hands a
+/// locally-read header to. There is one calculator and one launch plan in the
+/// codebase; a searched model and the same file once downloaded cannot disagree,
+/// because nothing here does any arithmetic of its own.
+///
+/// Called **per result and on demand**, never for a whole page of them: this is
+/// a network request against a multi-gigabyte file, and making one for every row
+/// a search returned would spend a dozen round trips on rows nobody looked at.
+///
+/// `result` has been through the webview, so it is checked again rather than
+/// trusted — the same reason [`models_download_searched`] checks it. A `Range`
+/// request is still a request, and a repository and file interpolated into a URL
+/// without validation would be the URL-taking command ADR-012 rests on there not
+/// being.
+///
+/// # Errors
+///
+/// If the result is not one a search could have produced, the GPU probe has not
+/// finished, the file could not be reached, or its header is not readable within
+/// the ceiling — the last being what a server that ignores `Range` produces. The
+/// caller shows the size alone in every one of those cases.
+#[tauri::command]
+pub async fn models_price_searched(
+    sampler: State<'_, crate::sampler::Sampler>,
+    result: SearchResult,
+) -> Result<SearchedFit, String> {
+    if !result.is_well_formed() {
+        return Err("that result cannot be priced: it is not a whole, hashed GGUF file from a Hugging Face repository".to_owned());
+    }
+
+    // Read before the request rather than after it, for the same reason
+    // `llm_advice` and `chat_open_model` refuse to answer early: pricing a model
+    // against "no GPU" on a machine that has one is a confident wrong answer,
+    // and it would be the confident wrong answer the user acts on.
+    let devices = sampler.devices().ok_or_else(|| {
+        crate::log::header_fetch_failed("probe_unfinished");
+        "the GPU probe has not finished yet".to_owned()
+    })?;
+    let budget = osstat_llm::calculator::select_gpu_budget(&devices);
+
+    let url = download_url(&result.repo, &result.file);
+    let started = Instant::now();
+
+    let model = osstat_chat::fetch_header(&reqwest::Client::new(), &url)
+        .await
+        .map_err(|error| {
+            // The kind and nothing else. The URL this failed on is built from a
+            // repository and a file name, which is what the user searched for.
+            crate::log::header_fetch_failed(error.kind());
+            error.to_string()
+        })?;
+
+    crate::log::header_fetched(started.elapsed().as_secs());
+
+    // The size the search reported, which is the size the loader will read —
+    // the same figure `chat_open_model` takes from the file's metadata.
+    let plan = osstat_chat::plan_launch(&model, result.size_bytes, budget);
+
+    Ok(SearchedFit {
+        gpu_layers: plan.gpu_layers,
+        block_count: model.block_count,
+        context_length: plan.context_length,
+        fits: plan.fits,
+        head_dim_derived: model.head_dim_derived,
+    })
+}
+
 /// The cell a searched file occupies in the index.
 ///
 /// Repository and file name, which cannot collide with a registry cell because
