@@ -19,6 +19,8 @@ const HUGGING_FACE: &str = "https://huggingface.co";
 
 /// Which cell of the fit matrix a file belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct ModelKey {
     /// The model id from `osstat-llm`'s registry, e.g. `qwen2.5-7b`.

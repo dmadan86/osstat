@@ -56,11 +56,16 @@ fn available_space(path: &Path) -> u64 {
 
 /// Refuses if `needed` bytes are not free at `path`.
 ///
+/// Public because a model download is checked the same way from the Tauri
+/// layer, which knows the target folder this crate does not. Duplicating it
+/// there would mean a second copy of the walk-up-to-an-existing-ancestor rule
+/// and a second dependency on `fs4`.
+///
 /// # Errors
 ///
 /// [`AcquireError::NotEnoughSpace`], naming both figures so the user can see
 /// how far short they are rather than being told only that it failed.
-fn require_space(path: &Path, needed: u64) -> Result<(), AcquireError> {
+pub fn require_space(path: &Path, needed: u64) -> Result<(), AcquireError> {
     let available = available_space(path);
 
     if available < needed {

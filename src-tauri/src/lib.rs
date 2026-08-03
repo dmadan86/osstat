@@ -10,6 +10,7 @@
 
 pub mod chat;
 pub mod commands;
+pub mod models;
 pub mod ports;
 pub mod runtime;
 pub mod sampler;
@@ -106,12 +107,14 @@ pub fn run() -> tauri::Result<()> {
             app.manage(CloseSetting::default());
             app.manage(PortInspector::default());
 
-            // Conversations and the session record both live under app data.
-            // A directory that cannot be resolved leaves chat unavailable
-            // rather than stopping the app from starting: osstat is a system
-            // monitor first, and the tray and the sampler do not depend on it.
+            // Conversations, the session record and the index of downloaded
+            // models all live under app data. A directory that cannot be
+            // resolved leaves chat and downloads unavailable rather than
+            // stopping the app from starting: osstat is a system monitor
+            // first, and the tray and the sampler do not depend on either.
             match app.path().app_data_dir() {
                 Ok(root) => {
+                    app.manage(models::ModelState::new(root.clone()));
                     app.manage(chat::ChatState::new(root));
                     // Before anything else can start a server: an osstat that
                     // crashed mid-session left one holding VRAM, and this is
@@ -198,6 +201,14 @@ pub fn run() -> tauri::Result<()> {
             chat::chat_list,
             chat::chat_load,
             chat::chat_delete,
+            models::models_catalogue,
+            models::models_download,
+            models::models_cancel,
+            models::models_delete,
+            models::models_folder,
+            models::models_set_folder,
+            models::models_plan_move,
+            models::models_move,
             commands::set_sample_interval,
             commands::set_sampling_paused,
             commands::set_close_behaviour,

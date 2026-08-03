@@ -41,7 +41,7 @@ pub mod store;
 pub mod target;
 pub mod unpack;
 
-pub use acquire::{Stage, acquire, resolve};
+pub use acquire::{Stage, acquire, require_space, resolve};
 pub use download::{Progress, download_resumable, download_verified, sha256_file};
 pub use error::AcquireError;
 pub use manifest::{Companion, RuntimeArtifact, RuntimeManifest, pinned_manifest};
