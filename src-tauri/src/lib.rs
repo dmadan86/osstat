@@ -8,6 +8,7 @@
 //! Keeping it this thin is what allows the same core to back a headless CLI
 //! later without moving any logic.
 
+pub mod chat;
 pub mod commands;
 pub mod ports;
 pub mod runtime;
@@ -105,6 +106,23 @@ pub fn run() -> tauri::Result<()> {
             app.manage(CloseSetting::default());
             app.manage(PortInspector::default());
 
+            // Conversations and the session record both live under app data.
+            // A directory that cannot be resolved leaves chat unavailable
+            // rather than stopping the app from starting: osstat is a system
+            // monitor first, and the tray and the sampler do not depend on it.
+            match app.path().app_data_dir() {
+                Ok(root) => {
+                    app.manage(chat::ChatState::new(root));
+                    // Before anything else can start a server: an osstat that
+                    // crashed mid-session left one holding VRAM, and this is
+                    // the only run that will ever be in a position to end it.
+                    chat::reap_orphan(app.handle());
+                }
+                Err(error) => {
+                    eprintln!("osstat: chat is unavailable, no app data directory: {error}");
+                }
+            }
+
             // A tray that could not be created is logged and moved past. An app
             // without a tray icon still works; an app that refuses to start
             // does not.
@@ -173,6 +191,13 @@ pub fn run() -> tauri::Result<()> {
             runtime::runtime_status,
             runtime::acquire_runtime,
             runtime::delete_runtime,
+            chat::chat_open_model,
+            chat::chat_send,
+            chat::chat_stop,
+            chat::chat_close,
+            chat::chat_list,
+            chat::chat_load,
+            chat::chat_delete,
             commands::set_sample_interval,
             commands::set_sampling_paused,
             commands::set_close_behaviour,

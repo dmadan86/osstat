@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "crates/osstat-chat",
   "crates/osstat-core",
   "crates/osstat-inference",
   "crates/osstat-llm",
@@ -18,6 +19,7 @@ homepage = "https://github.com/dmadan86/osstat"
 authors = ["osstat contributors"]
 
 [workspace.dependencies]
+osstat-chat = { path = "crates/osstat-chat", version = "0.1.0" }
 osstat-core = { path = "crates/osstat-core", version = "0.1.0" }
 osstat-inference = { path = "crates/osstat-inference", version = "0.1.0" }
 osstat-llm = { path = "crates/osstat-llm", version = "0.1.0" }

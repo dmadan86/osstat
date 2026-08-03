@@ -68,6 +68,24 @@ export function formatFraction(fraction: number): string {
 }
 
 /**
+ * Formats a whole count with thousands separators.
+ *
+ * Grouped by hand rather than through `toLocaleString`, so the string does not
+ * change with the machine's locale — `1,048 of 4,096 tokens` is asserted on in
+ * tests and read off a meter, and a separator that varied by host would make
+ * both unstable.
+ *
+ * @param value A count; fractions are rounded.
+ * @returns A string such as `4,096`.
+ */
+export function formatCount(value: number): string {
+  if (!Number.isFinite(value)) return '—';
+  return Math.round(value)
+    .toString()
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+/**
  * Formats an elapsed time in coarse, human units.
  *
  * Deliberately imprecise above an hour: nobody reads uptime to the second, and

@@ -12,7 +12,7 @@
  */
 
 /** Every page in the app. */
-export type Route = 'overview' | 'processes' | 'ports' | 'cleaner' | 'llm' | 'settings';
+export type Route = 'overview' | 'processes' | 'ports' | 'cleaner' | 'llm' | 'chat' | 'settings';
 
 /** One entry in the navigation. */
 export interface NavItem {
@@ -38,6 +38,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { route: 'ports', label: 'Ports', icon: '⇄' },
   { route: 'cleaner', label: 'Cleaner', icon: '✦', milestone: 'M3' },
   { route: 'llm', label: 'LLM advisor', icon: '◇' },
+  { route: 'chat', label: 'Chat', icon: '❝' },
 ];
 
 /** Settings, kept apart from the capabilities in every navigation style. */

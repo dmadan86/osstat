@@ -24,6 +24,7 @@ default = []
 # (ADR-002). Never enabled for a shipped build.
 ts-bindings = [
   "dep:ts-rs",
+  "osstat-chat/ts-bindings",
   "osstat-core/ts-bindings",
   "osstat-inference/ts-bindings",
   "osstat-llm/ts-bindings",
@@ -34,6 +35,7 @@ ts-bindings = [
 tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
+osstat-chat = { workspace = true }
 osstat-core = { workspace = true }
 osstat-inference = { workspace = true }
 osstat-llm = { workspace = true }
@@ -44,7 +46,13 @@ serde_json = { workspace = true }
 tauri = { version = "2.11.5", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
+# Already in Cargo.lock through Tauri itself; `sync` for the one-shot channel
+# that stops a reply, `macros` for the `select!` that watches it.
+tokio = { version = "1", features = ["sync", "macros"] }
 ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true
