@@ -383,6 +383,7 @@ mod tests {
             size_bytes: u64::try_from(bytes.len()).unwrap(),
             publisher: "bartowski".to_owned(),
             repo: format!("bartowski/{model_id}-GGUF"),
+            provenance: crate::model_store::Provenance::Pinned,
         }
     }
 

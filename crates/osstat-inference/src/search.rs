@@ -95,6 +95,38 @@ pub struct SearchResult {
     pub quant_hint: Option<String>,
 }
 
+impl SearchResult {
+    /// Whether this is a result [`search`] could have produced.
+    ///
+    /// Asked again at the point of download, because by then the value has been
+    /// through the webview. ADR-012 rests on there being no command that takes a
+    /// URL, and a result whose `repo` and `file` are interpolated into one is
+    /// exactly as good as a URL unless both are checked. A compromised webview
+    /// must not be able to name a path, an origin, or a file with no usable
+    /// hash.
+    ///
+    /// The same predicates the search itself filtered on, so the two cannot
+    /// drift apart into a gap that only the second caller can reach.
+    #[must_use]
+    pub fn is_well_formed(&self) -> bool {
+        is_plausible_repo(&self.repo)
+            && is_safe_relative_path(&self.file)
+            && is_gguf(&self.file)
+            && !is_multi_part(&self.file)
+            && is_sha256(&self.sha256)
+            && self.size_bytes > 0
+    }
+
+    /// The name the file would be saved under, without any folders above it.
+    ///
+    /// A repository may hold `Q4_K_M/model.gguf`; the local library is flat, and
+    /// nothing here reconstructs a directory tree from a remote path.
+    #[must_use]
+    pub fn file_name(&self) -> &str {
+        self.file.rsplit('/').next().unwrap_or(&self.file)
+    }
+}
+
 /// One repository in the search listing.
 ///
 /// Every field optional so a single odd entry cannot fail the whole response;
@@ -291,6 +323,24 @@ fn is_plausible_repo(id: &str) -> bool {
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+}
+
+/// Whether `file` is a relative path that stays inside the repository.
+///
+/// Rejects an empty segment, `.`, `..`, a leading slash, a backslash and a
+/// drive letter. It is half of one URL and its last segment names a file that
+/// will be created on the user's disk, so neither half may escape.
+fn is_safe_relative_path(file: &str) -> bool {
+    !file.is_empty()
+        && !file.starts_with('/')
+        && !file.contains('\\')
+        && !file.contains(':')
+        && !file.contains('?')
+        && !file.contains('#')
+        && !file.chars().any(char::is_control)
+        && file
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
 /// Whether a path names a GGUF file.
@@ -602,6 +652,119 @@ mod tests {
             None,
             "a hint was invented for a name that carries no tag"
         );
+    }
+
+    #[tokio::test]
+    async fn a_searched_download_still_refuses_a_hash_mismatch() {
+        // The weaker guarantee is about WHERE the hash came from, not about
+        // whether it is checked. A corrupted transfer must still be rejected.
+        //
+        // Against `download_resumable` itself, which is the function the
+        // searched-download command reuses unchanged — so this is the real
+        // check rather than a restatement of it.
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("searched.gguf");
+        let part = destination.with_extension("part");
+
+        let result = SearchResult {
+            repo: "bartowski/Test-GGUF".to_owned(),
+            publisher: "bartowski".to_owned(),
+            file: "Test-Q4_K_M.gguf".to_owned(),
+            size_bytes: 3,
+            sha256: oid('a'),
+            quant_hint: Some("Q4_K_M".to_owned()),
+        };
+
+        // Three bytes that are not what the oid claims.
+        let origin = serve(vec![("/Test-Q4_K_M.gguf", "abc".to_owned())]);
+        let url = format!("{origin}/Test-Q4_K_M.gguf");
+
+        let error = crate::download::download_resumable(
+            &reqwest::Client::new(),
+            &url,
+            &part,
+            &destination,
+            &result.sha256,
+            result.size_bytes,
+            &mut |_| {},
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(error, AcquireError::ChecksumMismatch { .. }));
+        assert!(!error.is_retryable(), "a mismatch must not invite a retry");
+        assert!(
+            !destination.exists(),
+            "a searched download that failed verification was kept"
+        );
+    }
+
+    #[test]
+    fn a_result_the_search_would_not_have_produced_is_refused_at_download_time() {
+        // By the time this is asked the value has been through the webview.
+        // ADR-012 rests on there being no command that takes a URL, and a
+        // `repo` and `file` interpolated into one are a URL unless checked.
+        let good = SearchResult {
+            repo: "bartowski/Test-GGUF".to_owned(),
+            publisher: "bartowski".to_owned(),
+            file: "Test-Q4_K_M.gguf".to_owned(),
+            size_bytes: 4200,
+            sha256: oid('a'),
+            quant_hint: Some("Q4_K_M".to_owned()),
+        };
+        assert!(good.is_well_formed());
+
+        for bad in [
+            SearchResult {
+                repo: "../../evil".to_owned(),
+                ..good.clone()
+            },
+            SearchResult {
+                file: "../../../etc/passwd.gguf".to_owned(),
+                ..good.clone()
+            },
+            SearchResult {
+                file: "..\\..\\Windows\\System32\\x.gguf".to_owned(),
+                ..good.clone()
+            },
+            SearchResult {
+                file: "model.safetensors".to_owned(),
+                ..good.clone()
+            },
+            SearchResult {
+                file: "Test-00001-of-00002.gguf".to_owned(),
+                ..good.clone()
+            },
+            SearchResult {
+                sha256: "deadbeef".to_owned(),
+                ..good.clone()
+            },
+            SearchResult {
+                size_bytes: 0,
+                ..good.clone()
+            },
+        ] {
+            assert!(
+                !bad.is_well_formed(),
+                "a result the search would never produce was accepted: {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_in_a_subdirectory_is_saved_under_its_own_name() {
+        // The local library is flat. Nothing rebuilds a remote directory tree.
+        let result = SearchResult {
+            repo: "bartowski/Test-GGUF".to_owned(),
+            publisher: "bartowski".to_owned(),
+            file: "Q4_K_M/model.gguf".to_owned(),
+            size_bytes: 4200,
+            sha256: oid('a'),
+            quant_hint: Some("Q4_K_M".to_owned()),
+        };
+
+        assert!(result.is_well_formed());
+        assert_eq!(result.file_name(), "model.gguf");
     }
 
     #[test]

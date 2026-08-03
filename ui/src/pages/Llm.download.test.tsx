@@ -208,6 +208,7 @@ function catalogue(overrides: Partial<ModelCatalogueEntry> = {}): ModelCatalogue
       file: 'Meta-Llama-3-8B-Instruct-Q4_K_M.gguf',
       sizeBytes: LLAMA_BYTES,
       path: null,
+      provenance: 'pinned',
       ...overrides,
     },
     {
@@ -218,6 +219,7 @@ function catalogue(overrides: Partial<ModelCatalogueEntry> = {}): ModelCatalogue
       file: 'Qwen2.5-72B-Instruct-Q4_K_M.gguf',
       sizeBytes: 47_415_707_136,
       path: null,
+      provenance: 'pinned',
     },
   ];
 }

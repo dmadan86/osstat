@@ -553,6 +553,25 @@ pub fn download_cancelled() {
     info!("download cancelled");
 }
 
+/// A model search finished, in results and seconds.
+///
+/// **Never the search term**, and never a repository or file name. That is the
+/// whole of what a log can say about a search without recording what the user
+/// went looking for, which is exactly the kind of thing the design's §2 forbids
+/// — the count and the duration answer "is search working and is it slow", and
+/// nothing else here is worth someone's browsing history.
+pub fn search_finished(results: usize, seconds: u64) {
+    info!(results, seconds, "model search finished");
+}
+
+/// A model search failed.
+///
+/// `kind` is [`AcquireError::kind`](osstat_inference::AcquireError::kind), not
+/// the error's `Display` — which carries the URL, and therefore the term.
+pub fn search_failed(kind: &'static str) {
+    warn!(kind, "model search failed");
+}
+
 /// An inference runtime is being fetched.
 ///
 /// `cuda` is the only interesting fact about which one: it is the difference
@@ -702,6 +721,8 @@ mod tests {
         download_failed("checksum_mismatch");
         download_paused();
         download_cancelled();
+        search_finished(120, 3);
+        search_failed("http_status");
         runtime_acquiring(true);
         runtime_acquired(537_835_790, 94);
         runtime_acquire_failed("http_status");

@@ -49,7 +49,7 @@ pub use download::{
 };
 pub use error::AcquireError;
 pub use manifest::{Companion, RuntimeArtifact, RuntimeManifest, pinned_manifest};
-pub use model_store::{ModelRecord, ModelStore};
+pub use model_store::{ModelRecord, ModelStore, Provenance};
 pub use models::{ModelKey, download_url};
 pub use relocate::{MovePlan, move_library, plan_move};
 pub use search::{SearchResult, search};

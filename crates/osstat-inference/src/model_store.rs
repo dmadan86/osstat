@@ -22,6 +22,33 @@ use crate::models::ModelKey;
 /// above means an empty library rather than a crash.
 const INDEX_VERSION: u32 = 1;
 
+/// Which of osstat's two verification tiers a file was fetched under.
+///
+/// The distinction outlives the download, which is why it is recorded rather
+/// than inferred: once the bytes are on disk nothing about them says whether
+/// the hash they were checked against had been reviewed by a person. A model
+/// list that showed both the same way would quietly retire a guarantee
+/// SECURITY.md still makes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
+#[serde(rename_all = "camelCase")]
+pub enum Provenance {
+    /// Verified against a hash reviewed in a pull request against this
+    /// repository. The bytes are the ones somebody looked at.
+    ///
+    /// The default, and deliberately so: every record written before this field
+    /// existed came from the pinned registry, so an index from an older osstat
+    /// reads correctly rather than being downgraded or discarded.
+    #[default]
+    Pinned,
+    /// Verified against the hash Hugging Face reports beside the file.
+    ///
+    /// Detects a corrupted transfer. Cannot detect a replaced upload, because
+    /// the digest and the file come from the same origin.
+    Searched,
+}
+
 /// One model file osstat has downloaded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +66,15 @@ pub struct ModelRecord {
     pub publisher: String,
     /// The Hugging Face repository it came from.
     pub repo: String,
+    /// Which verification tier fetched it.
+    ///
+    /// `#[serde(default)]` rather than a schema bump: users have models on disk
+    /// from before this field existed, and treating those indexes as unreadable
+    /// would strand multi-gigabyte files the app then refused to admit to.
+    /// Everything written before this feature came from the pinned registry, so
+    /// [`Provenance::Pinned`] is not merely a safe default — it is the true one.
+    #[serde(default)]
+    pub provenance: Provenance,
 }
 
 /// The on-disk shape of the index.
@@ -198,6 +234,7 @@ mod tests {
             sha256: "a".repeat(64),
             publisher: "bartowski".to_owned(),
             repo: "bartowski/Qwen2.5-0.5B-Instruct-GGUF".to_owned(),
+            provenance: Provenance::Pinned,
         }
     }
 
@@ -348,6 +385,82 @@ mod tests {
 
         assert_eq!(store.records(), vec![second.clone()]);
         assert_eq!(store.path_of(&second.key), Some(second.path));
+    }
+
+    #[test]
+    fn a_record_written_before_provenance_existed_still_loads() {
+        // Users have models on disk from before this feature. Losing them
+        // would be worse than the feature is worth. `#[serde(default)]` with
+        // Pinned as the default is correct: everything that exists today came
+        // from the pinned registry.
+        let root = tempfile::tempdir().unwrap();
+        let index = root.path().join("models.json");
+        let gguf = root.path().join("model.gguf");
+        std::fs::write(&gguf, b"weights").unwrap();
+
+        // Written by hand in exactly the shape the previous release produced,
+        // rather than by serialising a struct with the field removed — the
+        // point is the bytes already sitting on someone's disk.
+        std::fs::write(
+            &index,
+            serde_json::json!({
+                "version": 1,
+                "records": [{
+                    "key": { "modelId": "qwen2.5-0.5b", "quantId": "Q4_K_M" },
+                    "path": gguf,
+                    "sizeBytes": 7,
+                    "sha256": "a".repeat(64),
+                    "publisher": "bartowski",
+                    "repo": "bartowski/Qwen2.5-0.5B-Instruct-GGUF"
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let records = ModelStore::new(index).records();
+
+        assert_eq!(records.len(), 1, "an older index was read as empty");
+        assert_eq!(
+            records[0].provenance,
+            Provenance::Pinned,
+            "a model from the pinned registry was relabelled as searched"
+        );
+        assert_eq!(records[0].path, gguf);
+    }
+
+    #[test]
+    fn a_searched_model_is_recorded_as_searched() {
+        let root = tempfile::tempdir().unwrap();
+        let index = root.path().join("models.json");
+        let record = ModelRecord {
+            key: ModelKey {
+                model_id: "bartowski/Some-GGUF".to_owned(),
+                quant_id: "Some-Q4_K_M.gguf".to_owned(),
+            },
+            provenance: Provenance::Searched,
+            ..sample_file(root.path().join("searched.gguf"), b"weights")
+        };
+
+        ModelStore::new(index.clone())
+            .record(record.clone())
+            .unwrap();
+
+        // Through a reopen, because the label has to survive the round trip
+        // that the UI actually reads it back through.
+        assert_eq!(ModelStore::new(index).records(), vec![record]);
+    }
+
+    #[test]
+    fn the_two_tiers_are_distinguishable_on_the_wire() {
+        // The label is the feature. A serialisation that spelled both the same
+        // way would make the UI's distinction unimplementable.
+        let pinned = serde_json::to_value(Provenance::Pinned).unwrap();
+        let searched = serde_json::to_value(Provenance::Searched).unwrap();
+
+        assert_eq!(pinned, serde_json::json!("pinned"));
+        assert_eq!(searched, serde_json::json!("searched"));
+        assert_ne!(pinned, searched);
     }
 
     #[test]

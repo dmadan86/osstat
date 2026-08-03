@@ -83,6 +83,7 @@ describe('indexCatalogue', () => {
       file: 'whatever.gguf',
       sizeBytes: 4_920_734_688,
       path: null,
+      provenance: 'pinned',
     };
   }
 
