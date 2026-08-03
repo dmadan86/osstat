@@ -31,6 +31,24 @@
  * produced it — and the caveats (no VRAM figure, a context past a model's own
  * maximum) are shown next to the verdict, not buried in a footnote.
  *
+ * Above the matrix sits a **search box**, and what it turns up is a second,
+ * weaker verification tier that has to stay visibly different. A pinned model
+ * is checked against a hash reviewed in a pull request against this repository.
+ * A searched one is checked against the hash Hugging Face reports beside the
+ * file, which catches a corrupted transfer and cannot catch a replaced upload.
+ * Every searched row therefore carries `UNREVIEWED`, on the result and on the
+ * model once it is downloaded — a search result that looked and downloaded
+ * exactly like a pinned one would quietly retire a guarantee SECURITY.md still
+ * makes.
+ *
+ * A searched row shows its **file size and nothing else**: no verdict, no speed
+ * tier, no layer count. Everything the drawer prices comes from a model's
+ * architecture, which lives in the registry for the pinned models and in the
+ * GGUF header for everything else — and the header only exists once the file is
+ * on disk. A figure derived from size and quantization bits would look like the
+ * calculator's output and be a guess, which ADR-008 names as the worst thing
+ * this feature could do.
+ *
  * Like Ports this fetches rather than following a tick: the answer only
  * changes when the hardware probe finishes or the user moves the context
  * control, so it listens for `gpus:ready` and otherwise re-fetches on demand.
@@ -47,6 +65,7 @@ import type { ModelKey } from '../bindings/ModelKey';
 import type { ModelRegistry } from '../bindings/ModelRegistry';
 import type { ModelSession } from '../bindings/ModelSession';
 import type { QuantLevel } from '../bindings/QuantLevel';
+import type { SearchResult } from '../bindings/SearchResult';
 import {
   budgetCaveat,
   cellKey,
@@ -64,6 +83,7 @@ import {
   cancelModelDownload,
   chatOpenModel,
   downloadModel,
+  downloadSearchedModel,
   fetchLlmAdvice,
   fetchModelCatalogue,
   fetchModelRegistry,
@@ -72,6 +92,7 @@ import {
   onModelFailed,
   onModelProgress,
   pauseModelDownload,
+  searchModels,
 } from '../lib/ipc';
 import { Meter } from '../components/Meter';
 
@@ -112,6 +133,22 @@ interface Transfer {
 
 /** Which of the six things a cell can be doing. */
 type Phase = 'unpinned' | 'downloadable' | 'downloading' | 'paused' | 'failed' | 'downloaded';
+
+/**
+ * Where the search has got to.
+ *
+ * `idle` and `empty` are separate states on purpose. Rendering nothing for both
+ * would make "you have not searched yet" and "nothing matched" look identical,
+ * and only one of those is worth changing the term over. `failed` is separate
+ * again: "Hugging Face did not answer" is a different thing to be told, and the
+ * only one of the three worth trying again.
+ */
+type SearchState =
+  | { status: 'idle' }
+  | { status: 'searching' }
+  | { status: 'found'; results: SearchResult[] }
+  | { status: 'empty' }
+  | { status: 'failed'; message: string };
 
 /** Which cell the drawer is open on. */
 interface Selection {
@@ -172,6 +209,8 @@ export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
   const [transfer, setTransfer] = useState<Transfer | null>(null);
   const [failure, setFailure] = useState<ModelFailure | null>(null);
   const [runProblem, setRunProblem] = useState<string | null>(null);
+  const [term, setTerm] = useState('');
+  const [found, setFound] = useState<SearchState>({ status: 'idle' });
 
   useEffect(() => {
     let cancelled = false;
@@ -334,6 +373,54 @@ export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
     });
   }
 
+  /**
+   * Starts fetching a searched file.
+   *
+   * The result is handed back **exactly as it arrived**. Rust re-validates it
+   * rather than trusting it, so reshaping anything here — normalising a path,
+   * recomputing a name — would turn into a refusal that reads as a broken
+   * button.
+   */
+  function downloadFound(result: SearchResult): void {
+    setFailure(null);
+    setRunProblem(null);
+    setTransfer({
+      key: { modelId: result.repo, quantId: result.file },
+      downloadedBytes: 0,
+      totalBytes: result.sizeBytes,
+      bytesPerSecond: null,
+      secondsRemaining: null,
+      paused: false,
+    });
+
+    downloadSearchedModel(result).catch((error: unknown) => {
+      setTransfer(null);
+      setFailure({
+        key: { modelId: result.repo, quantId: result.file },
+        message: messageOf(error),
+        retryable: false,
+        verificationFailure: false,
+        stopped: null,
+      });
+    });
+  }
+
+  /** Runs the search, or reports why it could not be made. */
+  function runSearch(): void {
+    const query = term.trim();
+    if (query === '') return;
+
+    setFound({ status: 'searching' });
+    searchModels(query).then(
+      (results) => {
+        setFound(results.length === 0 ? { status: 'empty' } : { status: 'found', results });
+      },
+      (error: unknown) => {
+        setFound({ status: 'failed', message: messageOf(error) });
+      }
+    );
+  }
+
   /** Pauses the download running, keeping the partial file to resume from. */
   function pause(): void {
     pauseModelDownload().catch(() => {
@@ -422,6 +509,19 @@ export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
           The model could not be opened: {runProblem}
         </p>
       )}
+
+      <SearchPanel
+        term={term}
+        state={found}
+        catalogue={entries}
+        transfer={transfer}
+        onTerm={setTerm}
+        onSearch={runSearch}
+        onDownload={downloadFound}
+        onPause={pause}
+        onCancel={cancel}
+        onRun={run}
+      />
 
       {state.status === 'ready' && (
         <>
@@ -676,6 +776,27 @@ function Matrix({
   );
 }
 
+/**
+ * The wording that separates osstat's two verification tiers.
+ *
+ * **This label is the feature.** A pinned model is checked against a hash
+ * reviewed in a pull request against this repository, so the bytes are the ones
+ * somebody looked at. A searched one is checked against the hash Hugging Face
+ * reports beside the file — which proves the transfer was not corrupted and
+ * cannot prove the upload was not replaced, because the digest and the file
+ * come from the same origin.
+ *
+ * A searched result that downloaded exactly like a pinned one, with no visible
+ * difference, would quietly retire a guarantee SECURITY.md still makes. So the
+ * words live in one constant, used on the result and on the model once it is on
+ * disk, rather than being retyped somewhere it could be dropped.
+ */
+const UNREVIEWED = 'Not reviewed · hash from Hugging Face';
+
+/** The whole of that argument, for the control's tooltip. */
+const UNREVIEWED_DETAIL =
+  'osstat checks this against the hash Hugging Face reports beside the file. That catches a corrupted transfer. It cannot show that the upload is the one anybody reviewed, which is what the pinned models above are checked against.';
+
 /** How a small control in a cell is styled. Repeated on six buttons otherwise. */
 const CONTROL =
   'rounded-md border border-edge px-1.5 text-[10px] text-neutral-400 hover:bg-white/[0.04]';
@@ -875,6 +996,331 @@ function Acquisition({
       <span className="font-mono opacity-70">
         {formatBytes(entry.sizeBytes)} via {publisher}
       </span>
+    </button>
+  );
+}
+
+/**
+ * The search box, whatever it turned up, and anything already fetched with it.
+ *
+ * Its own section, above the fit matrix and visibly apart from it, because the
+ * two lists carry different guarantees. Everything in the matrix was pinned in
+ * a reviewed pull request; everything here is whatever the search returned.
+ *
+ * **A result shows its file size and nothing else.** No verdict, no speed, no
+ * layer count. The advisor prices a model from its architecture — which lives
+ * in the registry for the pinned models and in the GGUF header for everything
+ * else, and the header only exists once the file is on disk. A figure derived
+ * from size and quantization bits would look like the calculator's output and
+ * be a guess, which ADR-008 names as the worst thing this feature could do.
+ * After the download the header is read and the model is priced properly.
+ *
+ * The downloaded list below the results is not redundant with them: the results
+ * live only as long as the term does, and a model's tier has to outlive the
+ * search that found it or a restart would lose it.
+ */
+function SearchPanel({
+  term,
+  state,
+  catalogue,
+  transfer,
+  onTerm,
+  onSearch,
+  onDownload,
+  onPause,
+  onCancel,
+  onRun,
+}: {
+  term: string;
+  state: SearchState;
+  catalogue: Map<string, ModelCatalogueEntry>;
+  transfer: Transfer | null;
+  onTerm: (term: string) => void;
+  onSearch: () => void;
+  onDownload: (result: SearchResult) => void;
+  onPause: () => void;
+  onCancel: () => void;
+  onRun: (entry: ModelCatalogueEntry) => void;
+}): React.JSX.Element {
+  const shown = state.status === 'found' ? state.results : [];
+  const alreadyShown = new Set(shown.map((result) => cellKey(result.repo, result.file)));
+
+  // Everything fetched by search that is not in front of us already. Read from
+  // the catalogue rather than remembered here, so it survives a reload.
+  const downloaded = [...catalogue.values()].filter(
+    (entry) =>
+      entry.provenance === 'searched' &&
+      entry.state === 'downloaded' &&
+      !alreadyShown.has(cellKey(entry.key.modelId, entry.key.quantId))
+  );
+
+  return (
+    <section
+      aria-label="Found on Hugging Face"
+      className="shrink-0 rounded-xl border border-edge bg-surface-raised p-3"
+    >
+      <form
+        className="flex flex-wrap items-center gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSearch();
+        }}
+      >
+        <input
+          type="search"
+          aria-label="Search Hugging Face for a model"
+          placeholder="Search Hugging Face…"
+          value={term}
+          onChange={(event) => {
+            onTerm(event.target.value);
+          }}
+          className="min-w-56 flex-1 rounded-md border border-edge bg-transparent px-2 py-1 text-xs text-neutral-200 placeholder:text-neutral-600"
+        />
+        <button type="submit" className={CONTROL}>
+          Search
+        </button>
+      </form>
+
+      <p className="mt-2 text-[11px] text-neutral-500">
+        Anything found here is checked against a hash Hugging Face reports beside the file, which is
+        a weaker promise than the pinned models below carry. The size is all osstat can say about a
+        file it has not opened yet; once downloaded it is measured properly.
+      </p>
+
+      {state.status === 'searching' && (
+        <p role="status" className="mt-2 text-xs text-neutral-500">
+          Searching…
+        </p>
+      )}
+
+      {state.status === 'empty' && (
+        <p role="status" className="mt-2 text-xs text-neutral-500">
+          Nothing on Hugging Face matched that. Only whole, hashed GGUF files are offered, so a
+          repository holding a split model or no GGUF at all will not appear.
+        </p>
+      )}
+
+      {state.status === 'failed' && (
+        <p role="alert" className="mt-2 text-xs text-amber-400/90">
+          The search could not be made: {state.message}
+        </p>
+      )}
+
+      {shown.length > 0 && (
+        <ul className="mt-2 flex flex-col gap-1.5">
+          {shown.map((result) => (
+            <li key={cellKey(result.repo, result.file)}>
+              <FoundRow
+                name={result.file}
+                cell={cellKey(result.repo, result.file)}
+                publisher={result.publisher}
+                sizeBytes={result.sizeBytes}
+                quantHint={result.quantHint}
+                entry={catalogue.get(cellKey(result.repo, result.file))}
+                transfer={transfer}
+                onDownload={() => {
+                  onDownload(result);
+                }}
+                onPause={onPause}
+                onCancel={onCancel}
+                onRun={onRun}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {downloaded.length > 0 && (
+        <ul className="mt-2 flex flex-col gap-1.5 border-t border-edge pt-2">
+          {downloaded.map((entry) => (
+            <li key={cellKey(entry.key.modelId, entry.key.quantId)}>
+              <FoundRow
+                name={entry.file ?? entry.key.quantId}
+                cell={cellKey(entry.key.modelId, entry.key.quantId)}
+                publisher={entry.publisher ?? 'an unnamed publisher'}
+                sizeBytes={entry.sizeBytes}
+                quantHint={null}
+                entry={entry}
+                transfer={transfer}
+                onDownload={() => {
+                  // Already on disk; this row never offers a download.
+                }}
+                onPause={onPause}
+                onCancel={onCancel}
+                onRun={onRun}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/**
+ * One searched file: what it is, what it weighs, and which tier fetched it.
+ *
+ * The label rides on the row rather than on the section heading, so it stays
+ * attached to the model after the search that found it is gone — and so a
+ * screen reader hears it as part of the same group as the control, which is the
+ * only arrangement in which it can inform the decision it is there to inform.
+ */
+function FoundRow({
+  name,
+  cell,
+  publisher,
+  sizeBytes,
+  quantHint,
+  entry,
+  transfer,
+  onDownload,
+  onPause,
+  onCancel,
+  onRun,
+}: {
+  name: string;
+  cell: string;
+  publisher: string;
+  sizeBytes: number;
+  quantHint: string | null;
+  entry: ModelCatalogueEntry | undefined;
+  transfer: Transfer | null;
+  onDownload: () => void;
+  onPause: () => void;
+  onCancel: () => void;
+  onRun: (entry: ModelCatalogueEntry) => void;
+}): React.JSX.Element {
+  return (
+    <div
+      role="group"
+      aria-label={name}
+      className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-edge px-2 py-1.5"
+    >
+      <span data-selectable className="font-mono text-[11px] text-neutral-300">
+        {name}
+      </span>
+      <span className="font-mono text-[11px] text-neutral-500">{formatBytes(sizeBytes)}</span>
+      <span className="text-[11px] text-neutral-500">via {publisher}</span>
+      {quantHint !== null && (
+        <span className="rounded-full border border-edge px-1.5 font-mono text-[10px] text-neutral-500">
+          {quantHint}
+        </span>
+      )}
+      <span
+        title={UNREVIEWED_DETAIL}
+        className="rounded-full border border-amber-500/40 px-1.5 text-[10px] text-amber-400/90"
+      >
+        {UNREVIEWED}
+      </span>
+
+      <span className="ml-auto">
+        <FoundControl
+          name={name}
+          cell={cell}
+          publisher={publisher}
+          sizeBytes={sizeBytes}
+          entry={entry}
+          transfer={transfer}
+          onDownload={onDownload}
+          onPause={onPause}
+          onCancel={onCancel}
+          onRun={onRun}
+        />
+      </span>
+    </div>
+  );
+}
+
+/**
+ * The one control a searched row offers, given what it is currently doing.
+ *
+ * Early returns rather than nested conditions, for the same reason
+ * {@link phaseOf} exists above: the states are enumerable and mutually
+ * exclusive, so "downloading and downloaded at once" is impossible rather than
+ * merely unlikely.
+ *
+ * The download hands the result straight back to Rust. The progress branch
+ * measures against the size the search reported, not against anything a
+ * response claimed — the same rule the pinned matrix follows.
+ */
+function FoundControl({
+  name,
+  cell,
+  publisher,
+  sizeBytes,
+  entry,
+  transfer,
+  onDownload,
+  onPause,
+  onCancel,
+  onRun,
+}: {
+  name: string;
+  cell: string;
+  publisher: string;
+  sizeBytes: number;
+  entry: ModelCatalogueEntry | undefined;
+  transfer: Transfer | null;
+  onDownload: () => void;
+  onPause: () => void;
+  onCancel: () => void;
+  onRun: (entry: ModelCatalogueEntry) => void;
+}): React.JSX.Element {
+  if (entry !== undefined && entry.state === 'downloaded' && entry.path !== null) {
+    const path = entry.path;
+    return (
+      <button
+        type="button"
+        aria-label={`Run ${name}`}
+        title={path}
+        onClick={() => {
+          onRun(entry);
+        }}
+        className="rounded-md border border-accent px-1.5 text-[10px] text-accent hover:bg-accent/10"
+      >
+        Run
+      </button>
+    );
+  }
+
+  if (transfer !== null && cellKey(transfer.key.modelId, transfer.key.quantId) === cell) {
+    return (
+      <span className="flex w-40 flex-col gap-1">
+        <Meter
+          fraction={sizeBytes > 0 ? transfer.downloadedBytes / sizeBytes : 0}
+          label={name}
+          detail={`${formatBytes(transfer.downloadedBytes)} of ${formatBytes(sizeBytes)}`}
+        />
+        <span className="flex items-center gap-1.5">
+          <button
+            type="button"
+            aria-label={`Pause downloading ${name}`}
+            onClick={onPause}
+            className={CONTROL}
+          >
+            Pause
+          </button>
+          <button
+            type="button"
+            aria-label={`Cancel downloading ${name}`}
+            onClick={onCancel}
+            className={CONTROL}
+          >
+            Cancel
+          </button>
+        </span>
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      aria-label={`Download ${name}, ${formatBytes(sizeBytes)}, via ${publisher}, ${UNREVIEWED}`}
+      onClick={onDownload}
+      className={CONTROL}
+    >
+      Download
     </button>
   );
 }
