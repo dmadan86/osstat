@@ -533,12 +533,22 @@ pub fn download_failed(kind: &'static str) {
     warn!(kind, "download failed");
 }
 
-/// The user stopped a download.
+/// The user paused a download.
 ///
 /// Its own line rather than a [`download_failed`] with a `cancelled` kind,
 /// because it is not a failure: the partial file is kept on purpose and the
 /// next attempt resumes from it. A log that reported the two the same way would
 /// have someone investigating a network problem that never happened.
+pub fn download_paused() {
+    info!("download paused");
+}
+
+/// The user cancelled a download.
+///
+/// Separate from [`download_paused`] because the disk ends up in a different
+/// place: the partial file is deleted here and kept there, and "why did this
+/// download start from zero" is answered by which of these two lines is in the
+/// log.
 pub fn download_cancelled() {
     info!("download cancelled");
 }
@@ -690,6 +700,7 @@ mod tests {
         download_started(4_683_074_240);
         download_finished(4_683_074_240, 612);
         download_failed("checksum_mismatch");
+        download_paused();
         download_cancelled();
         runtime_acquiring(true);
         runtime_acquired(537_835_790, 94);

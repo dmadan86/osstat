@@ -158,16 +158,61 @@ impl AcquireError {
         }
     }
 
-    /// Whether this failure is worth offering a retry for.
+    /// Whether trying this again could plausibly produce a different answer.
+    ///
+    /// The single notion of retryability. Both callers ask it: the automatic
+    /// backoff loop in `download_resumable_retrying` decides whether to wait
+    /// and try again, and the UI decides whether to offer a retry control at
+    /// all. Those were once two functions that disagreed — one called every
+    /// HTTP status permanent while the other called every HTTP status worth a
+    /// button — so a 503 could be retried by hand but never automatically, and
+    /// a 404 offered a button that could not possibly work. One question gets
+    /// one answer.
     ///
     /// False for [`Self::ChecksumMismatch`] above all: retrying a hash that did
     /// not match either wastes a 600 MB download or, worse, invites the user to
-    /// keep trying until a tampered file slips through. The UI uses this to
-    /// decide whether to show the control at all.
+    /// keep trying until a tampered file slips through.
+    ///
+    /// The match has no wildcard arm, for the same reason [`Self::kind`] has
+    /// none: a variant added later must fail to compile and be classified
+    /// deliberately, rather than defaulting to retryable and quietly acquiring
+    /// a four-attempt loop nobody chose for it.
     #[must_use]
     pub const fn is_retryable(&self) -> bool {
-        matches!(self, Self::Network { .. } | Self::HttpStatus { .. })
+        match self {
+            // A dropped connection, and a locked file or momentarily
+            // unavailable network share. Nothing about either says the next
+            // attempt will hit it too -- unlike a full disk, which is
+            // `NotEnoughSpace` below and stays full.
+            Self::Network { .. } | Self::Io { .. } => true,
+
+            // The status, not the variant. This is the distinction the whole
+            // function turns on: an overloaded or rate-limited server is having
+            // a bad minute, while a deleted file and a refused credential
+            // answer identically however many times they are asked.
+            Self::HttpStatus { status, .. } => is_transient_status(*status),
+
+            Self::UnsupportedTarget { .. }
+            | Self::UnknownArtifact { .. }
+            | Self::NotEnoughSpace { .. }
+            | Self::ChecksumMismatch { .. }
+            | Self::SizeMismatch { .. }
+            | Self::Extraction { .. }
+            | Self::ServerMissing { .. }
+            | Self::NotExecutable { .. } => false,
+        }
     }
+}
+
+/// Whether an HTTP status describes a server having a bad minute.
+///
+/// Enumerated rather than treating `5xx` as a block: 501 and 505 say the server
+/// will never do this, and mean exactly the same thing on the fourth attempt as
+/// on the first. 408 is absent because this client sets no request timeout, so
+/// a server claiming one timed out is describing something other than the wait
+/// a retry would change.
+const fn is_transient_status(status: u16) -> bool {
+    matches!(status, 429 | 502 | 503 | 504)
 }
 
 #[cfg(test)]
@@ -203,14 +248,57 @@ mod tests {
         assert!(message.contains("12"), "{message}");
     }
 
+    /// An `HttpStatus` carrying `status`, which is the only field that decides
+    /// retryability.
+    fn status(status: u16) -> AcquireError {
+        AcquireError::HttpStatus {
+            url: "https://example.invalid/x".to_owned(),
+            status,
+        }
+    }
+
     #[test]
     fn a_transport_failure_is_retryable() {
-        let error = AcquireError::HttpStatus {
-            url: "https://example.invalid/x".to_owned(),
-            status: 503,
+        assert!(status(503).is_retryable());
+    }
+
+    #[test]
+    fn a_server_having_a_bad_minute_is_retryable() {
+        // The four that say "ask me again": overloaded, rate-limited, and the
+        // two a proxy returns when the thing behind it did not answer in time.
+        for code in [429, 502, 503, 504] {
+            let error = status(code);
+            assert!(error.is_retryable(), "{code} should be retryable");
+        }
+    }
+
+    #[test]
+    fn a_status_that_will_not_change_is_not_retryable() {
+        // A deleted file and a refused credential answer identically however
+        // many times they are asked. 501 and 505 are here to prove the rule is
+        // the status list and not "5xx": the server is saying it will never do
+        // this, which the fourth attempt will not alter.
+        for code in [400, 401, 403, 404, 410, 416, 500, 501, 505] {
+            let error = status(code);
+            assert!(!error.is_retryable(), "{code} should not be retryable");
+        }
+    }
+
+    #[test]
+    fn a_locked_file_is_retryable_but_a_full_disk_is_not() {
+        // Both are local failures, and only one of them can resolve itself.
+        let locked = AcquireError::Io {
+            path: PathBuf::from("/models/model.gguf.part"),
+            source: std::io::Error::other("device not ready"),
+        };
+        let full = AcquireError::NotEnoughSpace {
+            path: PathBuf::from("/models"),
+            needed_bytes: 4_683_074_240,
+            available_bytes: 4_096,
         };
 
-        assert!(error.is_retryable());
+        assert!(locked.is_retryable());
+        assert!(!full.is_retryable());
     }
 
     #[test]

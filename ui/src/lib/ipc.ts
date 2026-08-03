@@ -74,6 +74,7 @@ export const COMMANDS = {
   chatDelete: 'chat_delete',
   modelsCatalogue: 'models_catalogue',
   modelsDownload: 'models_download',
+  modelsPause: 'models_pause',
   modelsCancel: 'models_cancel',
   modelsDelete: 'models_delete',
   modelsFolder: 'models_folder',
@@ -360,10 +361,24 @@ export async function downloadModel(modelId: string, quantId: string): Promise<v
 }
 
 /**
- * Stops the download currently running, if there is one.
+ * Pauses the download currently running, if there is one.
  *
- * The partial file is kept, so asking for the same file again resumes from
- * where it stopped rather than from zero.
+ * The partial file is **kept**, so asking for the same file again resumes from
+ * where it stopped rather than from zero. That is the only thing separating
+ * this from {@link cancelModelDownload}.
+ */
+export async function pauseModelDownload(): Promise<void> {
+  await invoke(COMMANDS.modelsPause);
+}
+
+/**
+ * Cancels the download currently running, if there is one.
+ *
+ * The partial file is **deleted**, so asking for the same file again starts
+ * from zero. That is the only thing separating this from
+ * {@link pauseModelDownload} — deliberately, because abandoning a download and
+ * silently leaving several gigabytes behind is the opposite of what a
+ * disk-cleaning utility is for.
  */
 export async function cancelModelDownload(): Promise<void> {
   await invoke(COMMANDS.modelsCancel);
@@ -438,10 +453,11 @@ export function onModelDone(handler: (done: ModelDone) => void): Promise<Unliste
 /**
  * Subscribes to a download or move that could not be finished.
  *
- * The payload distinguishes three things a single message could not: a
- * checksum mismatch (`verificationFailure`, never retried), a transport failure
- * (`retryable`), and the user stopping it (`cancelled`, which is not a failure
- * at all and leaves a partial file to resume from).
+ * The payload distinguishes four things a single message could not: a checksum
+ * mismatch (`verificationFailure`, never retried), a transport failure that
+ * survived the backoff (`retryable`), and the user stopping it — `stopped`,
+ * which is not a failure at all, and which says whether the partial file was
+ * kept (`'pause'`) or deleted (`'cancel'`).
  */
 export function onModelFailed(handler: (failure: ModelFailure) => void): Promise<UnlistenFn> {
   return listen<ModelFailure>(EVENTS.modelFailed, (event) => {

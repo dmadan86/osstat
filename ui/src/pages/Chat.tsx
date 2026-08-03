@@ -20,7 +20,7 @@
  * preference.
  */
 
-import { useEffect, useReducer, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 
 import type { ChatComplete } from '../bindings/ChatComplete';
 import type { ChatFailure } from '../bindings/ChatFailure';
@@ -32,10 +32,12 @@ import type { Role } from '../bindings/Role';
 import type { Timings } from '../bindings/Timings';
 import type { Usage } from '../bindings/Usage';
 import { Meter } from '../components/Meter';
-import { formatCount } from '../lib/format';
+import { formatCount, formatTimeOfDay } from '../lib/format';
 import {
   chatClose,
+  chatDelete,
   chatList,
+  chatLoad,
   chatOpenModel,
   chatSend,
   chatStop,
@@ -70,7 +72,13 @@ type Action =
   | { kind: 'ask'; text: string }
   | { kind: 'token'; conversationId: string; delta: string; timings: Timings | null }
   | { kind: 'stopping' }
-  | { kind: 'complete'; conversationId: string; usage: Usage | null; stopped: boolean }
+  | {
+      kind: 'complete';
+      conversationId: string;
+      usage: Usage | null;
+      stopped: boolean;
+      elapsedSeconds: number;
+    }
   | { kind: 'failed'; conversationId: string; message: string };
 
 /** How each role is introduced in the transcript. */
@@ -138,7 +146,21 @@ function reduce(state: Transcript, action: Action): Transcript {
               : state.conversation.title,
           messages: [
             ...state.conversation.messages,
-            { role: 'user', content: action.text, usage: null, stopped: false },
+            {
+              role: 'user',
+              content: action.text,
+              usage: null,
+              stopped: false,
+              // A question takes as long as the person typing it, which is not
+              // a generation time and not osstat's to measure.
+              elapsedSeconds: null,
+              // Stamped here as well as in the backend, which saves its own.
+              // This copy is what the user sees the moment they press Enter;
+              // the stored one replaces it when the conversation is reopened,
+              // and the two are the same wall clock a fraction of a second
+              // apart.
+              sentAt: Date.now(),
+            },
           ],
         },
         pending: { content: '', stopped: false },
@@ -175,6 +197,8 @@ function reduce(state: Transcript, action: Action): Transcript {
         content: state.pending?.content ?? '',
         usage: action.usage,
         stopped: action.stopped || (state.pending?.stopped ?? false),
+        elapsedSeconds: action.elapsedSeconds,
+        sentAt: Date.now(),
       };
 
       return {
@@ -200,7 +224,18 @@ function reduce(state: Transcript, action: Action): Transcript {
           ? state.conversation.messages
           : [
               ...state.conversation.messages,
-              { role: 'assistant' as const, content: partial, usage: null, stopped: true },
+              {
+                role: 'assistant' as const,
+                content: partial,
+                usage: null,
+                stopped: true,
+                // The backend measured this turn and saved it with a time, but
+                // a failure carries no figures with it. The stored message has
+                // one; this on-screen copy of it does not, and inventing a
+                // number to fill the gap would be worse than the gap.
+                elapsedSeconds: null,
+                sentAt: Date.now(),
+              },
             ];
 
       return {
@@ -315,6 +350,69 @@ function CodeBlock({ language, body }: { language: string; body: string }): Reac
   );
 }
 
+/**
+ * How close to the bottom still counts as being at the bottom, in pixels.
+ *
+ * Not zero: a transcript whose last line is a partly-drawn row of text sits a
+ * fraction of a pixel short of its own height, and sub-pixel rounding differs
+ * between platforms. A reader who has scrolled up to read is hundreds of pixels
+ * away, not four, so nothing ambiguous falls in this band.
+ */
+const BOTTOM_SLACK = 4;
+
+/**
+ * Keeps a scrolling element pinned to its bottom, unless the user scrolled up.
+ *
+ * The rule that matters is the second half. Tokens arrive several times a
+ * second, and a transcript that scrolls on every one of them makes reading
+ * anything but the last line impossible — the reader scrolls up, the next token
+ * yanks them back, and the only way to read the answer is to wait for it to
+ * finish. So scrolling up switches the pinning off, and returning to the bottom
+ * switches it back on. The user's scroll position is the input; nothing else
+ * overrides it.
+ *
+ * `dependency` is whatever changes when there is new content: passing the
+ * streamed text means every token is considered, and considering is cheap
+ * because a detached reader does nothing at all.
+ *
+ * @param dependency A value that changes whenever the content grows.
+ * @returns A ref to attach to the scrolling element.
+ */
+function useStickyScroll(dependency: unknown): React.RefObject<HTMLDivElement | null> {
+  const ref = useRef<HTMLDivElement | null>(null);
+  // A ref rather than state: this is read inside a scroll handler and written
+  // on every wheel tick, and re-rendering the transcript to record where it is
+  // scrolled to would be a redraw per frame for nothing visible.
+  const stuck = useRef(true);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (element === null) return;
+
+    function onScroll(): void {
+      if (element === null) return;
+      const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
+      stuck.current = distance <= BOTTOM_SLACK;
+    }
+
+    element.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      element.removeEventListener('scroll', onScroll);
+    };
+  }, []);
+
+  useEffect(() => {
+    const element = ref.current;
+    // The whole of the "does not fight the user" rule: when the reader has
+    // scrolled up, new content changes nothing about where they are looking.
+    if (element === null || !stuck.current) return;
+
+    element.scrollTop = element.scrollHeight;
+  }, [dependency]);
+
+  return ref;
+}
+
 /** What the chat page needs from the shell. */
 export interface ChatProps {
   /**
@@ -345,6 +443,17 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  const [conversations, setConversations] = useState<readonly Conversation[]>([]);
+
+  // Re-reads the stored list. Called wherever the store has just changed --
+  // after a message is accepted, after a reply is saved, after a delete --
+  // because `chat_list` reads the directory and the directory is the truth.
+  const refresh = useCallback(() => {
+    chatList().then(setConversations, () => {
+      // A store that cannot be listed is no reason to refuse a conversation;
+      // the list stays as it was rather than emptying itself on a stumble.
+    });
+  }, []);
 
   // Resume the most recent conversation. The store sorts by identifier and
   // identifiers are time-ordered, so the last entry is the newest.
@@ -353,8 +462,10 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
 
     chatList().then(
       (found) => {
+        if (cancelled) return;
+        setConversations(found);
         const latest = found.at(-1);
-        if (!cancelled && latest !== undefined) dispatch({ kind: 'open', conversation: latest });
+        if (latest !== undefined) dispatch({ kind: 'open', conversation: latest });
       },
       () => {
         // A store that cannot be listed is no reason to refuse a new
@@ -396,7 +507,11 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
         conversationId: payload.conversationId,
         usage: payload.usage,
         stopped: payload.stopped,
+        elapsedSeconds: payload.elapsedSeconds,
       });
+      // The reply has been written by the time this arrives, so the list is
+      // one entry or one title out of date until it is read again.
+      refresh();
     });
 
     return () => {
@@ -409,7 +524,7 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
         }
       );
     };
-  }, []);
+  }, [refresh]);
 
   useEffect(() => {
     const unlisten = onChatFailed((payload: ChatFailure) => {
@@ -446,6 +561,15 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
   );
 
   const streaming = state.pending !== null;
+  // Keyed on the streamed text and the turn count, which between them change
+  // on every token and on every finished turn -- the two moments the transcript
+  // grows. Switching conversations changes the count too, so opening one lands
+  // at its end rather than at whatever offset the last one was left at.
+  const transcriptRef = useStickyScroll(
+    `${state.conversation.id}:${String(state.conversation.messages.length)}:${
+      state.pending?.content ?? ''
+    }`
+  );
 
   function open(): void {
     if (path.trim() === '' || opening) return;
@@ -471,15 +595,66 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
     const id = state.conversation.id;
     setDraft('');
     dispatch({ kind: 'ask', text });
-    chatSend(id, text).catch((error: unknown) => {
-      dispatch({ kind: 'failed', conversationId: id, message: messageOf(error) });
-    });
+    chatSend(id, text).then(
+      // The question is saved before the reply is asked for, so by the time
+      // this resolves a conversation new to the store is on disk with its
+      // title. Reading the list here is what puts it on screen.
+      refresh,
+      (error: unknown) => {
+        dispatch({ kind: 'failed', conversationId: id, message: messageOf(error) });
+      }
+    );
+  }
+
+  /** Opens a stored conversation in place of the one on screen. */
+  function select(id: string): void {
+    if (id === state.conversation.id) return;
+
+    chatLoad(id).then(
+      (conversation) => {
+        dispatch({ kind: 'open', conversation });
+      },
+      (error: unknown) => {
+        // Surfaced rather than swallowed: a conversation that is listed but
+        // will not open is a file the user can see and cannot reach.
+        setOpenError(messageOf(error));
+      }
+    );
+  }
+
+  /** Deletes a stored conversation, and the transcript with it if it is open. */
+  function remove(id: string): void {
+    chatDelete(id).then(
+      () => {
+        refresh();
+        if (id === state.conversation.id) {
+          dispatch({ kind: 'open', conversation: freshConversation(session?.modelName ?? '') });
+        }
+      },
+      (error: unknown) => {
+        setOpenError(messageOf(error));
+      }
+    );
   }
 
   function stop(): void {
     dispatch({ kind: 'stopping' });
     chatStop().catch(() => {
       // A reply that has already finished has nothing left to stop.
+    });
+  }
+
+  // Unloading ends the server and returns the page to its no-model state.
+  // Navigating away already does this (ADR-013), but a 7B model holds around
+  // five gigabytes resident and needing to leave the page to give that back is
+  // not a way to ask for it. A reply still streaming ends as a failure, because
+  // the stream it was reading no longer has a server behind it — which is the
+  // truth, and better than a transcript waiting forever on a dead process.
+  function unload(): void {
+    setSession(null);
+    setOpenError(null);
+    chatClose().catch((error: unknown) => {
+      setOpenError(messageOf(error));
     });
   }
 
@@ -501,42 +676,100 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
           streaming={streaming}
           failure={state.failure}
           onStop={stop}
+          onUnload={unload}
           onNew={() => {
             dispatch({ kind: 'open', conversation: freshConversation(session.modelName) });
           }}
         />
       )}
 
-      <div className="min-h-0 flex-1 overflow-auto rounded-xl border border-edge bg-surface-raised p-3">
-        {state.conversation.messages.length === 0 && state.pending === null && (
-          <p className="text-center text-sm text-neutral-500">
-            {session === null
-              ? 'Open a GGUF model file to start a conversation.'
-              : 'Nothing said yet.'}
-          </p>
-        )}
+      <div className="flex min-h-0 flex-1 gap-3">
+        <ConversationList
+          conversations={conversations}
+          openId={state.conversation.id}
+          onSelect={select}
+          onDelete={remove}
+        />
 
-        <ol className="flex flex-col gap-3">
-          {state.conversation.messages.map((message, index) => (
-            <Turn key={index} message={message} />
-          ))}
-
-          {state.pending !== null && (
-            <Turn
-              message={{
-                role: 'assistant',
-                content: state.pending.content,
-                usage: null,
-                stopped: state.pending.stopped,
-              }}
-              timings={state.pending.stopped ? null : state.timings}
-            />
+        {/* `log` rather than a bare div: a transcript that grows as tokens
+            arrive is what the role describes, and it gives a screen reader the
+            polite live region this page otherwise announces nothing through. */}
+        <div
+          ref={transcriptRef}
+          role="log"
+          aria-label="Transcript"
+          className="min-h-0 flex-1 overflow-auto rounded-xl border border-edge bg-surface-raised p-3"
+        >
+          {state.conversation.messages.length === 0 && state.pending === null && (
+            <EmptyTranscript hasModel={session !== null} hasStored={conversations.length > 0} />
           )}
-        </ol>
+
+          <ol className="flex flex-col gap-3">
+            {state.conversation.messages.map((message, index) => (
+              <Turn key={index} message={message} />
+            ))}
+
+            {state.pending !== null && (
+              <Turn
+                message={{
+                  role: 'assistant',
+                  content: state.pending.content,
+                  usage: null,
+                  stopped: state.pending.stopped,
+                  // A reply still arriving has no elapsed time yet; the live
+                  // tokens-per-second beside it is what says it is moving.
+                  elapsedSeconds: null,
+                  // Nor a time. It is stamped when it lands, so the label does
+                  // not sit there naming a minute the reply has not finished
+                  // in yet.
+                  sentAt: null,
+                }}
+                timings={state.pending.stopped ? null : state.timings}
+              />
+            )}
+          </ol>
+        </div>
       </div>
 
       {session !== null && (
         <Composer draft={draft} streaming={streaming} onDraftChange={setDraft} onSend={send} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * What an empty transcript says instead of nothing.
+ *
+ * A blank pane is indistinguishable from a page that failed to load, so this
+ * says which of the two states the page is actually in and what the next action
+ * is. The three cases are genuinely different next actions -- open a model,
+ * pick up an old conversation, or type -- and collapsing them into one sentence
+ * would send two thirds of readers to the wrong control.
+ */
+function EmptyTranscript({
+  hasModel,
+  hasStored,
+}: {
+  hasModel: boolean;
+  hasStored: boolean;
+}): React.JSX.Element {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+      <p className="text-sm text-neutral-300">
+        {hasModel ? 'Nothing said yet' : 'No model is open'}
+      </p>
+
+      <p className="max-w-sm text-xs text-neutral-500">
+        {hasModel
+          ? 'Type below and press Enter to send. Shift+Enter starts a new line.'
+          : 'Open a GGUF model file above. Nothing is downloaded and nothing leaves this machine — the model runs as a local server osstat starts and stops with this page.'}
+      </p>
+
+      {hasStored && (
+        <p className="text-xs text-neutral-500">
+          Or pick one of the saved conversations on the left to read it again.
+        </p>
       )}
     </div>
   );
@@ -605,7 +838,77 @@ function OpenModel({
   );
 }
 
-/** The session's identity, its context meter, and the stop control. */
+/**
+ * Every conversation on disk, with the open one marked.
+ *
+ * Conversations were being saved and listed by the backend already, and none
+ * of it was reachable — so from the user's side nothing was kept at all. Each
+ * entry names the model it was held with, because a conversation is only as
+ * reproducible as the weights that answered it, and a transcript from a 3B
+ * model reads very differently from the same questions put to a 70B one.
+ */
+function ConversationList({
+  conversations,
+  openId,
+  onSelect,
+  onDelete,
+}: {
+  conversations: readonly Conversation[];
+  openId: string;
+  onSelect: (id: string) => void;
+  onDelete: (id: string) => void;
+}): React.JSX.Element {
+  return (
+    <section
+      aria-label="Conversations"
+      className="flex w-56 shrink-0 flex-col overflow-auto rounded-xl border border-edge bg-surface-raised p-2"
+    >
+      <h2 className="px-1 pb-1 text-[10px] uppercase tracking-wider text-neutral-500">
+        Conversations
+      </h2>
+
+      {conversations.length === 0 ? (
+        <p className="px-1 text-[11px] text-neutral-600">Nothing saved yet.</p>
+      ) : (
+        <ul className="flex flex-col gap-0.5">
+          {conversations.map((conversation) => (
+            <li key={conversation.id} className="flex items-center gap-1">
+              <button
+                type="button"
+                aria-current={conversation.id === openId}
+                onClick={() => {
+                  onSelect(conversation.id);
+                }}
+                className={`min-w-0 flex-1 rounded-md px-1.5 py-1 text-left hover:bg-white/[0.04] ${
+                  conversation.id === openId ? 'bg-white/[0.06]' : ''
+                }`}
+              >
+                <span className="block truncate text-xs text-neutral-300">
+                  {conversation.title}
+                </span>
+                <span className="block truncate font-mono text-[10px] text-neutral-500">
+                  {conversation.modelName === '' ? 'no model recorded' : conversation.modelName}
+                </span>
+              </button>
+              <button
+                type="button"
+                aria-label={`Delete ${conversation.title}`}
+                onClick={() => {
+                  onDelete(conversation.id);
+                }}
+                className="shrink-0 rounded-md border border-edge px-1.5 text-[10px] text-neutral-500 hover:bg-white/[0.04] hover:text-red-400"
+              >
+                Delete
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/** The session's identity, its context meter, and the session controls. */
 function ModelBar({
   session,
   title,
@@ -613,6 +916,7 @@ function ModelBar({
   streaming,
   failure,
   onStop,
+  onUnload,
   onNew,
 }: {
   session: ModelSession;
@@ -621,6 +925,7 @@ function ModelBar({
   streaming: boolean;
   failure: string | null;
   onStop: () => void;
+  onUnload: () => void;
   onNew: () => void;
 }): React.JSX.Element {
   return (
@@ -653,6 +958,14 @@ function ModelBar({
             className="rounded-md border border-edge px-2 py-0.5 text-xs text-neutral-400 hover:bg-white/[0.04]"
           >
             New conversation
+          </button>
+          <button
+            type="button"
+            onClick={onUnload}
+            title="End the server and give back the memory the weights hold"
+            className="rounded-md border border-edge px-2 py-0.5 text-xs text-neutral-400 hover:bg-white/[0.04]"
+          >
+            Unload
           </button>
         </div>
       </div>
@@ -689,7 +1002,19 @@ function ModelBar({
   );
 }
 
-/** One turn of the conversation. */
+/**
+ * One turn of the conversation.
+ *
+ * The user's turn and the model's have to be told apart at a glance while
+ * scrolling past, so they differ three ways rather than one: the user's is
+ * inset from the left and sits on `--color-surface` against the pane's
+ * `--color-surface-raised`, while the model's is full width with an accent
+ * gutter down its edge. One difference would be enough for someone reading
+ * carefully; a transcript is read by skimming.
+ *
+ * Colours come from the theme tokens, not from literals, so a theme change
+ * moves the transcript with everything else.
+ */
 function Turn({
   message,
   timings = null,
@@ -698,16 +1023,41 @@ function Turn({
   timings?: Timings | null;
 }): React.JSX.Element {
   const speeds = timings;
+  const fromUser = message.role === 'user';
 
   return (
-    <li className="flex flex-col gap-1">
-      <span className="text-[10px] uppercase tracking-wider text-neutral-500">
-        {ROLE_LABEL[message.role]}
-      </span>
+    <li
+      className={`flex flex-col gap-1 rounded-lg px-2.5 py-2 ${
+        fromUser
+          ? 'ml-6 border border-edge bg-surface'
+          : 'mr-6 border-l-2 border-l-accent/50 bg-surface-raised'
+      }`}
+    >
+      <div className="flex items-baseline gap-2">
+        <span
+          className={`text-[10px] uppercase tracking-wider ${
+            fromUser ? 'text-neutral-400' : 'text-accent/80'
+          }`}
+        >
+          {ROLE_LABEL[message.role]}
+        </span>
+
+        {/* Absent rather than guessed when the turn predates the field, or
+            when the clock could not be read. A time that was never recorded
+            must not be drawn as the epoch. */}
+        {message.sentAt !== null && (
+          <time
+            dateTime={new Date(message.sentAt).toISOString()}
+            className="font-mono text-[10px] text-neutral-500"
+          >
+            {formatTimeOfDay(message.sentAt)}
+          </time>
+        )}
+      </div>
 
       <div
         data-selectable
-        className={`text-sm ${message.role === 'user' ? 'text-neutral-200' : 'text-neutral-300'}`}
+        className={`text-sm ${fromUser ? 'text-neutral-200' : 'text-neutral-300'}`}
       >
         {renderText(message.content)}
       </div>
@@ -718,6 +1068,16 @@ function Turn({
             {`${formatCount(message.usage.promptTokens)} in · ${formatCount(
               message.usage.completionTokens
             )} out`}
+          </span>
+        )}
+
+        {/* One decimal, because a reply is over in single-digit seconds often
+            enough that whole seconds would round half the answers to the same
+            number. `formatDuration` is for uptime and floors to the second,
+            which is why this does not use it. */}
+        {message.elapsedSeconds !== null && (
+          <span data-selectable className="font-mono text-[11px] text-neutral-600">
+            {`${message.elapsedSeconds.toFixed(1)} s`}
           </span>
         )}
 

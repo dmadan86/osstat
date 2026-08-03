@@ -21,4 +21,15 @@ timings: Timings | null,
 /**
  * Whether the user stopped it rather than the model finishing.
  */
-stopped: boolean, };
+stopped: boolean, 
+/**
+ * Wall-clock seconds the turn took, measured here rather than reported.
+ *
+ * Distinct from [`Timings`], which is the server's own tokens-per-second
+ * and covers only the time it spent generating. This is what the person
+ * waiting actually experienced — prompt processing, generation and the
+ * trip through this process included — which is the figure they mean when
+ * they ask how long a reply took. Carried alongside the counts so the
+ * stored message and the event agree on one number from one clock.
+ */
+elapsedSeconds: number, };

@@ -19,6 +19,13 @@
 //! hash cannot be carried across attempts, so the finished file is read once
 //! more to hash it — a second pass over a few gigabytes, against re-fetching
 //! them.
+//!
+//! [`download_resumable_retrying`] wraps the second of those in a bounded
+//! backoff, and is where [`AcquireError::is_retryable`] decides what is worth
+//! waiting for. That decision is the interesting part of this module and not
+//! the retrying:
+//! a wrong pin retried three times is a minute of apparent activity ending in
+//! the same place, reported as a network blip.
 
 use futures_util::StreamExt as _;
 use sha2::{Digest as _, Sha256};
@@ -450,6 +457,80 @@ pub async fn download_resumable(
     })
 }
 
+/// How long to wait before each retry, and therefore how many there are.
+///
+/// Three entries, so four attempts in all. Increasing, because a server that
+/// just refused is unlikely to have recovered in the same second, and bounded,
+/// because a download that retried forever would be indistinguishable from one
+/// that was working.
+///
+/// Twenty-one seconds of waiting in the worst case. That is a long time to
+/// stare at a bar that is not moving, and it is the reason
+/// [`AcquireError::is_retryable`] exists: it is only ever spent on failures
+/// where waiting is the right answer.
+pub const RETRY_BACKOFF: [std::time::Duration; 3] = [
+    std::time::Duration::from_secs(1),
+    std::time::Duration::from_secs(4),
+    std::time::Duration::from_secs(16),
+];
+
+/// [`download_resumable`], retrying a transient failure a bounded number of
+/// times.
+///
+/// Each attempt is a fresh call, so each one resumes from whatever the last
+/// left in `part` rather than starting over — which is the only thing that
+/// makes retrying a multi-gigabyte download worth doing at all.
+///
+/// A permanent failure returns immediately. See [`AcquireError::is_retryable`]
+/// for what that means and why the distinction is the point of this function.
+///
+/// # Errors
+///
+/// The first permanent failure, or the last transient one once
+/// [`RETRY_BACKOFF`] is exhausted. Every error [`download_resumable`] can
+/// produce, unchanged — a caller cannot tell from the error whether it was
+/// retried, only from how long it took.
+pub async fn download_resumable_retrying(
+    client: &reqwest::Client,
+    url: &str,
+    part: &Path,
+    destination: &Path,
+    expected_sha256: &str,
+    expected_size: u64,
+    on_progress: &mut (dyn FnMut(Progress) + Send),
+) -> Result<(), AcquireError> {
+    for backoff in RETRY_BACKOFF {
+        match download_resumable(
+            client,
+            url,
+            part,
+            destination,
+            expected_sha256,
+            expected_size,
+            on_progress,
+        )
+        .await
+        {
+            Ok(()) => return Ok(()),
+            Err(error) if error.is_retryable() => tokio::time::sleep(backoff).await,
+            Err(error) => return Err(error),
+        }
+    }
+
+    // The last attempt, outside the loop: there is no delay after it, and
+    // whatever it returns is the answer whether it is transient or not.
+    download_resumable(
+        client,
+        url,
+        part,
+        destination,
+        expected_sha256,
+        expected_size,
+        on_progress,
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -614,8 +695,8 @@ mod tests {
         }
         assert!(checked, "expected an HTTP status error, got {error:?}");
         assert!(
-            error.is_retryable(),
-            "a 404 may be a transient CDN failure; retrying is reasonable"
+            !error.is_retryable(),
+            "a 404 is a deleted file or a wrong URL; asking again returns it again"
         );
         assert!(!dest.exists());
     }
@@ -685,6 +766,15 @@ mod tests {
                 .iter()
                 .map(|request| range_start(request))
                 .collect()
+        }
+
+        /// How many requests reached the server.
+        ///
+        /// The whole of what the retry policy can be judged on from outside:
+        /// "did not retry" and "retried three times" differ by this number and
+        /// by nothing else observable.
+        fn count(&self) -> usize {
+            self.requests.lock().unwrap().len()
         }
     }
 
@@ -1186,6 +1276,220 @@ mod tests {
             "an oversized part must not be resumed from"
         );
         assert_eq!(std::fs::read(&dest).unwrap(), b"abc");
+    }
+
+    // --- The retry policy ------------------------------------------------
+    //
+    // Which failures are worth trying again is the whole of this section, and
+    // the two that are not are the point of it. Retrying a wrong pin three
+    // times turns a one-line "the pin is wrong" into a minute of apparent
+    // activity that ends in exactly the same place, and reports a permanent
+    // problem as a network blip.
+
+    /// A `reqwest::Error` without a socket: an unusable URL fails in the
+    /// builder, before any request is made.
+    fn a_transport_error() -> reqwest::Error {
+        reqwest::Client::new()
+            .get("nowhere-in-particular")
+            .build()
+            .unwrap_err()
+    }
+
+    #[test]
+    fn a_wrong_hash_is_permanent_and_must_not_be_retried() {
+        // THE load-bearing test. Retrying a wrong pin three times turns a
+        // one-line "the pin is wrong" into a minute of apparent activity that
+        // ends in the same place, and trains the user to distrust the message.
+        let error = AcquireError::ChecksumMismatch {
+            file: "model.gguf".to_owned(),
+            expected: "a".repeat(64),
+            actual: "b".repeat(64),
+        };
+
+        assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn a_dropped_connection_is_retryable() {
+        // The one case automatic retry exists for: nothing about the request
+        // was wrong, so the same request may well work a second later.
+        assert!(
+            AcquireError::Network {
+                url: "https://example.invalid/x".to_owned(),
+                source: a_transport_error(),
+            }
+            .is_retryable()
+        );
+    }
+
+    // Which statuses and which variants count as retryable is asserted beside
+    // `AcquireError::is_retryable` in `error.rs`, where the one function that
+    // answers it lives. What follows is the policy those answers drive: how
+    // many requests actually reach a server, and what the second one asks for.
+
+    // `start_paused` so the backoff between attempts costs no wall-clock time.
+    // Nothing here is timing-sensitive: the sleeps are the only timers, and
+    // advancing past them is exactly what the test wants.
+    #[tokio::test(start_paused = true)]
+    async fn a_permanent_failure_makes_exactly_one_request() {
+        // Proves the policy end to end rather than in isolation: a fixture
+        // serving a body that does not match the pin must be hit once, not
+        // four times. Four answers are queued so that a policy which did retry
+        // would be served rather than blocked -- the count is the assertion,
+        // and it has to be able to reach 4 to be worth making.
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("model.gguf.part");
+        let dest = dir.path().join("model.gguf");
+        let body = b"not abc at all".to_vec();
+        let fixture = serve_ranges(body.clone(), vec![Answer::Whole; 4]);
+
+        let error = download_resumable_retrying(
+            &reqwest::Client::new(),
+            &fixture.url,
+            &part,
+            &dest,
+            ABC_SHA256,
+            u64::try_from(body.len()).unwrap(),
+            &mut |_| {},
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(error, AcquireError::ChecksumMismatch { .. }));
+        assert_eq!(
+            fixture.count(),
+            1,
+            "a wrong pin was retried; the user waits a minute for the same answer"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_transient_failure_resumes_rather_than_restarting() {
+        // The second request must carry a Range header, or "retry" is
+        // "start again" and a 5 GB download restarts from zero.
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("model.gguf.part");
+        let dest = dir.path().join("model.gguf");
+        let body = filler(4096);
+        let digest = sha256_of(&body);
+        let fixture = serve_ranges(
+            body.clone(),
+            vec![Answer::Cut { sent: 2048 }, Answer::Whole],
+        );
+
+        download_resumable_retrying(
+            &reqwest::Client::new(),
+            &fixture.url,
+            &part,
+            &dest,
+            &digest,
+            4096,
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+
+        let ranges = fixture.ranges();
+        assert_eq!(ranges.len(), 2, "a dropped connection was not retried");
+        assert_eq!(
+            ranges.first(),
+            Some(&None),
+            "the first attempt asked for a range it had nothing to resume from"
+        );
+        assert!(
+            ranges[1].is_some_and(|from| from > 0),
+            "the retry restarted from zero instead of resuming: {ranges:?}"
+        );
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            body,
+            "the reassembled file is not the one that was served"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_overloaded_server_is_retried_and_resumes_where_it_stopped() {
+        // The reconciliation, end to end. A 503 used to be classified by its
+        // variant and so returned on the first attempt, while the UI offered a
+        // retry button for the same failure -- one question with two answers.
+        // Three answers: a cut connection to put bytes on disk, then the 503
+        // under test, then a server that has recovered. The 503 must be waited
+        // out rather than reported, and the attempt after it must ask for the
+        // bytes that are missing rather than all of them.
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("model.gguf.part");
+        let dest = dir.path().join("model.gguf");
+        let body = filler(4096);
+        let digest = sha256_of(&body);
+        let fixture = serve_ranges(
+            body.clone(),
+            vec![
+                Answer::Cut { sent: 2048 },
+                Answer::Status("503 Service Unavailable"),
+                Answer::Whole,
+            ],
+        );
+
+        download_resumable_retrying(
+            &reqwest::Client::new(),
+            &fixture.url,
+            &part,
+            &dest,
+            &digest,
+            4096,
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+
+        let ranges = fixture.ranges();
+        assert_eq!(
+            ranges.len(),
+            3,
+            "a 503 was reported rather than retried: {ranges:?}"
+        );
+        assert_eq!(
+            ranges[2],
+            Some(2048),
+            "the attempt after the 503 refetched bytes it already had: {ranges:?}"
+        );
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            body,
+            "the reassembled file is not the one that was served"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retrying_is_bounded_rather_than_endless() {
+        // Four attempts, not four hundred. A download that retried forever
+        // would look identical to one that was working.
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("model.gguf.part");
+        let dest = dir.path().join("model.gguf");
+        let fixture = serve_ranges(filler(4096), vec![Answer::Cut { sent: 0 }; 8]);
+
+        let error = download_resumable_retrying(
+            &reqwest::Client::new(),
+            &fixture.url,
+            &part,
+            &dest,
+            &sha256_of(&filler(4096)),
+            4096,
+            &mut |_| {},
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error.is_retryable(),
+            "the fixture failed permanently: {error:?}"
+        );
+        assert_eq!(
+            fixture.count(),
+            RETRY_BACKOFF.len() + 1,
+            "the attempt count does not match the backoff schedule"
+        );
     }
 
     #[test]

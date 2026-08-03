@@ -124,6 +124,30 @@ export function formatClock(epochMs: number): string {
 }
 
 /**
+ * Formats a wall-clock time of day, without seconds.
+ *
+ * Distinct from {@link formatClock}, which is for a chart axis and carries
+ * seconds because samples arrive faster than a minute. A message in a
+ * transcript is stamped once, and the second it landed on is noise beside the
+ * text it is labelling.
+ *
+ * 24-hour for the same reason `formatClock` is: the hour a reply arrived is
+ * read against the one above it, and `11:58 PM` beside `12:03 AM` reads as
+ * going backwards.
+ *
+ * @param epochMs Milliseconds since the Unix epoch.
+ * @returns A `HH:MM` string in local time, or `—` if the value is not a number.
+ */
+export function formatTimeOfDay(epochMs: number): string {
+  if (!Number.isFinite(epochMs)) return '—';
+  return new Date(epochMs).toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+/**
  * Formats a frequency in megahertz.
  *
  * @param megahertz Clock speed in MHz; zero means the platform did not report one.

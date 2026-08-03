@@ -6,12 +6,18 @@
  * and a drawer showing the arithmetic behind whichever cell you pick.
  *
  * Every cell also carries the one thing a verdict cannot do on its own: a way
- * to actually get the file. Four states, and the difference between them is the
+ * to actually get the file. Six states, and the difference between them is the
  * feature — *not pinned* says so rather than offering a control that would
  * fail, *downloadable* names the publisher because these are community
  * re-quantizations rather than the vendors' own uploads, *downloading* counts
- * against the pinned size, and *downloaded* offers Run, which hands the
- * record's absolute path to the same `chat_open_model` the file picker uses.
+ * against the pinned size and offers Pause and Cancel, *paused* keeps that
+ * figure and offers Resume, *failed* offers Retry once the automatic attempts
+ * are used up, and *downloaded* offers Run, which hands the record's absolute
+ * path to the same `chat_open_model` the file picker uses.
+ *
+ * Pause and Cancel are both offered because they do different things to the
+ * disk: Pause keeps the partial file and Cancel deletes it. A single Stop would
+ * make that choice on the user's behalf, silently, with several gigabytes.
  *
  * **A download is offered even where the verdict says the model will not fit.**
  * The calculator is an estimate — ADR-008 says so in its first paragraph — and
@@ -53,7 +59,7 @@ import {
   SPEED_TIERS,
   VERDICTS,
 } from '../lib/advisor';
-import { formatBytes } from '../lib/format';
+import { formatBytes, formatDuration, formatRate } from '../lib/format';
 import {
   cancelModelDownload,
   chatOpenModel,
@@ -65,7 +71,9 @@ import {
   onModelDone,
   onModelFailed,
   onModelProgress,
+  pauseModelDownload,
 } from '../lib/ipc';
+import { Meter } from '../components/Meter';
 
 /** What a load can be doing. */
 type LoadState =
@@ -81,6 +89,11 @@ type LoadState =
  * is fetched, not streamed: between clicking Download and the first
  * `model:progress` there would otherwise be a cell still offering Download for
  * a file already being fetched.
+ *
+ * It survives a **pause** and not a cancel, which is the whole difference
+ * between the two: after a pause the figure still describes bytes on disk, and
+ * after a cancel those bytes have been deleted, so a bar still reading 2.29 GB
+ * would promise a resume that would in fact start from zero.
  */
 interface Transfer {
   /** Which cell is downloading. */
@@ -89,7 +102,16 @@ interface Transfer {
   downloadedBytes: number;
   /** Bytes expected, from the pin rather than from any response. */
   totalBytes: number;
+  /** Bytes per second over the backend's window, or `null` if it cannot say. */
+  bytesPerSecond: number | null;
+  /** Seconds left at that rate, or `null` when there is no honest estimate. */
+  secondsRemaining: number | null;
+  /** Whether the user paused it, so the controls offer Resume rather than Pause. */
+  paused: boolean;
 }
+
+/** Which of the six things a cell can be doing. */
+type Phase = 'unpinned' | 'downloadable' | 'downloading' | 'paused' | 'failed' | 'downloaded';
 
 /** Which cell the drawer is open on. */
 interface Selection {
@@ -225,6 +247,9 @@ export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
             key: next.key,
             downloadedBytes: next.downloadedBytes,
             totalBytes: next.totalBytes,
+            bytesPerSecond: next.bytesPerSecond,
+            secondsRemaining: next.secondsRemaining,
+            paused: false,
           });
         }
       }),
@@ -236,8 +261,23 @@ export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
       }),
       onModelFailed((next) => {
         if (next.key === null) return;
+
+        // Three outcomes, and the payload distinguishes them so this does not
+        // have to guess from the message.
+        if (next.stopped === 'pause') {
+          // The partial file is kept, so the figure the bar reached is still
+          // true. Zeroing it here would say the gigabytes already fetched had
+          // been thrown away — and no alert, because a pause the user asked
+          // for is not something to warn them about.
+          setTransfer((held) => (held === null ? null : { ...held, paused: true }));
+          return;
+        }
+
         setTransfer(null);
-        setFailure(next);
+
+        // A cancel deleted the partial file and was deliberate. The cell goes
+        // back to offering Download, and nothing is reported as wrong.
+        setFailure(next.stopped === 'cancel' ? null : next);
       }),
     ];
 
@@ -257,11 +297,27 @@ export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
 
   const entries = useMemo(() => indexCatalogue(catalogue), [catalogue]);
 
-  /** Starts fetching one pinned file, counting against its pinned size. */
-  function download(key: ModelKey, totalBytes: number): void {
+  /**
+   * Starts or continues fetching one pinned file.
+   *
+   * `from` is what the bar should read until the first `model:progress`
+   * arrives: zero for a fresh download, and whatever a paused one had reached
+   * for a resume. Restarting the figure at zero on a resume would be the one
+   * thing resuming exists to avoid.
+   */
+  function download(key: ModelKey, totalBytes: number, from = 0): void {
     setFailure(null);
     setRunProblem(null);
-    setTransfer({ key, downloadedBytes: 0, totalBytes });
+    setTransfer({
+      key,
+      downloadedBytes: from,
+      totalBytes,
+      // No rate yet: the window has one sample, and a figure carried over from
+      // before the pause would describe a transfer that was not running.
+      bytesPerSecond: null,
+      secondsRemaining: null,
+      paused: false,
+    });
 
     downloadModel(key.modelId, key.quantId).catch((error: unknown) => {
       // A refusal here is a refusal before any request: no pinned file, another
@@ -273,13 +329,29 @@ export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
         message: messageOf(error),
         retryable: false,
         verificationFailure: false,
-        cancelled: false,
+        stopped: null,
       });
     });
   }
 
-  /** Stops the download running, keeping the partial file to resume from. */
-  function stop(): void {
+  /** Pauses the download running, keeping the partial file to resume from. */
+  function pause(): void {
+    pauseModelDownload().catch(() => {
+      // A download that has already finished has nothing left to stop.
+    });
+  }
+
+  /**
+   * Cancels the download running, deleting the partial file.
+   *
+   * Also clears whatever the cell was showing, because there may be nothing
+   * left in Rust to stop — a cancel pressed on a *failed* cell is the user
+   * dismissing it, and no `model:failed` will arrive to do this for us.
+   */
+  function cancel(): void {
+    setTransfer(null);
+    setFailure(null);
+
     cancelModelDownload().catch(() => {
       // A download that has already finished has nothing left to stop.
     });
@@ -343,16 +415,7 @@ export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
         </p>
       )}
 
-      {failure !== null && (
-        <AcquisitionFailure
-          failure={failure}
-          onRetry={() => {
-            const key = failure.key;
-            if (key === null) return;
-            download(key, entries.get(cellKey(key.modelId, key.quantId))?.sizeBytes ?? 0);
-          }}
-        />
-      )}
+      {failure !== null && <AcquisitionFailure failure={failure} />}
 
       {runProblem !== null && (
         <p role="alert" className="rounded-xl border border-edge p-3 text-xs text-red-400">
@@ -368,10 +431,12 @@ export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
             advice={state.advice}
             catalogue={entries}
             transfer={transfer}
+            failure={failure}
             selected={selected}
             onSelect={setSelected}
             onDownload={download}
-            onStop={stop}
+            onPause={pause}
+            onCancel={cancel}
             onRun={run}
           />
         </>
@@ -481,20 +546,24 @@ function Matrix({
   advice,
   catalogue,
   transfer,
+  failure,
   selected,
   onSelect,
   onDownload,
-  onStop,
+  onPause,
+  onCancel,
   onRun,
 }: {
   registry: ModelRegistry;
   advice: LlmAdvice;
   catalogue: Map<string, ModelCatalogueEntry>;
   transfer: Transfer | null;
+  failure: ModelFailure | null;
   selected: Selection | null;
   onSelect: (selection: Selection) => void;
-  onDownload: (key: ModelKey, totalBytes: number) => void;
-  onStop: () => void;
+  onDownload: (key: ModelKey, totalBytes: number, from?: number) => void;
+  onPause: () => void;
+  onCancel: () => void;
   onRun: (entry: ModelCatalogueEntry) => void;
 }): React.JSX.Element {
   const index = useMemo(() => indexResults(advice.results), [advice.results]);
@@ -588,8 +657,10 @@ function Matrix({
                           quant={quant}
                           entry={entry}
                           transfer={transfer}
+                          failure={failure}
                           onDownload={onDownload}
-                          onStop={onStop}
+                          onPause={onPause}
+                          onCancel={onCancel}
                           onRun={onRun}
                         />
                       </div>
@@ -605,32 +676,77 @@ function Matrix({
   );
 }
 
+/** How a small control in a cell is styled. Repeated on six buttons otherwise. */
+const CONTROL =
+  'rounded-md border border-edge px-1.5 text-[10px] text-neutral-400 hover:bg-white/[0.04]';
+
 /**
- * The one control a cell offers: nothing, Download, progress, or Run.
+ * Which of the six states this cell is in.
  *
- * The four branches are the feature. An `entry` of `undefined` is a cell nobody
+ * Derived in one place rather than as a chain of conditions inside the render,
+ * so the states are enumerable and mutually exclusive — the property that makes
+ * "downloading and downloaded at once" impossible rather than merely unlikely.
+ *
+ * The live `transfer` beats the catalogue, which is fetched rather than
+ * streamed: between clicking Download and the next catalogue read the entry
+ * still says `downloadable`.
+ */
+function phaseOf(
+  entry: ModelCatalogueEntry | undefined,
+  transfer: Transfer | null,
+  failure: ModelFailure | null
+): Phase {
+  if (entry === undefined) return 'unpinned';
+
+  const about = (key: ModelKey | null): boolean =>
+    key !== null && key.modelId === entry.key.modelId && key.quantId === entry.key.quantId;
+
+  if (transfer !== null && about(transfer.key)) return transfer.paused ? 'paused' : 'downloading';
+  if (entry.state === 'downloaded' && entry.path !== null) return 'downloaded';
+  if (failure !== null && about(failure.key) && failure.retryable) return 'failed';
+  if (entry.state === 'downloading') return 'downloading';
+
+  return 'downloadable';
+}
+
+/**
+ * The controls a cell offers, one set per state it can be in.
+ *
+ * The six branches are the feature. An `entry` of `undefined` is a cell nobody
  * pinned, and it says so rather than rendering a control whose only outcome is
  * an error — the catalogue is a join, so a missing entry is a fact about the
  * manifest rather than a load that has not happened yet.
+ *
+ * Pause and Cancel both appear while downloading because they do different
+ * things to the disk: Pause keeps the partial file and Cancel deletes it. A
+ * single Stop would make that choice on the user's behalf, and it is not a
+ * choice a progress bar should be making with several gigabytes.
  */
 function Acquisition({
   model,
   quant,
   entry,
   transfer,
+  failure,
   onDownload,
-  onStop,
+  onPause,
+  onCancel,
   onRun,
 }: {
   model: ModelEntry;
   quant: QuantLevel;
   entry: ModelCatalogueEntry | undefined;
   transfer: Transfer | null;
-  onDownload: (key: ModelKey, totalBytes: number) => void;
-  onStop: () => void;
+  failure: ModelFailure | null;
+  onDownload: (key: ModelKey, totalBytes: number, from?: number) => void;
+  onPause: () => void;
+  onCancel: () => void;
   onRun: (entry: ModelCatalogueEntry) => void;
 }): React.JSX.Element {
-  if (entry === undefined) {
+  const phase = phaseOf(entry, transfer, failure);
+  const where = `${model.name} at ${quant.label}`;
+
+  if (phase === 'unpinned' || entry === undefined) {
     return (
       <span
         title="No file is pinned for this cell, so there is nothing osstat could verify what it downloaded against."
@@ -641,41 +757,66 @@ function Acquisition({
     );
   }
 
-  const running =
-    transfer !== null &&
-    transfer.key.modelId === entry.key.modelId &&
-    transfer.key.quantId === entry.key.quantId;
-
-  if (running || entry.state === 'downloading') {
+  if (phase === 'downloading' || phase === 'paused') {
     // Against the pinned size rather than anything a response claimed, and
     // counting whatever a resumed download already had — otherwise resuming
     // looks like starting over.
-    const downloaded = running ? transfer.downloadedBytes : 0;
-    const total = running ? transfer.totalBytes : entry.sizeBytes;
+    const downloaded = transfer?.downloadedBytes ?? 0;
+    const total = transfer?.totalBytes ?? entry.sizeBytes;
+    const paused = phase === 'paused';
 
     return (
-      <span className="flex items-center gap-1.5">
-        <span role="status" className="font-mono text-[10px] text-neutral-400">
-          {formatBytes(downloaded)} of {formatBytes(total)}
+      <div className="flex w-full min-w-40 flex-col gap-1">
+        <Meter
+          fraction={total > 0 ? downloaded / total : 0}
+          label={where}
+          detail={`${formatBytes(downloaded)} of ${formatBytes(total)}`}
+        />
+
+        <Pace transfer={transfer} paused={paused} />
+
+        <span className="flex items-center gap-1.5">
+          {paused ? (
+            <button
+              type="button"
+              aria-label={`Resume downloading ${where}`}
+              onClick={() => {
+                onDownload(entry.key, total, downloaded);
+              }}
+              className={CONTROL}
+            >
+              Resume
+            </button>
+          ) : (
+            <button
+              type="button"
+              aria-label={`Pause downloading ${where}`}
+              onClick={onPause}
+              className={CONTROL}
+            >
+              Pause
+            </button>
+          )}
+          <button
+            type="button"
+            title="Stops the download and deletes what has arrived so far. Pause keeps it."
+            aria-label={`Cancel downloading ${where}`}
+            onClick={onCancel}
+            className={CONTROL}
+          >
+            Cancel
+          </button>
         </span>
-        <button
-          type="button"
-          aria-label={`Stop downloading ${model.name} at ${quant.label}`}
-          onClick={onStop}
-          className="rounded-md border border-edge px-1.5 text-[10px] text-neutral-400 hover:bg-white/[0.04]"
-        >
-          Stop
-        </button>
-      </span>
+      </div>
     );
   }
 
-  if (entry.state === 'downloaded' && entry.path !== null) {
+  if (phase === 'downloaded') {
     return (
       <button
         type="button"
-        aria-label={`Run ${model.name} at ${quant.label}`}
-        title={entry.path}
+        aria-label={`Run ${where}`}
+        title={entry.path ?? undefined}
         onClick={() => {
           onRun(entry);
         }}
@@ -683,6 +824,36 @@ function Acquisition({
       >
         Run
       </button>
+    );
+  }
+
+  if (phase === 'failed') {
+    // Reached only when the payload said `retryable`, which in turn means the
+    // backoff in Rust has already been through its attempts. This is the
+    // manual try after the automatic ones, not a first attempt being delegated
+    // to the user — and it is never offered for a wrong pin.
+    return (
+      <span className="flex items-center gap-1.5">
+        <button
+          type="button"
+          title="The automatic attempts are used up. This tries again from where it stopped."
+          aria-label={`Retry downloading ${where}`}
+          onClick={() => {
+            onDownload(entry.key, entry.sizeBytes);
+          }}
+          className={CONTROL}
+        >
+          Retry
+        </button>
+        <button
+          type="button"
+          aria-label={`Cancel downloading ${where}`}
+          onClick={onCancel}
+          className={CONTROL}
+        >
+          Cancel
+        </button>
+      </span>
     );
   }
 
@@ -694,13 +865,11 @@ function Acquisition({
   return (
     <button
       type="button"
-      aria-label={`Download ${model.name} at ${quant.label}, ${formatBytes(
-        entry.sizeBytes
-      )}, via ${publisher}`}
+      aria-label={`Download ${where}, ${formatBytes(entry.sizeBytes)}, via ${publisher}`}
       onClick={() => {
         onDownload(entry.key, entry.sizeBytes);
       }}
-      className="rounded-md border border-edge px-1.5 text-[10px] text-neutral-400 hover:bg-white/[0.04]"
+      className={CONTROL}
     >
       Download{' '}
       <span className="font-mono opacity-70">
@@ -711,52 +880,75 @@ function Acquisition({
 }
 
 /**
+ * Transfer rate and time remaining, when there is an honest figure for either.
+ *
+ * Three cases, and they are three because collapsing them would lie about one.
+ * No rate yet is a window with one sample in it and says nothing. A rate of
+ * zero is a stall, and it is named rather than shown as "0 B/s, 0 s left" —
+ * which reads as a download about to finish. Anything else gets both figures.
+ */
+function Pace({
+  transfer,
+  paused,
+}: {
+  transfer: Transfer | null;
+  paused: boolean;
+}): React.JSX.Element | null {
+  if (paused) {
+    return <span className="font-mono text-[10px] text-neutral-500">Paused</span>;
+  }
+
+  const rate = transfer?.bytesPerSecond ?? null;
+  if (rate === null) return null;
+
+  if (rate === 0) {
+    return (
+      <span role="status" className="font-mono text-[10px] text-amber-400/80">
+        Stalled
+      </span>
+    );
+  }
+
+  const remaining = transfer?.secondsRemaining ?? null;
+
+  return (
+    <span role="status" className="font-mono text-[10px] text-neutral-500">
+      {formatRate(rate)}
+      {remaining !== null && ` · ${formatDuration(remaining)} left`}
+    </span>
+  );
+}
+
+/**
  * What went wrong with a download, in the terms the payload distinguishes.
  *
+ * Explanation only: Retry and Cancel live on the cell the failure is about, so
+ * they sit beside the model they act on rather than at the top of a page that
+ * may have scrolled away from it.
+ *
  * A checksum mismatch is a security event rather than a bad day on the network,
- * and it gets no retry: fetching the same bytes again produces the same
- * mismatch, and offering the button invites someone to keep trying until a
- * tampered file slips through. A cancellation is not a failure at all — the
- * partial file is kept deliberately, so the control resumes rather than
- * restarts.
+ * and it is worded as one. It also gets no retry anywhere — the payload's
+ * `retryable` is false, which is what keeps the control off the cell too:
+ * fetching the same bytes again produces the same mismatch, and offering the
+ * button invites someone to keep trying until a tampered file slips through.
+ *
+ * A transport failure that reaches here has already been retried automatically
+ * with a bounded backoff, so the wording says the attempts are used up rather
+ * than implying nothing was tried.
  */
-function AcquisitionFailure({
-  failure,
-  onRetry,
-}: {
-  failure: ModelFailure;
-  onRetry: () => void;
-}): React.JSX.Element {
+function AcquisitionFailure({ failure }: { failure: ModelFailure }): React.JSX.Element {
   return (
     <div role="alert" className="rounded-xl border border-edge p-3 text-xs">
-      <p
-        className={
-          failure.verificationFailure
-            ? 'text-red-400'
-            : failure.cancelled
-              ? 'text-neutral-400'
-              : 'text-amber-400/90'
-        }
-      >
+      <p className={failure.verificationFailure ? 'text-red-400' : 'text-amber-400/90'}>
         {failure.verificationFailure
-          ? 'Verification failed. osstat removed what it downloaded and loaded nothing.'
-          : failure.cancelled
-            ? 'The download was stopped.'
+          ? 'Verification failed. osstat removed what it downloaded and loaded nothing. The pinned checksum disagrees with the file that arrived, so fetching it again would produce the same result.'
+          : failure.retryable
+            ? 'The download did not finish, and the automatic attempts are used up.'
             : 'The download did not finish.'}
       </p>
       <p data-selectable className="mt-1 font-mono text-[11px] text-neutral-500">
         {failure.message}
       </p>
-
-      {failure.retryable && failure.key !== null && (
-        <button
-          type="button"
-          onClick={onRetry}
-          className="mt-2 rounded-md border border-edge px-2 py-0.5 text-xs text-neutral-300 hover:bg-white/[0.04]"
-        >
-          {failure.cancelled ? 'Resume' : 'Try again'}
-        </button>
-      )}
     </div>
   );
 }
