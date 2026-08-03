@@ -153,6 +153,9 @@ fn post_close_to_windows_of(pid: u32) -> u32 {
     target.posted
 }
 
+/// Microsoft's PCI vendor ID, which marks a software or paravirtual adapter.
+const MICROSOFT_VENDOR_ID: u32 = 0x1414;
+
 /// Reads every hardware adapter's memory totals from DXGI.
 ///
 /// Deliberately *not* `IDXGIAdapter3::QueryVideoMemoryInfo`. It looks exactly
@@ -201,7 +204,19 @@ pub(crate) fn adapter_memory() -> Vec<crate::AdapterMemory> {
         // The Microsoft Basic Render Driver is a CPU rasteriser Windows always
         // enumerates. The GPU probe already excludes it from the device list;
         // DXGI enumerates independently, so the exclusion is made again here.
-        if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
+        // `DXGI_ADAPTER_FLAG_SOFTWARE` alone is not enough. A headless Windows
+        // machine with no display driver — a CI runner, a VM — enumerates the
+        // Basic Render Driver *without* that flag set, so the flag test passed
+        // it straight through. GitHub's windows-latest runner proved it: the
+        // guard test below caught a rasteriser being reported as a graphics
+        // adapter with memory pools of its own.
+        //
+        // Vendor `0x1414` is Microsoft, which on a PCI adapter means a software
+        // or paravirtual device rather than a card. Neither has video memory to
+        // report, which is the only thing this function exists to read.
+        if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0
+            || desc.VendorId == MICROSOFT_VENDOR_ID
+        {
             continue;
         }
 
