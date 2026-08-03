@@ -43,6 +43,7 @@ import {
   chatLoad,
   chatOpenModel,
   chatSend,
+  chatStatus,
   chatStop,
   fetchModelCatalogue,
   onChatComplete,
@@ -486,6 +487,58 @@ function useStickyScroll(dependency: unknown): React.RefObject<HTMLDivElement | 
   return ref;
 }
 
+/**
+ * How long a close waits after this page unmounts, in milliseconds.
+ *
+ * Long enough that a page which is coming straight back cancels it, short
+ * enough that a user who has genuinely left does not notice the model outliving
+ * their leaving. Nothing in the app schedules work in this window, so the only
+ * thing that ever lands inside it is a remount.
+ */
+const CLOSE_GRACE_MS = 150;
+
+/**
+ * The close a previous unmount scheduled, or `null` when none is pending.
+ *
+ * Module scope rather than a ref, and deliberately so: what this records is
+ * "no chat page is mounted", which is a fact about the page and not about one
+ * mounting of it. A ref would be replaced by the very remount that needs to
+ * cancel the close — which is the case that matters, since a fresh instance is
+ * exactly what a return to this page produces.
+ */
+let pendingClose: ReturnType<typeof setTimeout> | null = null;
+
+/** Calls off a close a previous unmount scheduled, if one is still pending. */
+function keepSessionOpen(): void {
+  if (pendingClose === null) return;
+
+  clearTimeout(pendingClose);
+  pendingClose = null;
+}
+
+/**
+ * Schedules the close that leaving this page performs.
+ *
+ * Deferred rather than immediate, which is the whole of the fix. Unmounting is
+ * not the same event as leaving: React's development double-invoke unmounts and
+ * mounts again on purpose, and returning to the page does the same across a
+ * navigation. A close fired straight from the cleanup ended the server in both
+ * of those, and the page that came back could still see a session it no longer
+ * had — the model bar was drawn and every message was refused with "no model is
+ * open". Waiting a moment lets a remount say "still here" (ADR-013 keeps its
+ * property: nobody who actually leaves keeps a multi-gigabyte allocation).
+ */
+function closeSessionShortly(): void {
+  keepSessionOpen();
+
+  pendingClose = setTimeout(() => {
+    pendingClose = null;
+    chatClose().catch(() => {
+      // Nothing useful to say to a page that is already gone.
+    });
+  }, CLOSE_GRACE_MS);
+}
+
 /** What the chat page needs from the shell. */
 export interface ChatProps {
   /**
@@ -495,6 +548,10 @@ export interface ChatProps {
    * `chat_open_model` the file picker calls, so this page receives a session
    * rather than a second path to open. The shell drops it when the user
    * navigates away, because leaving this page ends the server.
+   *
+   * A head start rather than the truth: `chat_status` is asked on mount and its
+   * answer wins. Rust owns the session, and a prop cannot know that the page
+   * was mounted a second time or that the server has since stopped.
    */
   opened?: ModelSession | null;
 }
@@ -520,6 +577,12 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
   const [models, setModels] = useState<readonly Downloaded[]>([]);
   /** The model a switch is loading, or `null` when none is. */
   const [switchingTo, setSwitchingTo] = useState<string | null>(null);
+  // Whether this page has opened or closed a model itself since it mounted.
+  // The adoption below is a question asked on mount and answered a tick later,
+  // and an answer that arrived after the user had already acted would undo what
+  // they did. A ref rather than state because nothing renders differently for
+  // it -- it only decides whether a late answer is still worth applying.
+  const decided = useRef(false);
 
   // Re-reads the stored list. Called wherever the store has just changed --
   // after a message is accepted, after a reply is saved, after a delete --
@@ -529,6 +592,32 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
       // A store that cannot be listed is no reason to refuse a conversation;
       // the list stays as it was rather than emptying itself on a stumble.
     });
+  }, []);
+
+  // Adopt whatever session Rust already has, rather than assuming this page's
+  // own lifetime opened it. It usually did not: pressing Run on the LLM tab
+  // opens the model and *then* comes here, and the session survives this page
+  // being unmounted and mounted again. The `opened` prop is only a head start
+  // on the same answer -- it saves a frame of the no-model form, and it can be
+  // stale, so Rust settles it either way.
+  useEffect(() => {
+    let cancelled = false;
+
+    chatStatus().then(
+      (open) => {
+        if (cancelled || decided.current) return;
+        setSession(open);
+      },
+      () => {
+        // A status that cannot be read leaves the page showing whatever the
+        // shell handed it. Refusing to draw a session Rust may well have open
+        // would be a worse guess than the one the prop already made.
+      }
+    );
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Resume the most recent conversation. The store sorts by identifier and
@@ -650,15 +739,13 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
   // Leaving the page ends the server. A loaded model holds several gigabytes of
   // VRAM; osstat itself holds a fraction of that, and a monitoring application
   // that quietly kept the larger allocation alive would be the worst neighbour
-  // on the machine.
-  useEffect(
-    () => () => {
-      chatClose().catch(() => {
-        // Nothing useful to say to a page that is already gone.
-      });
-    },
-    []
-  );
+  // on the machine. Mounting cancels the close the last unmount scheduled,
+  // which is what tells a remount apart from a departure -- see
+  // `closeSessionShortly`.
+  useEffect(() => {
+    keepSessionOpen();
+    return closeSessionShortly;
+  }, []);
 
   const streaming = state.pending !== null;
   const switching = switchingTo !== null;
@@ -675,6 +762,7 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
   function open(): void {
     if (path.trim() === '' || opening) return;
 
+    decided.current = true;
     setOpening(true);
     setOpenError(null);
     chatOpenModel(path.trim()).then(
@@ -713,6 +801,7 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
   async function switchModel(target: string): Promise<void> {
     if (target === '' || switching || streaming) return;
 
+    decided.current = true;
     setSwitchingTo(stemOf(target));
     setOpenError(null);
 
@@ -802,6 +891,7 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
   function unload(): void {
     if (switching) return;
 
+    decided.current = true;
     setSession(null);
     setOpenError(null);
     chatClose().catch((error: unknown) => {

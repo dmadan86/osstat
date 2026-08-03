@@ -68,6 +68,7 @@ export const COMMANDS = {
   terminateProcess: 'terminate_process',
   criticalProcesses: 'critical_processes',
   chatOpenModel: 'chat_open_model',
+  chatStatus: 'chat_status',
   chatSend: 'chat_send',
   chatStop: 'chat_stop',
   chatClose: 'chat_close',
@@ -261,6 +262,18 @@ export function onRuntimeFailed(handler: (failure: RuntimeFailure) => void): Pro
  */
 export function chatOpenModel(path: string): Promise<ModelSession> {
   return invoke<ModelSession>(COMMANDS.chatOpenModel, { path });
+}
+
+/**
+ * The session Rust has open right now, or `null` when it has none.
+ *
+ * Rust owns the session, not the page: it is opened by the Run control on the
+ * LLM tab before the chat page exists, and it survives that page being
+ * unmounted and mounted again. So the page asks rather than assumes — an
+ * assumption is how a model bar ends up drawn for a server that has stopped.
+ */
+export function chatStatus(): Promise<ModelSession | null> {
+  return invoke<ModelSession | null>(COMMANDS.chatStatus);
 }
 
 /**

@@ -71,12 +71,15 @@ const SESSION_RECORD: &str = "session.json";
 /// carries the API key and the port. Neither is ever serialised.
 pub struct ChatState {
     session: Mutex<Option<Session>>,
-    /// The open model's name, kept beside the session it belongs to.
+    /// What the open session settled on, kept beside the session it describes.
     ///
-    /// Needed because a conversation records which model it was held with, and
-    /// [`chat_send`] has only the session to ask. Set and cleared in the same
-    /// two places the session is, so the pair cannot drift apart.
-    model_name: Mutex<Option<String>>,
+    /// Needed twice over. A conversation records which model it was held with
+    /// and [`chat_send`] has only the session to ask; and [`chat_status`] hands
+    /// this back whole, so a page that mounts after the model was opened can
+    /// draw the same model bar and the same context meter as the page that
+    /// opened it. Set and cleared in the same two places the session is, so the
+    /// pair cannot drift apart.
+    open: Mutex<Option<ModelSession>>,
     /// The open model's file, kept beside the session it belongs to.
     ///
     /// The name above cannot stand in for this. It is the file stem, so two
@@ -187,7 +190,7 @@ impl ChatState {
     pub const fn new(root: PathBuf) -> Self {
         Self {
             session: Mutex::new(None),
-            model_name: Mutex::new(None),
+            open: Mutex::new(None),
             model_path: Mutex::new(None),
             opened_at: Mutex::new(None),
             store: ConversationStore::new(root),
@@ -203,10 +206,10 @@ impl ChatState {
         let held = self.session.lock().ok()?;
         let session = held.as_ref()?;
         let name = self
-            .model_name
+            .open
             .lock()
             .ok()
-            .and_then(|held| held.clone())
+            .and_then(|held| held.as_ref().map(|open| open.model_name.clone()))
             .unwrap_or_default();
 
         Some((
@@ -258,7 +261,7 @@ impl ChatState {
     /// go through here — which is why the log line for a session ending lives
     /// here rather than at either caller.
     fn take_session(&self) -> Option<Session> {
-        if let Ok(mut held) = self.model_name.lock() {
+        if let Ok(mut held) = self.open.lock() {
             *held = None;
         }
         if let Ok(mut held) = self.model_path.lock() {
@@ -457,12 +460,18 @@ pub async fn chat_open_model(
     let client = ChatClient::new(session.base.clone(), session.api_key.clone());
     let context_length = client.context_length().await.unwrap_or(plan.context_length);
 
-    let model_name = model_name_of(&path);
+    let opened = ModelSession {
+        model_name: model_name_of(&path),
+        gpu_layers: plan.gpu_layers,
+        context_length,
+        fits: plan.fits,
+        head_dim_derived: model.head_dim_derived,
+    };
     if let Ok(mut held) = state.session.lock() {
         *held = Some(session);
     }
-    if let Ok(mut held) = state.model_name.lock() {
-        *held = Some(model_name.clone());
+    if let Ok(mut held) = state.open.lock() {
+        *held = Some(opened.clone());
     }
     if let Ok(mut held) = state.model_path.lock() {
         *held = Some(path.clone());
@@ -475,13 +484,27 @@ pub async fn chat_open_model(
     // names the model: how much was offloaded, and how wide the window is.
     crate::log::session_started(plan.gpu_layers, context_length);
 
-    Ok(ModelSession {
-        model_name,
-        gpu_layers: plan.gpu_layers,
-        context_length,
-        fits: plan.fits,
-        head_dim_derived: model.head_dim_derived,
-    })
+    Ok(opened)
+}
+
+/// What is open right now, or `None` when nothing is.
+///
+/// Read-only, and the answer to a question the webview cannot answer for
+/// itself: a session outlives the page that opened it. It is opened by the Run
+/// control on the LLM tab *before* the chat page exists, and the page can be
+/// unmounted and mounted again — by React's development double-invoke, by
+/// navigating away and back — while the model stays loaded. A page that assumed
+/// its own lifetime owned the session showed a model bar for a server that was
+/// gone, and every message it sent was refused. Asking here replaces the
+/// assumption with the fact.
+///
+/// Carries no way to reach the server, exactly as [`chat_open_model`]'s return
+/// does not: the base URL, the port and the API key stay in this process
+/// (ADR-012).
+#[tauri::command]
+#[must_use]
+pub fn chat_status(state: State<'_, ChatState>) -> Option<ModelSession> {
+    state.open.lock().ok().and_then(|held| held.clone())
 }
 
 /// Sends a message and streams the reply through `chat:*` events.
@@ -1147,6 +1170,42 @@ mod tests {
         assert!(
             state.client().is_none(),
             "a client was handed out with no session behind it"
+        );
+    }
+
+    #[test]
+    fn the_open_session_is_reported_until_it_is_closed() {
+        // What `chat_status` reads, and the reason it exists: a chat page that
+        // mounts after the model was opened has no other way to learn there is
+        // one. The second half matters as much as the first -- a description
+        // left behind by a closed session would have the page draw a model bar
+        // for a server that is gone, which is the state the user reported.
+        let directory = tempfile::tempdir().unwrap();
+        let state = ChatState::new(directory.path().to_path_buf());
+        let opened = ModelSession {
+            model_name: "mistral".to_owned(),
+            gpu_layers: 32,
+            context_length: 8192,
+            fits: true,
+            head_dim_derived: false,
+        };
+
+        if let Ok(mut held) = state.open.lock() {
+            *held = Some(opened.clone());
+        }
+        assert_eq!(state.open.lock().unwrap().as_ref(), Some(&opened));
+        assert_eq!(
+            state.client().map(|(_, name)| name),
+            None,
+            "a client was handed out for a description with no session behind it"
+        );
+
+        state.take_session();
+
+        assert_eq!(
+            state.open.lock().unwrap().as_ref(),
+            None,
+            "a closed session still described an open model"
         );
     }
 

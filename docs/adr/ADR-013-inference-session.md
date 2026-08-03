@@ -29,7 +29,13 @@ server-sent-event stream, and forwards `chat:*` events to the front end.
 
 **Reap orphans with a recorded `ProcessKey`**, not a Windows Job Object.
 
-**The process lives only while the chat page is open.**
+**The process lives only while the chat page is open**, but the page does not
+own the session — Rust does. It is opened by the Run control before the chat
+page exists, and it survives that page being unmounted and mounted again. So the
+page asks `chat_status` what is open on mount rather than assuming, and the close
+that leaving performs is deferred long enough for a remount to call it off. A
+close fired straight from the unmount ended the server on every remount, and the
+page that came back showed a model bar over nothing.
 
 **Conversations are persisted**, one JSON file each, with a delete control.
 

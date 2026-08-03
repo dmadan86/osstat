@@ -237,6 +237,7 @@ pub fn run() -> tauri::Result<()> {
             runtime::acquire_runtime,
             runtime::delete_runtime,
             chat::chat_open_model,
+            chat::chat_status,
             chat::chat_send,
             chat::chat_stop,
             chat::chat_close,
