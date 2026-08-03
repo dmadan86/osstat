@@ -12,7 +12,7 @@
  * fires it. Nothing here starts a server or downloads a model (ADR-012).
  */
 
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -25,7 +25,9 @@ import type { ModelSession } from '../bindings/ModelSession';
 
 const {
   chatClose,
+  chatDelete,
   chatList,
+  chatLoad,
   chatOpenModel,
   chatSend,
   chatStop,
@@ -34,7 +36,9 @@ const {
   onChatToken,
 } = vi.hoisted(() => ({
   chatClose: vi.fn(),
+  chatDelete: vi.fn(),
   chatList: vi.fn(),
+  chatLoad: vi.fn(),
   chatOpenModel: vi.fn(),
   chatSend: vi.fn(),
   chatStop: vi.fn(),
@@ -45,7 +49,9 @@ const {
 
 vi.mock('../lib/ipc', () => ({
   chatClose,
+  chatDelete,
   chatList,
+  chatLoad,
   chatOpenModel,
   chatSend,
   chatStop,
@@ -82,6 +88,20 @@ const STORED: Conversation = {
   messages: [],
 };
 
+/**
+ * An older conversation, held with a different model.
+ *
+ * A different model on purpose: each entry names the weights that answered it,
+ * and a list that printed the open session's name against every entry would
+ * look correct against a fixture where they all matched.
+ */
+const OLDER: Conversation = {
+  id: 'c0',
+  title: 'About coffee',
+  modelName: 'Qwen2.5-3B-Instruct',
+  messages: [{ role: 'user', content: 'why is it bitter', usage: null, stopped: false }],
+};
+
 function session(overrides: Partial<ModelSession> = {}): ModelSession {
   return {
     modelName: MODEL_NAME,
@@ -108,7 +128,11 @@ beforeEach(() => {
   chatSend.mockResolvedValue(undefined);
   chatStop.mockResolvedValue(undefined);
   chatClose.mockResolvedValue(undefined);
-  chatList.mockResolvedValue([STORED]);
+  chatList.mockResolvedValue([OLDER, STORED]);
+  chatLoad.mockImplementation((id: string) =>
+    id === OLDER.id ? Promise.resolve(OLDER) : Promise.resolve(STORED)
+  );
+  chatDelete.mockResolvedValue(undefined);
   onChatToken.mockImplementation(token.subscribe);
   onChatComplete.mockImplementation(complete.subscribe);
   onChatFailed.mockImplementation(failed.subscribe);
@@ -130,8 +154,16 @@ async function renderChat(overrides: Partial<ModelSession> = {}): Promise<void> 
   });
   fireEvent.click(screen.getByRole('button', { name: /open model/i }));
 
-  await screen.findByText(MODEL_NAME);
-  await screen.findByText(STORED.title);
+  // `findAllByText`, not `findByText`: the open model's name and the resumed
+  // conversation's title each appear twice now -- once in the model bar and
+  // once in the entry the conversation list draws for it.
+  await screen.findAllByText(MODEL_NAME);
+  await screen.findAllByText(STORED.title);
+}
+
+/** The conversation list, for tests that mean that section and not the page. */
+function conversationList(): HTMLElement {
+  return screen.getByRole('region', { name: /conversations/i });
 }
 
 /** Fires one event and lets React settle. */
@@ -236,6 +268,49 @@ describe('Chat', () => {
     expect(await screen.findByText('Once upon a')).toBeInTheDocument();
     expect(screen.getByText(/stopped/i)).toBeInTheDocument();
     expect(chatStop).toHaveBeenCalled();
+  });
+
+  it('lists every stored conversation with the model it was held with', async () => {
+    // The gap the user hit: conversations were saved, and `chat_list` returned
+    // them, and nothing on screen showed any of it -- so from their side
+    // nothing had been kept. Both the title and the model are named here,
+    // because an entry that showed only a title would leave the user guessing
+    // which weights produced the answers under it.
+    await renderChat();
+
+    const entries = within(conversationList());
+    expect(await entries.findByText(OLDER.title)).toBeInTheDocument();
+    expect(entries.getByText(OLDER.modelName)).toBeInTheDocument();
+    expect(entries.getByText(STORED.title)).toBeInTheDocument();
+    expect(entries.getByText(STORED.modelName)).toBeInTheDocument();
+  });
+
+  it('loads a stored conversation through chat_load when its entry is chosen', async () => {
+    await renderChat();
+
+    await userEvent.click(await within(conversationList()).findByText(OLDER.title));
+
+    expect(chatLoad).toHaveBeenCalledWith(OLDER.id);
+    // The transcript is the older conversation's, not merely a changed title.
+    expect(await screen.findByText('why is it bitter')).toBeInTheDocument();
+  });
+
+  it('deletes a conversation and stops listing it', async () => {
+    await renderChat();
+    const entries = within(conversationList());
+    await entries.findByText(OLDER.title);
+    // What the store returns once the file is gone.
+    chatList.mockResolvedValue([STORED]);
+
+    await userEvent.click(entries.getByRole('button', { name: `Delete ${OLDER.title}` }));
+
+    expect(chatDelete).toHaveBeenCalledWith(OLDER.id);
+    await waitFor(() => {
+      expect(within(conversationList()).queryByText(OLDER.title)).not.toBeInTheDocument();
+    });
+    // The other conversation is untouched -- a delete that emptied the list
+    // would also satisfy an assertion that names only the deleted one.
+    expect(within(conversationList()).getByText(STORED.title)).toBeInTheDocument();
   });
 
   it('unloads the model through chat_close and returns to the no-model state', async () => {

@@ -20,7 +20,7 @@
  * preference.
  */
 
-import { useEffect, useReducer, useState } from 'react';
+import { useCallback, useEffect, useReducer, useState } from 'react';
 
 import type { ChatComplete } from '../bindings/ChatComplete';
 import type { ChatFailure } from '../bindings/ChatFailure';
@@ -35,7 +35,9 @@ import { Meter } from '../components/Meter';
 import { formatCount } from '../lib/format';
 import {
   chatClose,
+  chatDelete,
   chatList,
+  chatLoad,
   chatOpenModel,
   chatSend,
   chatStop,
@@ -345,6 +347,17 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  const [conversations, setConversations] = useState<readonly Conversation[]>([]);
+
+  // Re-reads the stored list. Called wherever the store has just changed --
+  // after a message is accepted, after a reply is saved, after a delete --
+  // because `chat_list` reads the directory and the directory is the truth.
+  const refresh = useCallback(() => {
+    chatList().then(setConversations, () => {
+      // A store that cannot be listed is no reason to refuse a conversation;
+      // the list stays as it was rather than emptying itself on a stumble.
+    });
+  }, []);
 
   // Resume the most recent conversation. The store sorts by identifier and
   // identifiers are time-ordered, so the last entry is the newest.
@@ -353,8 +366,10 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
 
     chatList().then(
       (found) => {
+        if (cancelled) return;
+        setConversations(found);
         const latest = found.at(-1);
-        if (!cancelled && latest !== undefined) dispatch({ kind: 'open', conversation: latest });
+        if (latest !== undefined) dispatch({ kind: 'open', conversation: latest });
       },
       () => {
         // A store that cannot be listed is no reason to refuse a new
@@ -397,6 +412,9 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
         usage: payload.usage,
         stopped: payload.stopped,
       });
+      // The reply has been written by the time this arrives, so the list is
+      // one entry or one title out of date until it is read again.
+      refresh();
     });
 
     return () => {
@@ -409,7 +427,7 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
         }
       );
     };
-  }, []);
+  }, [refresh]);
 
   useEffect(() => {
     const unlisten = onChatFailed((payload: ChatFailure) => {
@@ -471,9 +489,46 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
     const id = state.conversation.id;
     setDraft('');
     dispatch({ kind: 'ask', text });
-    chatSend(id, text).catch((error: unknown) => {
-      dispatch({ kind: 'failed', conversationId: id, message: messageOf(error) });
-    });
+    chatSend(id, text).then(
+      // The question is saved before the reply is asked for, so by the time
+      // this resolves a conversation new to the store is on disk with its
+      // title. Reading the list here is what puts it on screen.
+      refresh,
+      (error: unknown) => {
+        dispatch({ kind: 'failed', conversationId: id, message: messageOf(error) });
+      }
+    );
+  }
+
+  /** Opens a stored conversation in place of the one on screen. */
+  function select(id: string): void {
+    if (id === state.conversation.id) return;
+
+    chatLoad(id).then(
+      (conversation) => {
+        dispatch({ kind: 'open', conversation });
+      },
+      (error: unknown) => {
+        // Surfaced rather than swallowed: a conversation that is listed but
+        // will not open is a file the user can see and cannot reach.
+        setOpenError(messageOf(error));
+      }
+    );
+  }
+
+  /** Deletes a stored conversation, and the transcript with it if it is open. */
+  function remove(id: string): void {
+    chatDelete(id).then(
+      () => {
+        refresh();
+        if (id === state.conversation.id) {
+          dispatch({ kind: 'open', conversation: freshConversation(session?.modelName ?? '') });
+        }
+      },
+      (error: unknown) => {
+        setOpenError(messageOf(error));
+      }
+    );
   }
 
   function stop(): void {
@@ -522,32 +577,41 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
         />
       )}
 
-      <div className="min-h-0 flex-1 overflow-auto rounded-xl border border-edge bg-surface-raised p-3">
-        {state.conversation.messages.length === 0 && state.pending === null && (
-          <p className="text-center text-sm text-neutral-500">
-            {session === null
-              ? 'Open a GGUF model file to start a conversation.'
-              : 'Nothing said yet.'}
-          </p>
-        )}
+      <div className="flex min-h-0 flex-1 gap-3">
+        <ConversationList
+          conversations={conversations}
+          openId={state.conversation.id}
+          onSelect={select}
+          onDelete={remove}
+        />
 
-        <ol className="flex flex-col gap-3">
-          {state.conversation.messages.map((message, index) => (
-            <Turn key={index} message={message} />
-          ))}
-
-          {state.pending !== null && (
-            <Turn
-              message={{
-                role: 'assistant',
-                content: state.pending.content,
-                usage: null,
-                stopped: state.pending.stopped,
-              }}
-              timings={state.pending.stopped ? null : state.timings}
-            />
+        <div className="min-h-0 flex-1 overflow-auto rounded-xl border border-edge bg-surface-raised p-3">
+          {state.conversation.messages.length === 0 && state.pending === null && (
+            <p className="text-center text-sm text-neutral-500">
+              {session === null
+                ? 'Open a GGUF model file to start a conversation.'
+                : 'Nothing said yet.'}
+            </p>
           )}
-        </ol>
+
+          <ol className="flex flex-col gap-3">
+            {state.conversation.messages.map((message, index) => (
+              <Turn key={index} message={message} />
+            ))}
+
+            {state.pending !== null && (
+              <Turn
+                message={{
+                  role: 'assistant',
+                  content: state.pending.content,
+                  usage: null,
+                  stopped: state.pending.stopped,
+                }}
+                timings={state.pending.stopped ? null : state.timings}
+              />
+            )}
+          </ol>
+        </div>
       </div>
 
       {session !== null && (
@@ -616,6 +680,76 @@ function OpenModel({
         The layer count and context window are chosen from the file&rsquo;s own header and the
         measured VRAM, not from an estimate for a model of its name.
       </p>
+    </section>
+  );
+}
+
+/**
+ * Every conversation on disk, with the open one marked.
+ *
+ * Conversations were being saved and listed by the backend already, and none
+ * of it was reachable — so from the user's side nothing was kept at all. Each
+ * entry names the model it was held with, because a conversation is only as
+ * reproducible as the weights that answered it, and a transcript from a 3B
+ * model reads very differently from the same questions put to a 70B one.
+ */
+function ConversationList({
+  conversations,
+  openId,
+  onSelect,
+  onDelete,
+}: {
+  conversations: readonly Conversation[];
+  openId: string;
+  onSelect: (id: string) => void;
+  onDelete: (id: string) => void;
+}): React.JSX.Element {
+  return (
+    <section
+      aria-label="Conversations"
+      className="flex w-56 shrink-0 flex-col overflow-auto rounded-xl border border-edge bg-surface-raised p-2"
+    >
+      <h2 className="px-1 pb-1 text-[10px] uppercase tracking-wider text-neutral-500">
+        Conversations
+      </h2>
+
+      {conversations.length === 0 ? (
+        <p className="px-1 text-[11px] text-neutral-600">Nothing saved yet.</p>
+      ) : (
+        <ul className="flex flex-col gap-0.5">
+          {conversations.map((conversation) => (
+            <li key={conversation.id} className="flex items-center gap-1">
+              <button
+                type="button"
+                aria-current={conversation.id === openId}
+                onClick={() => {
+                  onSelect(conversation.id);
+                }}
+                className={`min-w-0 flex-1 rounded-md px-1.5 py-1 text-left hover:bg-white/[0.04] ${
+                  conversation.id === openId ? 'bg-white/[0.06]' : ''
+                }`}
+              >
+                <span className="block truncate text-xs text-neutral-300">
+                  {conversation.title}
+                </span>
+                <span className="block truncate font-mono text-[10px] text-neutral-500">
+                  {conversation.modelName === '' ? 'no model recorded' : conversation.modelName}
+                </span>
+              </button>
+              <button
+                type="button"
+                aria-label={`Delete ${conversation.title}`}
+                onClick={() => {
+                  onDelete(conversation.id);
+                }}
+                className="shrink-0 rounded-md border border-edge px-1.5 text-[10px] text-neutral-500 hover:bg-white/[0.04] hover:text-red-400"
+              >
+                Delete
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
