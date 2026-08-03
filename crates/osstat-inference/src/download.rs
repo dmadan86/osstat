@@ -331,7 +331,25 @@ async fn fetch_into_part(
             });
         }
 
+        Ok(())
+    }
+    .await;
+
+    // Flushed however the loop ended, not only when it ended well. A
+    // `tokio::fs::File` write copies the chunk into a buffer, hands it to a
+    // blocking task and returns immediately, so the bytes are queued rather
+    // than written; only a flush waits for that task. Returning early on a
+    // dropped connection therefore abandoned whatever was still in flight and
+    // could leave an empty part -- nothing to resume from, which is the entire
+    // point of keeping it. The sync then puts the bytes beyond the OS cache, so
+    // a crash after a dropped connection resumes from real data too.
+    let persisted = async {
         file.flush().await.map_err(|source| AcquireError::Io {
+            path: part.to_path_buf(),
+            source,
+        })?;
+
+        file.sync_data().await.map_err(|source| AcquireError::Io {
             path: part.to_path_buf(),
             source,
         })
@@ -342,7 +360,9 @@ async fn fetch_into_part(
     // Windows where an open handle blocks both.
     drop(file);
 
-    outcome
+    // The transfer's own failure is the one worth reporting; a flush error only
+    // surfaces when the transfer itself had nothing to say.
+    outcome.and(persisted)
 }
 
 /// Downloads `url` into `destination`, resuming an interrupted attempt.
@@ -801,12 +821,12 @@ mod tests {
             interrupted.is_err(),
             "the fixture closed the connection half way through"
         );
-        // A range, not an exact count. How much of a dropped response has
-        // reached the file depends on reqwest's internal buffering, which this
-        // code does not control -- asserting 2048 exactly made the test pass or
-        // fail on scheduling, and it failed in one CI job while passing in
-        // another on the same commit and platform. What has to hold is that
-        // something survived to resume from and that it is not the whole file.
+        // The exact count is deliberately not asserted: how much of a severed
+        // response reached the file depends on where the stream was cut and how
+        // the bytes that did arrive were framed, neither of which this code
+        // decides. The two properties that matter are asserted instead -- the
+        // part is not empty, which is the whole reason the function keeps it,
+        // and it is not the whole file, or the connection was never really cut.
         let survived = std::fs::metadata(&part).unwrap().len();
         assert!(
             survived > 0,
@@ -830,9 +850,12 @@ mod tests {
         .await
         .unwrap();
 
+        // Expressed against what actually survived rather than a literal, for
+        // the reason given above: the count is not this code's to predict, but
+        // resuming from exactly it is.
         assert_eq!(
             fixture.ranges(),
-            vec![None, Some(2048)],
+            vec![None, Some(survived)],
             "the retry must ask for exactly the bytes it is missing"
         );
         assert_eq!(
