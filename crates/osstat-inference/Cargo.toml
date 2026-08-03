@@ -38,7 +38,8 @@ osstat-platform = { workspace = true }
 zip = { version = "6", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1"
-tokio = { version = "1", features = ["fs", "io-util"] }
+# `time` for the backoff between download attempts; see `RETRY_BACKOFF`.
+tokio = { version = "1", features = ["fs", "io-util", "time"] }
 futures-util = { version = "0.3", default-features = false }
 # Free disk space, before committing to a download that can be 642 MB. Chosen
 # over reusing osstat-platform's sysinfo: fs4 wraps GetDiskFreeSpaceExW and
@@ -48,7 +49,9 @@ fs4 = "1.1.0"
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# `test-util` so the retry tests can advance past the backoff rather than
+# spending 21 real seconds waiting it out.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
 # Validates the pinned manifest against its own JSON Schema in a test, rather
 # than trusting that the schema and the data never drift apart. Same convention
 # as osstat-llm's model registry.

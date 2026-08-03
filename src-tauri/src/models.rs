@@ -18,12 +18,14 @@
 // handles, so the lint's concern does not apply. Same reason as `commands.rs`.
 #![allow(clippy::needless_pass_by_value)]
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use osstat_inference::{
-    AcquireError, ModelKey, ModelRecord, ModelStore, MovePlan, Progress, download_resumable,
-    download_url, move_library, plan_move, require_space,
+    AcquireError, ModelKey, ModelRecord, ModelStore, MovePlan, Progress,
+    download_resumable_retrying, download_url, move_library, plan_move, require_space,
 };
 use osstat_llm::registry::{ModelDownload, seeded_registry};
 use serde::Serialize;
@@ -52,6 +54,27 @@ const INDEX_FILE: &str = "models.json";
 
 /// The suffix a download accumulates into before it has verified.
 const PART_SUFFIX: &str = "part";
+
+/// How long transfer rate and time remaining are averaged over.
+///
+/// Short on purpose. Averaged over the whole transfer, a connection that
+/// stopped ten seconds ago still reports the speed it was managing a minute
+/// before that, and the bar reads as healthy while nothing is arriving. Over a
+/// few seconds a stall is visible as the stall it is.
+const RATE_WINDOW: Duration = Duration::from_secs(5);
+
+/// How many progress samples the window holds at most.
+///
+/// Progress arrives once per chunk, which on a fast link is thousands of times
+/// a second. The cap keeps the deque small without changing the answer: the
+/// rate is computed from the two ends of the window and nothing in between.
+const RATE_SAMPLES: usize = 64;
+
+/// How many times a cancelled download's partial file is chased.
+const DISCARD_ATTEMPTS: u32 = 5;
+
+/// How long to wait between those attempts.
+const DISCARD_PAUSE: Duration = Duration::from_millis(50);
 
 /// One fit-matrix cell that has a pinned file, a downloaded one, or both.
 ///
@@ -105,6 +128,97 @@ pub struct ModelProgress {
     /// Bytes expected in total, from the pin rather than from any response.
     #[cfg_attr(feature = "ts-bindings", ts(type = "number"))]
     pub total_bytes: u64,
+    /// How fast bytes are currently arriving, over the last few seconds.
+    ///
+    /// `None` until there are two samples to measure between, and for a
+    /// library move — a same-volume move renames rather than copies, so a byte
+    /// rate would describe an operation that never touched the bytes.
+    ///
+    /// Deliberately not an average over the whole transfer: see
+    /// [`RATE_WINDOW`].
+    #[cfg_attr(feature = "ts-bindings", ts(type = "number | null"))]
+    pub bytes_per_second: Option<u64>,
+    /// How much longer the transfer has, at the current rate.
+    ///
+    /// `None` when there is no rate to divide by, and — importantly — when the
+    /// rate has fallen to zero. A stalled transfer has no honest estimate, and
+    /// a number that silently stopped changing would be read as one that is
+    /// still being computed.
+    #[cfg_attr(feature = "ts-bindings", ts(type = "number | null"))]
+    pub seconds_remaining: Option<u64>,
+}
+
+/// How fast a transfer is going, and how much longer it has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Pace {
+    /// Bytes per second over [`RATE_WINDOW`], once there is enough to say.
+    bytes_per_second: Option<u64>,
+    /// Seconds left at that rate, unless the rate is zero.
+    seconds_remaining: Option<u64>,
+}
+
+/// The last few progress samples, so the rate describes now rather than ever.
+struct Rate {
+    /// When each sample arrived, and how many bytes had landed by then.
+    samples: VecDeque<(Instant, u64)>,
+}
+
+impl Rate {
+    /// An empty window, which reports nothing until it has two samples.
+    const fn new() -> Self {
+        Self {
+            samples: VecDeque::new(),
+        }
+    }
+
+    /// Records a sample and answers the rate and estimate it implies.
+    ///
+    /// Measured between the two ends of the window rather than from the start
+    /// of the transfer, which is what makes a stall show up as a rate of zero
+    /// instead of being averaged away by the minutes that went well.
+    fn observe(&mut self, at: Instant, downloaded_bytes: u64, total_bytes: u64) -> Pace {
+        self.samples.push_back((at, downloaded_bytes));
+
+        // Two are always kept, however old. A transfer that has been silent
+        // for a minute must still be able to report the zero that says so,
+        // and an empty window would report `None` — indistinguishable from a
+        // download that has only just started.
+        while self.samples.len() > 2
+            && self
+                .samples
+                .front()
+                .is_some_and(|(when, _)| at.saturating_duration_since(*when) > RATE_WINDOW)
+        {
+            self.samples.pop_front();
+        }
+        while self.samples.len() > RATE_SAMPLES {
+            self.samples.pop_front();
+        }
+
+        let (Some(&(oldest_at, oldest_bytes)), Some(&(newest_at, newest_bytes))) =
+            (self.samples.front(), self.samples.back())
+        else {
+            return Pace::default();
+        };
+
+        let nanos = newest_at.saturating_duration_since(oldest_at).as_nanos();
+        if self.samples.len() < 2 || nanos == 0 {
+            return Pace::default();
+        }
+
+        // Integer throughout: the figures are bytes and nanoseconds, both
+        // whole, and a float here would only add a rounding step to a number
+        // that is displayed to three significant figures anyway.
+        let moved = u128::from(newest_bytes.saturating_sub(oldest_bytes));
+        let bytes_per_second =
+            u64::try_from(moved.saturating_mul(1_000_000_000) / nanos).unwrap_or(u64::MAX);
+
+        Pace {
+            bytes_per_second: Some(bytes_per_second),
+            seconds_remaining: (bytes_per_second > 0)
+                .then(|| total_bytes.saturating_sub(newest_bytes) / bytes_per_second),
+        }
+    }
 }
 
 /// A download or a move that finished.
@@ -140,12 +254,34 @@ pub struct ModelFailure {
     /// The UI says something different for these: a mismatch is a security
     /// event, not a bad day on the network.
     pub verification_failure: bool,
-    /// Whether the user stopped it rather than anything going wrong.
+    /// How the user stopped it, or `None` if something actually went wrong.
     ///
-    /// Carried rather than left to the message because a cancellation is not a
-    /// failure, and the partial file is deliberately kept so the next attempt
-    /// resumes from it.
-    pub cancelled: bool,
+    /// One field rather than a `cancelled` flag and a `paused` flag beside it,
+    /// because two booleans would spell a state that cannot happen — paused but
+    /// not stopped — and the UI would have to decide what to render for it.
+    pub stopped: Option<Stop>,
+}
+
+/// Why a download is stopping, and therefore what becomes of the `.part`.
+///
+/// The two share everything — the same channel, the same signal, the same
+/// wind-down — and differ by **one line**, the removal of the partial file in
+/// [`fetch`]. They are one enum rather than two mechanisms so that the
+/// difference is visible in one place instead of being spread across two
+/// near-identical code paths that could drift apart.
+///
+/// It crosses to the webview because the difference outlives the stop: after a
+/// pause the figure the bar reached still describes bytes on disk, and after a
+/// cancel it describes bytes that are gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
+#[serde(rename_all = "camelCase")]
+pub enum Stop {
+    /// Keep the `.part`, so starting the same download again resumes from it.
+    Pause,
+    /// Remove the `.part`, so nothing is left occupying the disk.
+    Cancel,
 }
 
 /// What moving the library to a chosen folder would cost.
@@ -186,22 +322,28 @@ impl ModelFailure {
                 error,
                 AcquireError::ChecksumMismatch { .. } | AcquireError::SizeMismatch { .. }
             ),
-            cancelled: false,
+            stopped: None,
         }
     }
 
-    /// Describes the user stopping a download of `key`.
-    fn cancelled(key: ModelKey) -> Self {
+    /// Describes the user stopping a download of `key`, either way.
+    fn stopped_by(key: ModelKey, stop: Stop) -> Self {
         Self {
             key: Some(key),
-            message: "the download was stopped; starting it again resumes from where it \
-                      stopped"
-                .to_owned(),
-            // Resuming is exactly the right response, which is what this flag
-            // is asked in order to decide.
+            message: match stop {
+                Stop::Pause => {
+                    "the download was paused; resuming continues from where it stopped".to_owned()
+                }
+                Stop::Cancel => {
+                    "the download was cancelled; what had already arrived was deleted".to_owned()
+                }
+            },
+            // Starting it again is exactly the right response to both, which is
+            // what this flag is asked in order to decide. What differs is where
+            // it starts from, and that is [`Self::stopped`].
             retryable: true,
             verification_failure: false,
-            cancelled: true,
+            stopped: Some(stop),
         }
     }
 }
@@ -230,8 +372,8 @@ pub struct ModelState {
     /// disk both finish later than one after the other, and a progress bar that
     /// cannot say which file it describes is worse than no progress bar.
     busy: Mutex<Option<Busy>>,
-    /// How to stop the download currently running.
-    cancel: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// How to stop the download currently running, and which way.
+    cancel: Mutex<Option<tokio::sync::oneshot::Sender<Stop>>>,
     /// The app-data directory, which is where the index lives.
     root: PathBuf,
 }
@@ -296,6 +438,18 @@ impl ModelState {
         }
         if let Ok(mut held) = self.cancel.lock() {
             *held = None;
+        }
+    }
+
+    /// Asks the running download to stop, `stop` saying what to do with the
+    /// partial file. Does nothing if there is none.
+    fn ask_to_stop(&self, stop: Stop) {
+        if let Ok(mut held) = self.cancel.lock()
+            && let Some(sender) = held.take()
+        {
+            // Fails only if the download task has already finished, which means
+            // there is nothing left to stop.
+            let _ = sender.send(stop);
         }
     }
 
@@ -508,11 +662,17 @@ pub fn models_download(
     Ok(())
 }
 
-/// Fetches one pinned file, stopping early if the user asks.
+/// Fetches one pinned file, retrying what is worth retrying and stopping early
+/// if the user asks.
 ///
-/// Cancelling drops the transfer mid-write, which leaves the part file exactly
-/// as far along as it got — that is what makes stopping cheap rather than
-/// destructive.
+/// Stopping drops the transfer mid-write, which leaves the part file exactly as
+/// far along as it got — that is what makes pausing cheap rather than
+/// destructive. Cancelling then removes it; see [`Stop`].
+///
+/// The retry loop is inside the future the `select!` below races, so a stop
+/// interrupts a download **and** the backoff between two attempts. A Pause that
+/// took effect only once a sixteen-second wait had elapsed would read as a
+/// control that did not work.
 async fn fetch(
     app: &AppHandle,
     url: &str,
@@ -520,12 +680,19 @@ async fn fetch(
     destination: &Path,
     download: &ModelDownload,
     key: &ModelKey,
-    cancel: tokio::sync::oneshot::Receiver<()>,
+    cancel: tokio::sync::oneshot::Receiver<Stop>,
 ) -> Result<(), ModelFailure> {
     let client = reqwest::Client::new();
     let emitter = app.clone();
     let reported = key.clone();
+    let mut rate = Rate::new();
     let mut on_progress = move |progress: Progress| {
+        let pace = rate.observe(
+            Instant::now(),
+            progress.downloaded_bytes,
+            progress.total_bytes,
+        );
+
         let _ = emitter.emit(
             MODEL_PROGRESS_EVENT,
             ModelProgress {
@@ -533,11 +700,13 @@ async fn fetch(
                 phase: "downloading".to_owned(),
                 downloaded_bytes: progress.downloaded_bytes,
                 total_bytes: progress.total_bytes,
+                bytes_per_second: pace.bytes_per_second,
+                seconds_remaining: pace.seconds_remaining,
             },
         );
     };
 
-    let downloading = download_resumable(
+    let downloading = download_resumable_retrying(
         &client,
         url,
         part,
@@ -547,7 +716,8 @@ async fn fetch(
         &mut on_progress,
     );
 
-    tokio::select! {
+    let mut asked = None;
+    let outcome = tokio::select! {
         finished = downloading => finished.map_err(|error| {
             // By kind, never by `Display`: every `AcquireError` variant names a
             // file, a path or a URL, which is the point of the message the user
@@ -561,15 +731,53 @@ async fn fetch(
         // that branch never resolves and lets the other one decide -- the same
         // arrangement `chat.rs` uses for a reply nothing can cancel.
         stopped = cancel => match stopped {
-            Ok(()) => {
-                // Its own line rather than a failure: the partial file is kept
-                // on purpose, and a log that reported the two the same way
+            Ok(stop) => {
+                asked = Some(stop);
+                // Their own lines rather than failures: neither is one, and a
+                // log that reported them the same way as a dropped connection
                 // would have someone chasing a network problem that never was.
-                crate::log::download_cancelled();
-                Err(ModelFailure::cancelled(key.clone()))
+                match stop {
+                    Stop::Pause => crate::log::download_paused(),
+                    Stop::Cancel => crate::log::download_cancelled(),
+                }
+                Err(ModelFailure::stopped_by(key.clone(), stop))
             }
             Err(_) => downloading_forever().await,
         },
+    };
+
+    // **This is the entire difference between Pause and Cancel.** Both send the
+    // same signal down the same channel and stop the transfer the same way;
+    // only whether this runs decides whether the partial file survives to be
+    // resumed from. It is one line, so it would otherwise look accidental.
+    //
+    // After the `select!` rather than inside its arm, because the arm runs
+    // while the transfer future — and the file handle it holds — is still
+    // alive, and Windows refuses to delete a file anything has open.
+    if asked == Some(Stop::Cancel) {
+        discard(part).await;
+    }
+
+    outcome
+}
+
+/// Removes the partial file a cancelled download left behind.
+///
+/// Retried briefly rather than attempted once. The transfer future has just
+/// been dropped, but a `tokio::fs::File` whose last write is still in flight
+/// closes its handle on a blocking task rather than immediately — and Windows
+/// refuses to delete a file anything still has open. A quarter of a second of
+/// patience is the difference between Cancel freeing the disk and leaving
+/// gigabytes behind that nothing in the app admits to.
+///
+/// Still best effort at the end of it: a file that will not delete costs disk,
+/// and there is nothing useful to tell the user who has already moved on.
+async fn discard(part: &Path) {
+    for _ in 0..DISCARD_ATTEMPTS {
+        if !part.exists() || std::fs::remove_file(part).is_ok() {
+            return;
+        }
+        tokio::time::sleep(DISCARD_PAUSE).await;
     }
 }
 
@@ -581,19 +789,26 @@ async fn downloading_forever() -> Result<(), ModelFailure> {
     std::future::pending().await
 }
 
-/// Stops the download currently running, if there is one.
+/// Pauses the download currently running, if there is one.
 ///
-/// The partial file is kept, so starting the same download again resumes from
-/// where it stopped rather than from zero.
+/// The partial file is **kept**, so starting the same download again resumes
+/// from where it stopped rather than from zero. That is the only thing
+/// separating this from [`models_cancel`], which is otherwise the same stop.
+#[tauri::command]
+pub fn models_pause(state: State<'_, ModelState>) {
+    state.ask_to_stop(Stop::Pause);
+}
+
+/// Cancels the download currently running, if there is one.
+///
+/// The partial file is **deleted**, so starting the same download again begins
+/// from zero. That is the only thing separating this from [`models_pause`] —
+/// deliberately, because a control that abandoned a download and silently left
+/// several gigabytes on the disk would be the opposite of what a disk-cleaning
+/// utility is for.
 #[tauri::command]
 pub fn models_cancel(state: State<'_, ModelState>) {
-    if let Ok(mut held) = state.cancel.lock()
-        && let Some(sender) = held.take()
-    {
-        // Fails only if the download task has already finished, which means
-        // there is nothing left to stop.
-        let _ = sender.send(());
-    }
+    state.ask_to_stop(Stop::Cancel);
 }
 
 /// Deletes a downloaded model: the file, and the record naming it.
@@ -698,6 +913,13 @@ pub fn models_move(
                     phase: "moving".to_owned(),
                     downloaded_bytes: progress.downloaded_bytes,
                     total_bytes: progress.total_bytes,
+                    // No rate and no estimate for a move. A same-volume move
+                    // renames rather than copies, so a byte rate would be a
+                    // figure invented for an operation that never touched the
+                    // bytes — and a cross-volume one is bounded by the disk
+                    // rather than by anything this window could observe.
+                    bytes_per_second: None,
+                    seconds_remaining: None,
                 },
             );
         };
@@ -897,7 +1119,7 @@ mod tests {
 
         assert!(!failure.retryable);
         assert!(failure.verification_failure);
-        assert!(!failure.cancelled);
+        assert_eq!(failure.stopped, None);
         assert!(failure.message.contains("model.gguf"));
     }
 
@@ -935,12 +1157,148 @@ mod tests {
     }
 
     #[test]
-    fn a_stopped_download_is_offered_as_resumable_rather_than_broken() {
-        let failure = ModelFailure::cancelled(sample_key());
+    fn a_paused_download_is_offered_as_resumable_rather_than_broken() {
+        let failure = ModelFailure::stopped_by(sample_key(), Stop::Pause);
 
-        assert!(failure.cancelled);
-        assert!(failure.retryable, "a stopped download resumes");
+        assert_eq!(failure.stopped, Some(Stop::Pause));
+        assert!(failure.retryable, "a paused download resumes");
         assert!(!failure.verification_failure);
+    }
+
+    #[test]
+    fn a_cancelled_download_says_the_partial_file_is_gone() {
+        // The difference the UI renders from: after a pause the figure the bar
+        // reached still describes bytes on disk, and after a cancel it does
+        // not. Showing "2.3 GB of 4.6 GB" over a deleted part would promise a
+        // resume that would in fact start from zero.
+        let failure = ModelFailure::stopped_by(sample_key(), Stop::Cancel);
+
+        assert_eq!(
+            failure.stopped,
+            Some(Stop::Cancel),
+            "a cancel must not be reported as a pause"
+        );
+        assert!(
+            failure.retryable,
+            "starting again is still the right control"
+        );
+        assert!(!failure.verification_failure);
+    }
+
+    #[test]
+    fn a_real_failure_is_not_reported_as_a_stop() {
+        let failure = ModelFailure::of(
+            Some(sample_key()),
+            &AcquireError::HttpStatus {
+                url: "https://example.invalid/x".to_owned(),
+                status: 503,
+            },
+        );
+
+        assert_eq!(failure.stopped, None);
+    }
+
+    #[test]
+    fn the_two_stops_differ_in_their_wording_as_well_as_their_flag() {
+        // A user who paused and a user who cancelled are told different things
+        // about what is on their disk, because different things are.
+        let paused = ModelFailure::stopped_by(sample_key(), Stop::Pause);
+        let cancelled = ModelFailure::stopped_by(sample_key(), Stop::Cancel);
+
+        assert!(paused.message.contains("paused"), "{}", paused.message);
+        assert!(
+            cancelled.message.contains("deleted"),
+            "{}",
+            cancelled.message
+        );
+        assert_ne!(paused.message, cancelled.message);
+    }
+
+    #[test]
+    fn a_rate_says_nothing_from_a_single_sample() {
+        // One sample is a position, not a speed. Reporting a rate from it would
+        // mean inventing an elapsed time.
+        let mut rate = Rate::new();
+
+        let pace = rate.observe(Instant::now(), 1_000, 10_000);
+
+        assert_eq!(pace.bytes_per_second, None);
+        assert_eq!(pace.seconds_remaining, None);
+    }
+
+    #[test]
+    fn a_rate_is_bytes_moved_over_the_time_they_took() {
+        let start = Instant::now();
+        let mut rate = Rate::new();
+
+        rate.observe(start, 0, 10_000_000);
+        let pace = rate.observe(start + Duration::from_secs(2), 4_000_000, 10_000_000);
+
+        assert_eq!(pace.bytes_per_second, Some(2_000_000));
+        // 6 MB left at 2 MB/s.
+        assert_eq!(pace.seconds_remaining, Some(3));
+    }
+
+    #[test]
+    fn a_stall_reports_zero_rather_than_the_speed_it_used_to_manage() {
+        // The whole reason the window is short. A transfer that moved fast for
+        // a minute and has moved nothing for the last ten seconds is stalled,
+        // and an average over the whole transfer would still call it fast.
+        let start = Instant::now();
+        let mut rate = Rate::new();
+
+        rate.observe(start, 0, 10_000_000);
+        rate.observe(start + Duration::from_secs(1), 5_000_000, 10_000_000);
+        // Well past the window, and nothing further has arrived.
+        let pace = rate.observe(start + Duration::from_secs(30), 5_000_000, 10_000_000);
+
+        assert_eq!(pace.bytes_per_second, Some(0), "a stall was averaged away");
+        assert_eq!(
+            pace.seconds_remaining, None,
+            "a stalled transfer has no honest estimate"
+        );
+    }
+
+    #[test]
+    fn a_rate_describes_the_recent_window_rather_than_the_whole_transfer() {
+        // Slow for a long time, then fast. The reported rate must be the fast
+        // one: it is what the next few seconds will actually look like.
+        let start = Instant::now();
+        let mut rate = Rate::new();
+
+        rate.observe(start, 0, 100_000_000);
+        rate.observe(start + Duration::from_secs(45), 1_000_000, 100_000_000);
+        rate.observe(start + Duration::from_secs(46), 11_000_000, 100_000_000);
+        let pace = rate.observe(start + Duration::from_secs(47), 21_000_000, 100_000_000);
+
+        assert_eq!(
+            pace.bytes_per_second,
+            Some(10_000_000),
+            "the first slow minute was still being counted"
+        );
+    }
+
+    #[test]
+    fn a_rate_window_does_not_grow_without_bound() {
+        // Progress arrives once per chunk, thousands of times a second on a
+        // fast link. An unbounded deque would be a slow memory leak for the
+        // duration of every multi-gigabyte download.
+        let start = Instant::now();
+        let mut rate = Rate::new();
+
+        for index in 0..10_000_u64 {
+            rate.observe(
+                start + Duration::from_micros(index),
+                index * 1_024,
+                u64::MAX,
+            );
+        }
+
+        assert!(
+            rate.samples.len() <= RATE_SAMPLES,
+            "the window holds {} samples",
+            rate.samples.len()
+        );
     }
 
     #[test]
@@ -963,6 +1321,8 @@ mod tests {
             phase: "downloading".to_owned(),
             downloaded_bytes: 10,
             total_bytes: 100,
+            bytes_per_second: Some(5),
+            seconds_remaining: Some(18),
         })
         .unwrap();
         assert!(
@@ -972,16 +1332,38 @@ mod tests {
                 .contains_key("downloadedBytes")
         );
         assert!(progress.as_object().unwrap().contains_key("totalBytes"));
+        assert!(progress.as_object().unwrap().contains_key("bytesPerSecond"));
+        assert!(
+            progress
+                .as_object()
+                .unwrap()
+                .contains_key("secondsRemaining")
+        );
         assert_eq!(
             progress["key"]["modelId"],
             serde_json::json!("qwen2.5-0.5b")
         );
         assert_eq!(progress["key"]["quantId"], serde_json::json!("Q4_K_M"));
 
-        let failure = serde_json::to_value(ModelFailure::cancelled(sample_key())).unwrap();
+        let failure =
+            serde_json::to_value(ModelFailure::stopped_by(sample_key(), Stop::Pause)).unwrap();
         let object = failure.as_object().unwrap();
         assert!(object.contains_key("verificationFailure"));
-        assert!(object.contains_key("cancelled"));
+        assert_eq!(failure["stopped"], serde_json::json!("pause"));
+        assert_eq!(
+            serde_json::to_value(ModelFailure::stopped_by(sample_key(), Stop::Cancel)).unwrap()["stopped"],
+            serde_json::json!("cancel")
+        );
+        assert_eq!(
+            serde_json::to_value(ModelFailure::of(
+                None,
+                &AcquireError::ServerMissing {
+                    file: "a.zip".to_owned()
+                }
+            ))
+            .unwrap()["stopped"],
+            serde_json::json!(null)
+        );
 
         let plan = serde_json::to_value(LibraryMovePlan {
             files: 2,
@@ -1013,6 +1395,8 @@ mod tests {
             phase: "moving".to_owned(),
             downloaded_bytes: 0,
             total_bytes: 0,
+            bytes_per_second: None,
+            seconds_remaining: None,
         };
 
         let json = serde_json::to_value(&progress).unwrap();

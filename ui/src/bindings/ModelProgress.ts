@@ -21,4 +21,24 @@ downloadedBytes: number,
 /**
  * Bytes expected in total, from the pin rather than from any response.
  */
-totalBytes: number, };
+totalBytes: number, 
+/**
+ * How fast bytes are currently arriving, over the last few seconds.
+ *
+ * `None` until there are two samples to measure between, and for a
+ * library move — a same-volume move renames rather than copies, so a byte
+ * rate would describe an operation that never touched the bytes.
+ *
+ * Deliberately not an average over the whole transfer: see
+ * [`RATE_WINDOW`].
+ */
+bytesPerSecond: number | null, 
+/**
+ * How much longer the transfer has, at the current rate.
+ *
+ * `None` when there is no rate to divide by, and — importantly — when the
+ * rate has fallen to zero. A stalled transfer has no honest estimate, and
+ * a number that silently stopped changing would be read as one that is
+ * still being computed.
+ */
+secondsRemaining: number | null, };

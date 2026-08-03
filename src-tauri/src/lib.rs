@@ -245,6 +245,7 @@ pub fn run() -> tauri::Result<()> {
             chat::chat_delete,
             models::models_catalogue,
             models::models_download,
+            models::models_pause,
             models::models_cancel,
             models::models_delete,
             models::models_folder,

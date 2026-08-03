@@ -42,7 +42,10 @@ pub mod target;
 pub mod unpack;
 
 pub use acquire::{Stage, acquire, require_space, resolve};
-pub use download::{Progress, download_resumable, download_verified, sha256_file};
+pub use download::{
+    Progress, RETRY_BACKOFF, download_resumable, download_resumable_retrying, download_verified,
+    is_transient, sha256_file,
+};
 pub use error::AcquireError;
 pub use manifest::{Companion, RuntimeArtifact, RuntimeManifest, pinned_manifest};
 pub use model_store::{ModelRecord, ModelStore};

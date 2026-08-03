@@ -48,7 +48,9 @@ tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 # Already in Cargo.lock through Tauri itself; `sync` for the one-shot channel
 # that stops a reply, `macros` for the `select!` that watches it.
-tokio = { version = "1", features = ["sync", "macros"] }
+# `time` for the short wait a cancelled download's partial file is chased over;
+# see `models::discard`.
+tokio = { version = "1", features = ["sync", "macros", "time"] }
 # Logging. `tracing` itself is already in Cargo.lock through Tauri.
 tracing = "0.1"
 # `default-features = false` deliberately: it drops `ansi`, so no escape codes
