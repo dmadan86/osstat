@@ -20,7 +20,7 @@
  * preference.
  */
 
-import { useCallback, useEffect, useReducer, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 
 import type { ChatComplete } from '../bindings/ChatComplete';
 import type { ChatFailure } from '../bindings/ChatFailure';
@@ -32,7 +32,7 @@ import type { Role } from '../bindings/Role';
 import type { Timings } from '../bindings/Timings';
 import type { Usage } from '../bindings/Usage';
 import { Meter } from '../components/Meter';
-import { formatCount } from '../lib/format';
+import { formatCount, formatTimeOfDay } from '../lib/format';
 import {
   chatClose,
   chatDelete,
@@ -154,6 +154,12 @@ function reduce(state: Transcript, action: Action): Transcript {
               // A question takes as long as the person typing it, which is not
               // a generation time and not osstat's to measure.
               elapsedSeconds: null,
+              // Stamped here as well as in the backend, which saves its own.
+              // This copy is what the user sees the moment they press Enter;
+              // the stored one replaces it when the conversation is reopened,
+              // and the two are the same wall clock a fraction of a second
+              // apart.
+              sentAt: Date.now(),
             },
           ],
         },
@@ -192,6 +198,7 @@ function reduce(state: Transcript, action: Action): Transcript {
         usage: action.usage,
         stopped: action.stopped || (state.pending?.stopped ?? false),
         elapsedSeconds: action.elapsedSeconds,
+        sentAt: Date.now(),
       };
 
       return {
@@ -227,6 +234,7 @@ function reduce(state: Transcript, action: Action): Transcript {
                 // one; this on-screen copy of it does not, and inventing a
                 // number to fill the gap would be worse than the gap.
                 elapsedSeconds: null,
+                sentAt: Date.now(),
               },
             ];
 
@@ -340,6 +348,69 @@ function CodeBlock({ language, body }: { language: string; body: string }): Reac
       </pre>
     </div>
   );
+}
+
+/**
+ * How close to the bottom still counts as being at the bottom, in pixels.
+ *
+ * Not zero: a transcript whose last line is a partly-drawn row of text sits a
+ * fraction of a pixel short of its own height, and sub-pixel rounding differs
+ * between platforms. A reader who has scrolled up to read is hundreds of pixels
+ * away, not four, so nothing ambiguous falls in this band.
+ */
+const BOTTOM_SLACK = 4;
+
+/**
+ * Keeps a scrolling element pinned to its bottom, unless the user scrolled up.
+ *
+ * The rule that matters is the second half. Tokens arrive several times a
+ * second, and a transcript that scrolls on every one of them makes reading
+ * anything but the last line impossible — the reader scrolls up, the next token
+ * yanks them back, and the only way to read the answer is to wait for it to
+ * finish. So scrolling up switches the pinning off, and returning to the bottom
+ * switches it back on. The user's scroll position is the input; nothing else
+ * overrides it.
+ *
+ * `dependency` is whatever changes when there is new content: passing the
+ * streamed text means every token is considered, and considering is cheap
+ * because a detached reader does nothing at all.
+ *
+ * @param dependency A value that changes whenever the content grows.
+ * @returns A ref to attach to the scrolling element.
+ */
+function useStickyScroll(dependency: unknown): React.RefObject<HTMLDivElement | null> {
+  const ref = useRef<HTMLDivElement | null>(null);
+  // A ref rather than state: this is read inside a scroll handler and written
+  // on every wheel tick, and re-rendering the transcript to record where it is
+  // scrolled to would be a redraw per frame for nothing visible.
+  const stuck = useRef(true);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (element === null) return;
+
+    function onScroll(): void {
+      if (element === null) return;
+      const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
+      stuck.current = distance <= BOTTOM_SLACK;
+    }
+
+    element.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      element.removeEventListener('scroll', onScroll);
+    };
+  }, []);
+
+  useEffect(() => {
+    const element = ref.current;
+    // The whole of the "does not fight the user" rule: when the reader has
+    // scrolled up, new content changes nothing about where they are looking.
+    if (element === null || !stuck.current) return;
+
+    element.scrollTop = element.scrollHeight;
+  }, [dependency]);
+
+  return ref;
 }
 
 /** What the chat page needs from the shell. */
@@ -490,6 +561,15 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
   );
 
   const streaming = state.pending !== null;
+  // Keyed on the streamed text and the turn count, which between them change
+  // on every token and on every finished turn -- the two moments the transcript
+  // grows. Switching conversations changes the count too, so opening one lands
+  // at its end rather than at whatever offset the last one was left at.
+  const transcriptRef = useStickyScroll(
+    `${state.conversation.id}:${String(state.conversation.messages.length)}:${
+      state.pending?.content ?? ''
+    }`
+  );
 
   function open(): void {
     if (path.trim() === '' || opening) return;
@@ -611,13 +691,17 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
           onDelete={remove}
         />
 
-        <div className="min-h-0 flex-1 overflow-auto rounded-xl border border-edge bg-surface-raised p-3">
+        {/* `log` rather than a bare div: a transcript that grows as tokens
+            arrive is what the role describes, and it gives a screen reader the
+            polite live region this page otherwise announces nothing through. */}
+        <div
+          ref={transcriptRef}
+          role="log"
+          aria-label="Transcript"
+          className="min-h-0 flex-1 overflow-auto rounded-xl border border-edge bg-surface-raised p-3"
+        >
           {state.conversation.messages.length === 0 && state.pending === null && (
-            <p className="text-center text-sm text-neutral-500">
-              {session === null
-                ? 'Open a GGUF model file to start a conversation.'
-                : 'Nothing said yet.'}
-            </p>
+            <EmptyTranscript hasModel={session !== null} hasStored={conversations.length > 0} />
           )}
 
           <ol className="flex flex-col gap-3">
@@ -635,6 +719,10 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
                   // A reply still arriving has no elapsed time yet; the live
                   // tokens-per-second beside it is what says it is moving.
                   elapsedSeconds: null,
+                  // Nor a time. It is stamped when it lands, so the label does
+                  // not sit there naming a minute the reply has not finished
+                  // in yet.
+                  sentAt: null,
                 }}
                 timings={state.pending.stopped ? null : state.timings}
               />
@@ -645,6 +733,43 @@ export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
 
       {session !== null && (
         <Composer draft={draft} streaming={streaming} onDraftChange={setDraft} onSend={send} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * What an empty transcript says instead of nothing.
+ *
+ * A blank pane is indistinguishable from a page that failed to load, so this
+ * says which of the two states the page is actually in and what the next action
+ * is. The three cases are genuinely different next actions -- open a model,
+ * pick up an old conversation, or type -- and collapsing them into one sentence
+ * would send two thirds of readers to the wrong control.
+ */
+function EmptyTranscript({
+  hasModel,
+  hasStored,
+}: {
+  hasModel: boolean;
+  hasStored: boolean;
+}): React.JSX.Element {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+      <p className="text-sm text-neutral-300">
+        {hasModel ? 'Nothing said yet' : 'No model is open'}
+      </p>
+
+      <p className="max-w-sm text-xs text-neutral-500">
+        {hasModel
+          ? 'Type below and press Enter to send. Shift+Enter starts a new line.'
+          : 'Open a GGUF model file above. Nothing is downloaded and nothing leaves this machine — the model runs as a local server osstat starts and stops with this page.'}
+      </p>
+
+      {hasStored && (
+        <p className="text-xs text-neutral-500">
+          Or pick one of the saved conversations on the left to read it again.
+        </p>
       )}
     </div>
   );
@@ -877,7 +1002,19 @@ function ModelBar({
   );
 }
 
-/** One turn of the conversation. */
+/**
+ * One turn of the conversation.
+ *
+ * The user's turn and the model's have to be told apart at a glance while
+ * scrolling past, so they differ three ways rather than one: the user's is
+ * inset from the left and sits on `--color-surface` against the pane's
+ * `--color-surface-raised`, while the model's is full width with an accent
+ * gutter down its edge. One difference would be enough for someone reading
+ * carefully; a transcript is read by skimming.
+ *
+ * Colours come from the theme tokens, not from literals, so a theme change
+ * moves the transcript with everything else.
+ */
 function Turn({
   message,
   timings = null,
@@ -886,16 +1023,41 @@ function Turn({
   timings?: Timings | null;
 }): React.JSX.Element {
   const speeds = timings;
+  const fromUser = message.role === 'user';
 
   return (
-    <li className="flex flex-col gap-1">
-      <span className="text-[10px] uppercase tracking-wider text-neutral-500">
-        {ROLE_LABEL[message.role]}
-      </span>
+    <li
+      className={`flex flex-col gap-1 rounded-lg px-2.5 py-2 ${
+        fromUser
+          ? 'ml-6 border border-edge bg-surface'
+          : 'mr-6 border-l-2 border-l-accent/50 bg-surface-raised'
+      }`}
+    >
+      <div className="flex items-baseline gap-2">
+        <span
+          className={`text-[10px] uppercase tracking-wider ${
+            fromUser ? 'text-neutral-400' : 'text-accent/80'
+          }`}
+        >
+          {ROLE_LABEL[message.role]}
+        </span>
+
+        {/* Absent rather than guessed when the turn predates the field, or
+            when the clock could not be read. A time that was never recorded
+            must not be drawn as the epoch. */}
+        {message.sentAt !== null && (
+          <time
+            dateTime={new Date(message.sentAt).toISOString()}
+            className="font-mono text-[10px] text-neutral-500"
+          >
+            {formatTimeOfDay(message.sentAt)}
+          </time>
+        )}
+      </div>
 
       <div
         data-selectable
-        className={`text-sm ${message.role === 'user' ? 'text-neutral-200' : 'text-neutral-300'}`}
+        className={`text-sm ${fromUser ? 'text-neutral-200' : 'text-neutral-300'}`}
       >
         {renderText(message.content)}
       </div>

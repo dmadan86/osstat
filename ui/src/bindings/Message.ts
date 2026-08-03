@@ -37,4 +37,25 @@ stopped: boolean,
  * missing field must read as "not measured" rather than fail the load and
  * take the whole conversation with it.
  */
-elapsedSeconds: number | null, };
+elapsedSeconds: number | null, 
+/**
+ * When this turn was recorded, in milliseconds since the Unix epoch.
+ *
+ * Milliseconds rather than a formatted string because the format belongs
+ * to whoever is reading it: the front end renders this in the viewer's own
+ * locale and time zone, which it cannot do from text this crate has
+ * already decided the shape of.
+ *
+ * `None` on any turn written before this field existed, and `#[serde(default)]`
+ * for exactly the reason [`Self::elapsed_seconds`] carries it. Also `None`
+ * if the system clock is set before 1970 or past the year 292 million,
+ * which is a clock problem rather than a reason to refuse to save a
+ * message.
+ *
+ * Declared to the bindings as `number`, as every other 64-bit field here
+ * is: `ts-rs` would otherwise write `bigint`, which `JSON.parse` never
+ * produces, so the type would describe something the front end can never
+ * receive. A millisecond count stays exact in a double until the year
+ * 287396.
+ */
+sentAt: number | null, };

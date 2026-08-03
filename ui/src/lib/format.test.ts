@@ -8,6 +8,7 @@ import {
   formatFrequency,
   formatPercent,
   formatRate,
+  formatTimeOfDay,
 } from './format';
 
 describe('formatBytes', () => {
@@ -93,5 +94,36 @@ describe('formatFrequency', () => {
   it('reports a dash when the platform did not say', () => {
     // sysinfo returns zero rather than null for an unknown frequency.
     expect(formatFrequency(0)).toBe('—');
+  });
+});
+
+describe('formatTimeOfDay', () => {
+  it('renders the hour and minute of the instant, and no seconds', () => {
+    // Built from the local zone rather than pinned to a literal: the test runs
+    // wherever CI puts it, and `09:15` would be right only in UTC.
+    const at = new Date(2026, 7, 3, 9, 15, 42);
+    const expected = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(
+      2,
+      '0'
+    )}`;
+
+    const rendered = formatTimeOfDay(at.getTime());
+
+    expect(rendered).toBe(expected);
+    // The 42 seconds are not in it; a transcript stamps a turn, not a sample.
+    expect(rendered).not.toContain('42');
+  });
+
+  it('pads a single-digit hour so a column of times lines up', () => {
+    const at = new Date(2026, 7, 3, 4, 5, 0);
+
+    expect(formatTimeOfDay(at.getTime())).toBe(
+      `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+    );
+    expect(formatTimeOfDay(at.getTime())).toHaveLength(5);
+  });
+
+  it('reports a dash rather than an invalid date', () => {
+    expect(formatTimeOfDay(Number.NaN)).toBe('—');
   });
 });

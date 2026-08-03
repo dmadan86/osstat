@@ -80,6 +80,65 @@ function capturing<T>(): {
 
 const MODEL_NAME = 'Mistral-7B-Q4_K_M';
 
+/**
+ * When the stored question was asked: 2026-08-03T09:15:00Z.
+ *
+ * A fixed instant rather than `Date.now()`, so the rendered label is a fact
+ * about this number. The expected text is derived from the same `Date` below
+ * rather than hard-coded, because the hour depends on the zone the tests run
+ * in and pinning `09:15` would fail everywhere except UTC.
+ */
+const STORED_SENT_AT = 1_785_921_300_000;
+
+/** `HH:MM` in the local zone, the way a reader of the transcript sees it. */
+function localHoursMinutes(epochMs: number): string {
+  const at = new Date(epochMs);
+  return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+}
+
+/**
+ * Gives an element the scroll geometry jsdom will not compute.
+ *
+ * jsdom does no layout, so every element reports a height of zero and a
+ * `scrollTop` that never moves. Without this a scroll test passes whatever the
+ * component does, which is worse than not having one. `scrollTop` gets a real
+ * backing store so the assertions are about what the component wrote.
+ *
+ * @param element The scrolling element.
+ * @param content How tall the content is.
+ * @param viewport How much of it is visible.
+ * @returns Accessors for the position the component believes it is at.
+ */
+function withScrollGeometry(
+  element: HTMLElement,
+  content: number,
+  viewport: number
+): { top: () => number; scrollTo: (value: number) => void } {
+  let top = 0;
+
+  Object.defineProperty(element, 'scrollHeight', { value: content, configurable: true });
+  Object.defineProperty(element, 'clientHeight', { value: viewport, configurable: true });
+  Object.defineProperty(element, 'scrollTop', {
+    configurable: true,
+    get: () => top,
+    // Clamped the way a browser clamps it. Without this the helper would
+    // accept `scrollTop = scrollHeight`, which no real element does, and the
+    // test would be asserting against a position the app can never be in.
+    set: (value: number) => {
+      top = Math.max(0, Math.min(value, content - viewport));
+    },
+  });
+
+  return {
+    top: () => top,
+    // What a wheel or a drag does: move, then tell the listener it moved.
+    scrollTo: (value: number) => {
+      top = value;
+      fireEvent.scroll(element);
+    },
+  };
+}
+
 /** The conversation the page resumes, so the tests know its identifier. */
 const STORED: Conversation = {
   id: 'c1',
@@ -106,6 +165,7 @@ const OLDER: Conversation = {
       usage: null,
       stopped: false,
       elapsedSeconds: null,
+      sentAt: STORED_SENT_AT,
     },
     {
       role: 'assistant',
@@ -113,6 +173,9 @@ const OLDER: Conversation = {
       usage: { promptTokens: 5, completionTokens: 2 },
       stopped: false,
       elapsedSeconds: 12.34,
+      // Deliberately absent, so one fixture message proves a conversation
+      // written before this field existed still renders.
+      sentAt: null,
     },
   ],
 };
@@ -407,6 +470,118 @@ describe('Chat', () => {
     expect(code.tagName).toBe('CODE');
     // The prose around the fence stays prose.
     expect(screen.getByText('try:').tagName).not.toBe('CODE');
+  });
+
+  it('stamps a stored message with the local time it was sent', async () => {
+    await renderChat();
+
+    await userEvent.click(await within(conversationList()).findByText(OLDER.title));
+
+    // The clock reading, not merely that a <time> element exists: a timestamp
+    // rendered from the wrong field would still be an element.
+    expect(await screen.findByText(localHoursMinutes(STORED_SENT_AT))).toBeInTheDocument();
+  });
+
+  it('draws no time for a turn saved before timestamps existed', async () => {
+    // The on-disk counterpart of the Rust backward-compatibility test. A page
+    // that rendered `null` as the epoch would label every old reply `01:00`.
+    await renderChat();
+
+    await userEvent.click(await within(conversationList()).findByText(OLDER.title));
+
+    const reply = (await screen.findByText('over-extraction')).closest('li');
+    expect(reply).not.toBeNull();
+    expect(reply?.querySelector('time')).toBeNull();
+    // The turn that does have one still shows it, so this is not passing
+    // because nothing rendered at all.
+    expect(screen.getByText(localHoursMinutes(STORED_SENT_AT))).toBeInTheDocument();
+  });
+
+  it('tells a question and an answer apart by more than their text', async () => {
+    // The complaint was that turns ran together. Asserting the speaker labels
+    // and that the two turns are separate elements with different styling --
+    // a transcript that emitted one undifferentiated block would satisfy an
+    // assertion that only looked for the words.
+    await renderChat();
+
+    await userEvent.type(screen.getByRole('textbox'), 'how long do you steep it');
+    await userEvent.click(screen.getByRole('button', { name: /send/i }));
+    await emit(token, { conversationId: 'c1', delta: 'three minutes', timings: null });
+    await emit(complete, {
+      conversationId: 'c1',
+      usage: { promptTokens: 5, completionTokens: 2 },
+      timings: null,
+      stopped: false,
+      elapsedSeconds: 1.5,
+    });
+
+    // Scoped to the transcript: the first message also becomes the
+    // conversation's title, so it appears in the model bar and the sidebar too.
+    const transcript = within(screen.getByRole('log', { name: /transcript/i }));
+    const question = (await transcript.findByText('how long do you steep it')).closest('li');
+    const answer = (await transcript.findByText('three minutes')).closest('li');
+
+    expect(question).not.toBeNull();
+    expect(answer).not.toBeNull();
+    expect(question).not.toBe(answer);
+    expect(within(question as HTMLElement).getByText('You')).toBeInTheDocument();
+    expect(within(answer as HTMLElement).getByText('Model')).toBeInTheDocument();
+    // Different backgrounds, from the theme tokens rather than from literals.
+    expect(question?.className).toContain('bg-surface');
+    expect(answer?.className).toContain('border-l-accent/50');
+    expect(question?.className).not.toBe(answer?.className);
+  });
+
+  it('says what to do next instead of leaving the transcript blank', async () => {
+    // A blank pane reads as a page that failed to load. Before a model is
+    // open, the next action is opening one.
+    render(<Chat />);
+
+    expect(await screen.findByText(/no model is open/i)).toBeInTheDocument();
+    expect(screen.getByText(/open a gguf model file/i)).toBeInTheDocument();
+    // And it points at the conversations that are already saved, which is the
+    // other thing there is to do from here.
+    expect(await screen.findByText(/saved conversations on the left/i)).toBeInTheDocument();
+  });
+
+  it('offers the composer instructions once a model is open and nothing is said', async () => {
+    await renderChat();
+
+    expect(await screen.findByText(/nothing said yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/press enter to send/i)).toBeInTheDocument();
+  });
+
+  it('keeps the transcript pinned to the bottom while tokens stream', async () => {
+    await renderChat();
+    const transcript = screen.getByRole('log', { name: /transcript/i });
+    const scroll = withScrollGeometry(transcript, 1000, 300);
+
+    await emit(token, { conversationId: 'c1', delta: 'a reply arrives', timings: null });
+
+    // scrollHeight - clientHeight is the bottom.
+    expect(scroll.top()).toBe(700);
+  });
+
+  it('stops auto-scrolling once the user scrolls up, and resumes at the bottom', async () => {
+    // THE one to get right. A transcript that scrolls on every token makes
+    // reading anything but the last line impossible: the reader scrolls up,
+    // the next token yanks them back, and the only way to read the answer is
+    // to wait for the whole of it.
+    await renderChat();
+    const transcript = screen.getByRole('log', { name: /transcript/i });
+    const scroll = withScrollGeometry(transcript, 1000, 300);
+
+    // The reader scrolls up to re-read something.
+    scroll.scrollTo(120);
+    await emit(token, { conversationId: 'c1', delta: 'more text arrives', timings: null });
+
+    expect(scroll.top()).toBe(120);
+
+    // And returns to the bottom, which opts back in.
+    scroll.scrollTo(700);
+    await emit(token, { conversationId: 'c1', delta: ' and more', timings: null });
+
+    expect(scroll.top()).toBe(700);
   });
 
   it('does not render markdown emphasis as HTML', async () => {

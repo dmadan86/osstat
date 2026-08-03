@@ -22,7 +22,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use osstat_chat::store::Message as StoredMessage;
+use osstat_chat::store::{Message as StoredMessage, now_millis};
 use osstat_chat::{
     ChatClient, ChatError, Conversation, ConversationStore, Launch, Message, ModelFile, Role,
     Session, StreamEvent, Timings, Usage, plan_launch,
@@ -476,6 +476,7 @@ pub fn chat_send(
         // A question takes as long as the person typing it, which is not a
         // generation time and not osstat's business to measure.
         elapsed_seconds: None,
+        sent_at: now_millis(),
     });
     // Saved before the reply is asked for, so a crash mid-generation loses the
     // answer rather than the question.
@@ -581,6 +582,7 @@ async fn stream_reply(
                 usage,
                 stopped,
                 elapsed_seconds: Some(elapsed_seconds),
+                sent_at: now_millis(),
             });
             save_or_report(&store, &conversation);
             let _ = app.emit(
@@ -608,6 +610,7 @@ async fn stream_reply(
                     // here, not the less: a session that fails after four
                     // minutes failed differently from one that failed at once.
                     elapsed_seconds: Some(elapsed_seconds),
+                    sent_at: now_millis(),
                 });
                 save_or_report(&store, &conversation);
             }
@@ -1003,6 +1006,7 @@ mod tests {
                 usage: None,
                 stopped: false,
                 elapsed_seconds: None,
+                sent_at: None,
             });
 
             assert_eq!(wire.role, expected);
