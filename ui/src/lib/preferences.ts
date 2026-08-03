@@ -18,6 +18,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { CloseBehaviour } from '../bindings/CloseBehaviour';
 import type { LogLevel } from '../bindings/LogLevel';
 import { coercePanelLayout, type PanelLayout } from './panelLayout';
+import { DEFAULT_THEME, THEMES, type Theme } from './theme';
 
 /** Where the primary navigation lives. */
 export type NavigationStyle = 'sidebar' | 'tabs' | 'rail';
@@ -27,6 +28,8 @@ export type PageLayout = 'onePage' | 'subTabs';
 
 /** Everything the user can choose. */
 export interface Preferences {
+  /** Which of the four dark themes the interface wears. */
+  theme: Theme;
   /** Where the primary navigation lives. */
   navigation: NavigationStyle;
   /** Whether sections stack on one page or become sub-tabs. */
@@ -52,6 +55,11 @@ export interface Preferences {
 
 /** The allowed value of each setting, used for both the UI and validation. */
 export const CHOICES = {
+  // Listed here for the same validation every other setting gets, but rendered
+  // by `Settings` itself rather than through `Choice`: a theme is picked by
+  // looking at it, so each option carries a swatch that a row of text buttons
+  // has nowhere to put.
+  theme: THEMES,
   navigation: [
     { value: 'sidebar', label: 'Sidebar' },
     { value: 'tabs', label: 'Top tabs' },
@@ -103,6 +111,7 @@ export const CHOICES = {
 
 /** What a fresh install uses. */
 export const DEFAULT_PREFERENCES: Preferences = {
+  theme: DEFAULT_THEME,
   navigation: 'sidebar',
   pageLayout: 'onePage',
   refreshMs: 2000,
@@ -113,7 +122,15 @@ export const DEFAULT_PREFERENCES: Preferences = {
   overviewPanels: [],
 };
 
-const STORAGE_KEY = 'osstat.preferences.v1';
+/**
+ * Where preferences live.
+ *
+ * Exported because `public/theme-boot.js` has to read this same key before any
+ * module exists to import it from, and a test compares the two spellings. A
+ * theme stored under one key and read under another would leave the boot
+ * script applying nothing, silently, forever.
+ */
+export const STORAGE_KEY = 'osstat.preferences.v1';
 
 /** Whether `value` is one of the values `key` allows. */
 function isAllowed<K extends keyof typeof CHOICES>(
@@ -140,6 +157,7 @@ export function coercePreferences(raw: unknown): Preferences {
   const candidate = raw as Partial<Record<keyof Preferences, unknown>>;
 
   return {
+    theme: isAllowed('theme', candidate.theme) ? candidate.theme : DEFAULT_PREFERENCES.theme,
     navigation: isAllowed('navigation', candidate.navigation)
       ? candidate.navigation
       : DEFAULT_PREFERENCES.navigation,

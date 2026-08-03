@@ -78,8 +78,8 @@ export function SectionContainer({
                 }}
                 className={`-mb-px border-b-2 px-3 py-2 text-sm ${
                   selected
-                    ? 'border-accent text-neutral-100'
-                    : 'border-transparent text-neutral-400 hover:text-neutral-200'
+                    ? 'border-accent text-text'
+                    : 'border-transparent text-text-muted hover:text-text'
                 }`}
               >
                 {section.title}

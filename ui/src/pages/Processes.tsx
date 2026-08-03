@@ -102,7 +102,7 @@ export function Processes({ tree, loaded, onEndProcess }: ProcessesProps): React
           }}
           placeholder="Filter by name, PID or user…"
           aria-label="Filter processes"
-          className="min-w-48 flex-1 rounded-md border border-edge bg-black/20 px-3 py-1.5 text-sm outline-none placeholder:text-neutral-600 focus:border-accent"
+          className="min-w-48 flex-1 rounded-md border border-edge bg-black/20 px-3 py-1.5 text-sm outline-none placeholder:text-text-faint focus:border-accent"
         />
 
         <button
@@ -111,7 +111,7 @@ export function Processes({ tree, loaded, onEndProcess }: ProcessesProps): React
             setFlat((current) => !current);
           }}
           aria-pressed={flat}
-          className="rounded-md border border-edge px-3 py-1.5 text-xs text-neutral-300 hover:bg-white/[0.04]"
+          className="rounded-md border border-edge px-3 py-1.5 text-xs text-text hover:bg-white/[0.04]"
         >
           {flat ? 'Flat list' : 'Tree'}
         </button>
@@ -120,7 +120,7 @@ export function Processes({ tree, loaded, onEndProcess }: ProcessesProps): React
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-edge bg-surface-raised">
         <div
           role="row"
-          className="flex shrink-0 items-center gap-3 border-b border-edge px-3 py-1.5 text-[10px] uppercase tracking-wider text-neutral-500"
+          className="flex shrink-0 items-center gap-3 border-b border-edge px-3 py-1.5 text-[10px] uppercase tracking-wider text-text-muted"
         >
           {COLUMNS.map((column) => (
             <button
@@ -137,7 +137,7 @@ export function Processes({ tree, loaded, onEndProcess }: ProcessesProps): React
               onClick={() => {
                 sortBy(column.id);
               }}
-              className={`${column.width} ${column.numeric ? 'text-right' : 'text-left'} hover:text-neutral-300 ${
+              className={`${column.width} ${column.numeric ? 'text-right' : 'text-left'} hover:text-text ${
                 sort.column === column.id ? 'text-accent' : ''
               }`}
             >
@@ -153,11 +153,11 @@ export function Processes({ tree, loaded, onEndProcess }: ProcessesProps): React
         </div>
 
         {!loaded ? (
-          <p role="status" className="p-6 text-center text-sm text-neutral-500">
+          <p role="status" className="p-6 text-center text-sm text-text-muted">
             Reading the process table…
           </p>
         ) : rows.length === 0 ? (
-          <p role="status" className="p-6 text-center text-sm text-neutral-500">
+          <p role="status" className="p-6 text-center text-sm text-text-muted">
             No process matches “{search}”.
           </p>
         ) : (
@@ -181,7 +181,7 @@ export function Processes({ tree, loaded, onEndProcess }: ProcessesProps): React
           </div>
         )}
 
-        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-edge px-3 py-1.5 text-[11px] text-neutral-500">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-edge px-3 py-1.5 text-[11px] text-text-muted">
           <span>
             {tree.total.processes} processes
             {matching !== null && ` · ${matching} matching`}
@@ -231,7 +231,7 @@ function Row({
             {expanded ? '▾' : '▸'}
           </button>
         ) : (
-          <span className="w-3 shrink-0 text-center text-neutral-700" aria-hidden="true">
+          <span className="w-3 shrink-0 text-center text-text-faint" aria-hidden="true">
             ·
           </span>
         )}
@@ -241,7 +241,7 @@ function Row({
         </span>
 
         {expandable && !expanded && (
-          <span className="shrink-0 rounded-full border border-edge px-1.5 text-[10px] text-neutral-500">
+          <span className="shrink-0 rounded-full border border-edge px-1.5 text-[10px] text-text-muted">
             {node.rollup.processes - 1}
           </span>
         )}
@@ -251,10 +251,10 @@ function Row({
         )}
       </span>
 
-      <span data-selectable className="w-16 text-right font-mono text-neutral-500">
+      <span data-selectable className="w-16 text-right font-mono text-text-muted">
         {node.record.pid}
       </span>
-      <span className="w-24 truncate text-neutral-500">{node.record.user ?? '—'}</span>
+      <span className="w-24 truncate text-text-muted">{node.record.user ?? '—'}</span>
       <span className="flex w-24 shrink-0 items-center justify-end gap-1.5">
         {/* An inline meter rather than the full component: at 26px a row has no
             space for a label line, and the number beside it is the label. */}
@@ -278,7 +278,7 @@ function Row({
       <span data-selectable className="w-24 text-right font-mono">
         {formatBytes(node.rollup.memory)}
       </span>
-      <span data-selectable className="w-20 text-right font-mono text-neutral-500">
+      <span data-selectable className="w-20 text-right font-mono text-text-muted">
         {io > 0 ? formatRate(io) : '—'}
       </span>
       <span className="w-16 shrink-0">
@@ -292,7 +292,7 @@ function Row({
               exe: node.record.exe,
             });
           }}
-          className="rounded-md border border-edge px-2 py-0.5 text-[10px] text-neutral-400 hover:bg-white/[0.04]"
+          className="rounded-md border border-edge px-2 py-0.5 text-[10px] text-text-muted hover:bg-white/[0.04]"
         >
           End
         </button>

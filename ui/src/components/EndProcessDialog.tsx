@@ -235,7 +235,7 @@ export function EndProcessDialog({ target, onClose }: EndProcessDialogProps): Re
 
         {state.phase === 'confirm' && (
           <>
-            <p className="mt-2 text-xs text-neutral-400">
+            <p className="mt-2 text-xs text-text-muted">
               This ends {target.name} (PID {target.key.pid}). Any processes it started keep running
               on their own — ending it does not end them.
             </p>
@@ -248,7 +248,7 @@ export function EndProcessDialog({ target, onClose }: EndProcessDialogProps): Re
             <p role="alert" className="mt-2 text-xs text-amber-400">
               {target.name} is a system process. Ending it breaks {state.critical.breaks}.
             </p>
-            <p className="mt-2 text-xs text-neutral-400">Are you sure you want to end it anyway?</p>
+            <p className="mt-2 text-xs text-text-muted">Are you sure you want to end it anyway?</p>
             <DialogButtons
               onCancel={onClose}
               onAccept={acceptCriticalConfirm}
@@ -258,14 +258,14 @@ export function EndProcessDialog({ target, onClose }: EndProcessDialogProps): Re
         )}
 
         {state.phase === 'waiting' && (
-          <p role="status" className="mt-3 text-xs text-neutral-400">
+          <p role="status" className="mt-3 text-xs text-text-muted">
             Waiting for {target.name} to exit…
           </p>
         )}
 
         {state.phase === 'force' && (
           <>
-            <p className="mt-2 text-xs text-neutral-400">
+            <p className="mt-2 text-xs text-text-muted">
               {target.name} has not exited. End it now, with no chance to save unsaved work?
             </p>
             <DialogButtons
@@ -289,7 +289,7 @@ export function EndProcessDialog({ target, onClose }: EndProcessDialogProps): Re
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-md border border-edge px-3 py-1 text-xs text-neutral-300 hover:bg-white/[0.04]"
+                className="rounded-md border border-edge px-3 py-1 text-xs text-text hover:bg-white/[0.04]"
               >
                 Close
               </button>
@@ -316,7 +316,7 @@ function DialogButtons({
       <button
         type="button"
         onClick={onCancel}
-        className="rounded-md border border-edge px-3 py-1 text-xs text-neutral-300 hover:bg-white/[0.04]"
+        className="rounded-md border border-edge px-3 py-1 text-xs text-text hover:bg-white/[0.04]"
       >
         Cancel
       </button>

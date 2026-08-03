@@ -139,9 +139,9 @@ export function Logging({ level, onChangeLevel }: LoggingProps): React.JSX.Eleme
   return (
     <section aria-label="Logs" className="border-t border-edge p-3">
       <p className="text-sm">Logs</p>
-      <p className="mt-0.5 text-xs text-neutral-500">
+      <p className="mt-0.5 text-xs text-text-muted">
         osstat keeps a week of daily log files, deleting the oldest as new ones arrive.{' '}
-        <strong className="font-medium text-neutral-300">
+        <strong className="font-medium text-text">
           They contain no personal data — no file names, paths, process names, addresses, or
           anything you typed — so they are safe to attach to a bug report.
         </strong>
@@ -164,8 +164,8 @@ export function Logging({ level, onChangeLevel }: LoggingProps): React.JSX.Eleme
               className="mt-0.5 accent-accent"
             />
             <span className="min-w-0">
-              <span className="block text-xs text-neutral-200">{choice.label}</span>
-              <span className="block text-[11px] text-neutral-500">{choice.description}</span>
+              <span className="block text-xs text-text">{choice.label}</span>
+              <span className="block text-[11px] text-text-muted">{choice.description}</span>
             </span>
           </label>
         ))}
@@ -178,7 +178,7 @@ export function Logging({ level, onChangeLevel }: LoggingProps): React.JSX.Eleme
       )}
 
       {folder.status === 'loading' && (
-        <p className="mt-3 text-xs text-neutral-500">Reading where the logs are kept…</p>
+        <p className="mt-3 text-xs text-text-muted">Reading where the logs are kept…</p>
       )}
 
       {folder.status === 'error' && (
@@ -189,7 +189,7 @@ export function Logging({ level, onChangeLevel }: LoggingProps): React.JSX.Eleme
 
       {current !== null && (
         <>
-          <p data-selectable className="mt-3 break-all font-mono text-xs text-neutral-300">
+          <p data-selectable className="mt-3 break-all font-mono text-xs text-text">
             {current}
           </p>
 
@@ -197,7 +197,7 @@ export function Logging({ level, onChangeLevel }: LoggingProps): React.JSX.Eleme
             <div className="flex min-w-0 flex-1 flex-col gap-1">
               <label
                 htmlFor="log-destination"
-                className="text-[10px] uppercase tracking-wider text-neutral-500"
+                className="text-[10px] uppercase tracking-wider text-text-muted"
               >
                 Copy the logs to
               </label>
@@ -218,7 +218,7 @@ export function Logging({ level, onChangeLevel }: LoggingProps): React.JSX.Eleme
               onClick={() => {
                 copyInto(destination.trim());
               }}
-              className="rounded-md border border-edge px-2.5 py-1 text-xs text-neutral-300 hover:bg-white/[0.04] disabled:opacity-40"
+              className="rounded-md border border-edge px-2.5 py-1 text-xs text-text hover:bg-white/[0.04] disabled:opacity-40"
             >
               Save logs
             </button>
@@ -227,7 +227,7 @@ export function Logging({ level, onChangeLevel }: LoggingProps): React.JSX.Eleme
       )}
 
       {save.status === 'saved' && (
-        <p role="status" className="mt-2 text-xs text-neutral-400">
+        <p role="status" className="mt-2 text-xs text-text-muted">
           Copied {countedFiles(save.files)} to{' '}
           <span data-selectable className="font-mono break-all">
             {save.folder}

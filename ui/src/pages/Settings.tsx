@@ -15,7 +15,74 @@ import { ModelFolder } from '../components/ModelFolder';
 import { isAutostartEnabled, setAutostart } from '../lib/ipc';
 import { CHOICES, type Preferences } from '../lib/preferences';
 import { reconcileLayout, updatePanel } from '../lib/panelLayout';
+import { THEMES, type Theme } from '../lib/theme';
 import { OVERVIEW_PANELS, OVERVIEW_PANEL_IDS } from './overviewPanels';
+
+/**
+ * The theme picker.
+ *
+ * Rendered here rather than through `Choice` because a theme is chosen by
+ * looking at it. Each option carries a swatch, and the swatch is not a list of
+ * hard-coded colours: it is an ordinary element wearing the same `data-theme`
+ * attribute the document wears, drawing `bg-surface-raised`, `border-edge` and
+ * `bg-accent` from the theme's own block in `index.css`. A preview built any
+ * other way is a second copy of the palette, and the copy is what goes stale.
+ */
+function Themes({
+  value,
+  onSelect,
+}: {
+  value: Theme;
+  onSelect: (chosen: Theme) => void;
+}): React.JSX.Element {
+  return (
+    <div className="flex flex-col gap-2 border-b border-edge px-4 py-3 last:border-b-0">
+      <div>
+        <p className="text-sm">Theme</p>
+        <p className="text-xs text-text-muted">
+          All four are dark. osstat sits beside a terminal, and every surface, chart and meter in it
+          is built for a dark background.
+        </p>
+      </div>
+
+      <div role="radiogroup" aria-label="Theme" className="flex flex-col gap-1">
+        {THEMES.map((theme) => {
+          const selected = theme.value === value;
+          return (
+            <button
+              key={theme.value}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              onClick={() => {
+                onSelect(theme.value);
+              }}
+              className={`flex items-center gap-3 rounded-md border px-3 py-2 text-left transition-colors ${
+                selected ? 'border-accent bg-accent/10' : 'border-edge hover:bg-white/[0.04]'
+              }`}
+            >
+              {/* `aria-hidden`: the swatch shows what the label already says,
+                  and a screen reader announcing two coloured squares per row
+                  would bury the four names this control is actually made of. */}
+              <span
+                data-theme={theme.value}
+                aria-hidden="true"
+                className="flex h-7 w-10 shrink-0 items-center justify-center rounded border border-edge bg-surface-raised"
+              >
+                <span className="h-2.5 w-2.5 rounded-full bg-accent" />
+              </span>
+
+              <span className="min-w-0">
+                <span className="block text-xs text-text">{theme.label}</span>
+                <span className="block text-[11px] text-text-muted">{theme.description}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 /**
  * The start-at-sign-in switch.
@@ -54,7 +121,7 @@ function StartAtSignIn(): React.JSX.Element {
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-sm">Start osstat when I sign in</p>
-          <p className="text-xs text-neutral-500">
+          <p className="text-xs text-text-muted">
             Starts in the notification area, with no window.
           </p>
         </div>
@@ -72,7 +139,7 @@ function StartAtSignIn(): React.JSX.Element {
         >
           <span
             aria-hidden="true"
-            className={`block h-3.5 w-3.5 rounded-full bg-neutral-200 transition-transform ${
+            className={`block h-3.5 w-3.5 rounded-full bg-text transition-transform ${
               enabled === true ? 'translate-x-4.5' : 'translate-x-0.5'
             }`}
           />
@@ -114,7 +181,7 @@ function Choice<K extends keyof typeof CHOICES>({
     <div className="flex flex-col gap-2 border-b border-edge px-4 py-3 last:border-b-0">
       <div>
         <p className="text-sm">{label}</p>
-        <p className="text-xs text-neutral-500">{description}</p>
+        <p className="text-xs text-text-muted">{description}</p>
       </div>
 
       <div role="radiogroup" aria-label={label} className="flex flex-wrap gap-1.5">
@@ -131,8 +198,8 @@ function Choice<K extends keyof typeof CHOICES>({
               }}
               className={`rounded-md border px-3 py-1 text-xs transition-colors ${
                 selected
-                  ? 'border-accent bg-accent/10 text-neutral-50'
-                  : 'border-edge text-neutral-400 hover:bg-white/[0.04] hover:text-neutral-200'
+                  ? 'border-accent bg-accent/10 text-text'
+                  : 'border-edge text-text-muted hover:bg-white/[0.04] hover:text-text'
               }`}
             >
               {choice.label}
@@ -152,7 +219,7 @@ function Panels({ preferences, onChange }: SettingsProps): React.JSX.Element {
     <div className="flex flex-col gap-2 border-b border-edge px-4 py-3 last:border-b-0">
       <div>
         <p className="text-sm">Panels</p>
-        <p className="text-xs text-neutral-500">
+        <p className="text-xs text-text-muted">
           Which sections the Overview shows. Order and size are set from each panel&rsquo;s own
           menu.
         </p>
@@ -162,7 +229,7 @@ function Panels({ preferences, onChange }: SettingsProps): React.JSX.Element {
         {OVERVIEW_PANELS.map((panel) => {
           const hidden = panels.find((entry) => entry.id === panel.id)?.hidden ?? false;
           return (
-            <label key={panel.id} className="flex items-center gap-2 text-xs text-neutral-300">
+            <label key={panel.id} className="flex items-center gap-2 text-xs text-text">
               <input
                 type="checkbox"
                 checked={!hidden}
@@ -186,7 +253,7 @@ function Panels({ preferences, onChange }: SettingsProps): React.JSX.Element {
             // from the sections that exist, which is the one place that knows.
             onChange({ overviewPanels: [] });
           }}
-          className="rounded-md border border-edge px-3 py-1 text-xs text-neutral-400 hover:bg-white/[0.04] hover:text-neutral-200"
+          className="rounded-md border border-edge px-3 py-1 text-xs text-text-muted hover:bg-white/[0.04] hover:text-text"
         >
           Reset Overview layout
         </button>
@@ -205,7 +272,7 @@ export function Settings({ preferences, onChange }: SettingsProps): React.JSX.El
     <div className="flex max-w-2xl flex-col gap-4">
       <header>
         <h2 className="text-lg font-semibold">Settings</h2>
-        <p className="text-xs text-neutral-500">
+        <p className="text-xs text-text-muted">
           Stored on this machine only. osstat makes no network request unless you ask it to —
           downloading an inference runtime, or a model from the advisor, are the only things that
           do.
@@ -213,6 +280,12 @@ export function Settings({ preferences, onChange }: SettingsProps): React.JSX.El
       </header>
 
       <div className="overflow-hidden rounded-xl border border-edge bg-surface-raised">
+        <Themes
+          value={preferences.theme}
+          onSelect={(theme) => {
+            onChange({ theme });
+          }}
+        />
         <Choice
           label="Navigation"
           description="Where the list of pages lives."

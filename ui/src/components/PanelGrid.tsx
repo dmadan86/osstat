@@ -87,7 +87,7 @@ export function PanelGrid({ sections, layout, onLayoutChange }: PanelGridProps):
   return (
     <div ref={container} className="grid grid-cols-12 items-start gap-2">
       {visible.length === 0 && (
-        <p role="status" className="col-span-12 py-8 text-center text-sm text-neutral-500">
+        <p role="status" className="col-span-12 py-8 text-center text-sm text-text-muted">
           Every panel is hidden. Bring them back from Settings › Panels.
         </p>
       )}
@@ -138,7 +138,7 @@ export function PanelGrid({ sections, layout, onLayoutChange }: PanelGridProps):
                   <span
                     {...drag.gripProps(panel.id)}
                     title={`Drag to reorder ${section.title}`}
-                    className="cursor-grab select-none px-1.5 py-2 text-neutral-600 hover:text-neutral-300"
+                    className="cursor-grab select-none px-1.5 py-2 text-text-faint hover:text-text"
                   >
                     ⠿
                   </span>

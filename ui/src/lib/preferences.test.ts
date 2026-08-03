@@ -8,10 +8,12 @@ import {
   savePreferences,
   type Preferences,
 } from './preferences';
+import { THEMES } from './theme';
 
 describe('coercePreferences', () => {
   it('accepts a fully valid object unchanged', () => {
     const valid = {
+      theme: 'contrast',
       navigation: 'tabs',
       pageLayout: 'subTabs',
       refreshMs: 5000,
@@ -62,6 +64,19 @@ describe('coercePreferences', () => {
     expect(coercePreferences({ logLevel: 'verbose' }).logLevel).toBe('verbose');
   });
 
+  it('rejects a theme that is not one of the four', () => {
+    // The stored value ends up as a `data-theme` attribute that CSS selects
+    // on, so an unrecognised name would match no block and leave the interface
+    // on midnight -- while Settings kept showing the unknown choice as chosen.
+    expect(coercePreferences({ theme: 'solarized' }).theme).toBe(DEFAULT_PREFERENCES.theme);
+  });
+
+  it('keeps each theme the UI does offer', () => {
+    for (const theme of THEMES) {
+      expect(coercePreferences({ theme: theme.value }).theme).toBe(theme.value);
+    }
+  });
+
   it('rejects a refresh interval that is not one the UI offers', () => {
     // A hand-edited or stale value must not become the sampler's tick rate.
     expect(coercePreferences({ refreshMs: 7 }).refreshMs).toBe(DEFAULT_PREFERENCES.refreshMs);
@@ -88,6 +103,10 @@ describe('loadPreferences', () => {
 
   it('round-trips through storage', () => {
     const chosen: Preferences = {
+      // Every field here deliberately differs from its default, so a value
+      // that fails to survive the round trip shows up as a mismatch rather
+      // than agreeing with the default by coincidence.
+      theme: 'terminal',
       navigation: 'rail',
       pageLayout: 'subTabs',
       refreshMs: 1000,

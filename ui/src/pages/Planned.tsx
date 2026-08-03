@@ -26,17 +26,17 @@ export function Planned({ item }: PlannedProps): React.JSX.Element {
 
   return (
     <div className="flex max-w-xl flex-col items-start gap-3 rounded-xl border border-dashed border-edge bg-surface-raised px-6 py-8">
-      <span className="rounded-full border border-edge px-2 py-0.5 font-mono text-xs text-neutral-400">
+      <span className="rounded-full border border-edge px-2 py-0.5 font-mono text-xs text-text-muted">
         {item.milestone}
       </span>
 
       <h2 className="text-lg font-semibold">{details?.title ?? item.label}</h2>
 
-      <p className="text-sm leading-relaxed text-neutral-400">
+      <p className="text-sm leading-relaxed text-text-muted">
         {details?.summary ?? 'Not built yet.'}
       </p>
 
-      <p className="text-xs text-neutral-600">
+      <p className="text-xs text-text-faint">
         Milestones are built in order, each gated on the previous one passing. See ROADMAP.md.
       </p>
     </div>

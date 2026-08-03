@@ -1,12 +1,114 @@
 @import 'tailwindcss';
 
 /* The desktop shell is dark by default: this is a system utility that sits
-   alongside a terminal, and the native title bar is the only chrome around it. */
+   alongside a terminal, and the native title bar is the only chrome around it.
+ *
+ * Every colour the interface wears is named here. Nothing outside this block
+ * may reach for a stock Tailwind palette shade: a palette grey is the same
+ * grey on every surface, so text pinned to one cannot follow the surface it
+ * sits on. `tokens.test.ts` enforces that across the whole front end.
+ *
+ * The text ramp is three steps, not five. Body text used to be spread over
+ * five shades of grey, but only three of those distinctions were ever
+ * load-bearing: what you read, what labels it, and what you ignore until you
+ * need it. Collapsing to three is what makes the ramp re-themeable at all —
+ * five steps cannot be re-derived per theme without two of them colliding.
+ */
 @theme {
   --color-surface: oklch(0.19 0.02 265);
   --color-surface-raised: oklch(0.24 0.024 265);
   --color-edge: oklch(0.33 0.025 265);
   --color-accent: oklch(0.72 0.15 232);
+
+  /* Body copy, headings, values: everything read rather than scanned past. */
+  --color-text: oklch(0.93 0.01 265);
+  /* Labels, descriptions, the inactive half of a control. */
+  --color-text-muted: oklch(0.66 0.014 265);
+  /* Timestamps, token counts, placeholders, section eyebrows. */
+  --color-text-faint: oklch(0.47 0.014 265);
+
+  /* The network chart's two series, so the legend swatches beside it stop
+     repeating the hex. Deliberately *not* re-themed: these are the validated
+     categorical pair from `charts/palette.ts`, and the chart itself is drawn
+     by ECharts from those JavaScript constants rather than from CSS. A theme
+     that shifted only the swatch would make the legend lie about the line.
+     `tokens.test.ts` asserts the two stay equal to `SERIES`. */
+  --color-chart-down: #3987e5;
+  --color-chart-up: #d95926;
+}
+
+/* The four themes.
+ *
+ * Each block restates the whole themeable set rather than patching the one
+ * above it. A theme that inherited three values and overrode two would be
+ * impossible to read as a palette, and adding a token later would silently
+ * leave three themes wearing a fourth theme's colour.
+ *
+ * `midnight` is written out even though `@theme` already holds those values,
+ * so that switching *back* to it is an override like any other rather than the
+ * absence of one. The bare `[data-theme]` selector — not `:root[data-theme]` —
+ * is what lets the settings swatches theme themselves: a swatch is an ordinary
+ * element carrying the attribute, drawing `bg-surface-raised` and `bg-accent`
+ * from these same declarations. A preview that cannot disagree with the theme
+ * it previews.
+ *
+ * These rules are deliberately unlayered. Tailwind emits `@theme` into
+ * `@layer theme`, and unlayered declarations beat every layered one whatever
+ * their specificity, so this wins without a specificity contest to maintain.
+ *
+ * The chart tokens are absent from all four on purpose; see above.
+ */
+
+/* Cool near-black, blue cast. The default, and what osstat has always been. */
+[data-theme='midnight'] {
+  --color-surface: oklch(0.19 0.02 265);
+  --color-surface-raised: oklch(0.24 0.024 265);
+  --color-edge: oklch(0.33 0.025 265);
+  --color-accent: oklch(0.72 0.15 232);
+  --color-text: oklch(0.93 0.01 265);
+  --color-text-muted: oklch(0.66 0.014 265);
+  --color-text-faint: oklch(0.47 0.014 265);
+}
+
+/* Warm near-black, amber. The same lightnesses as midnight on a yellow hue,
+   so it reads as the same interface at a different temperature. */
+[data-theme='carbon'] {
+  --color-surface: oklch(0.18 0.008 60);
+  --color-surface-raised: oklch(0.23 0.01 60);
+  --color-edge: oklch(0.32 0.012 60);
+  --color-accent: oklch(0.75 0.14 65);
+  --color-text: oklch(0.93 0.006 60);
+  --color-text-muted: oklch(0.66 0.008 60);
+  --color-text-faint: oklch(0.47 0.008 60);
+}
+
+/* Near-pure black, and the reason the text ramp had to become a token at all.
+   Every tier moves up — faint text here (0.68) is lighter than midnight's
+   *muted* (0.66), so the tier that used to disappear is the one that gains
+   most. The edge lifts to 0.4 as well: on a 0.12 surface the old border was a
+   suggestion. `tokens.test.ts` holds each tier above its midnight counterpart,
+   because "high contrast" that is only a label is the failure mode here. */
+[data-theme='contrast'] {
+  --color-surface: oklch(0.12 0 0);
+  --color-surface-raised: oklch(0.17 0 0);
+  --color-edge: oklch(0.4 0 0);
+  --color-accent: oklch(0.8 0.16 220);
+  --color-text: oklch(1 0 0);
+  --color-text-muted: oklch(0.84 0 0);
+  --color-text-faint: oklch(0.68 0 0);
+}
+
+/* Green phosphor. The one theme that tints the text as well as the surfaces —
+   a green interface with grey writing on it would read as a bug. Chroma stays
+   low enough (0.03) that a column of numbers is still numbers, not decoration. */
+[data-theme='terminal'] {
+  --color-surface: oklch(0.16 0.02 155);
+  --color-surface-raised: oklch(0.21 0.024 155);
+  --color-edge: oklch(0.3 0.03 155);
+  --color-accent: oklch(0.78 0.17 150);
+  --color-text: oklch(0.92 0.03 155);
+  --color-text-muted: oklch(0.66 0.03 155);
+  --color-text-faint: oklch(0.47 0.028 155);
 }
 
 html,
@@ -18,7 +120,7 @@ body,
 body {
   margin: 0;
   background-color: var(--color-surface);
-  color: oklch(0.93 0.01 265);
+  color: var(--color-text);
   font-family:
     ui-sans-serif,
     system-ui,

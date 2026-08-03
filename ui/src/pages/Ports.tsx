@@ -113,7 +113,7 @@ export function Ports({ tree, onEndProcess }: PortsProps): React.JSX.Element {
           }}
           placeholder="Filter by port…"
           aria-label="Filter by port"
-          className="w-36 rounded-md border border-edge bg-black/20 px-3 py-1.5 text-sm outline-none placeholder:text-neutral-600 focus:border-accent"
+          className="w-36 rounded-md border border-edge bg-black/20 px-3 py-1.5 text-sm outline-none placeholder:text-text-faint focus:border-accent"
         />
         <input
           type="search"
@@ -123,13 +123,13 @@ export function Ports({ tree, onEndProcess }: PortsProps): React.JSX.Element {
           }}
           placeholder="Filter by process or PID…"
           aria-label="Filter by process"
-          className="min-w-48 flex-1 rounded-md border border-edge bg-black/20 px-3 py-1.5 text-sm outline-none placeholder:text-neutral-600 focus:border-accent"
+          className="min-w-48 flex-1 rounded-md border border-edge bg-black/20 px-3 py-1.5 text-sm outline-none placeholder:text-text-faint focus:border-accent"
         />
 
         <button
           type="button"
           onClick={refresh}
-          className="rounded-md border border-edge px-3 py-1.5 text-xs text-neutral-300 hover:bg-white/[0.04]"
+          className="rounded-md border border-edge px-3 py-1.5 text-xs text-text hover:bg-white/[0.04]"
         >
           Refresh
         </button>
@@ -138,7 +138,7 @@ export function Ports({ tree, onEndProcess }: PortsProps): React.JSX.Element {
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-edge bg-surface-raised">
         <div
           role="row"
-          className="flex shrink-0 items-center gap-3 border-b border-edge px-3 py-1.5 text-[10px] uppercase tracking-wider text-neutral-500"
+          className="flex shrink-0 items-center gap-3 border-b border-edge px-3 py-1.5 text-[10px] uppercase tracking-wider text-text-muted"
         >
           {COLUMNS.map((label) => (
             <span
@@ -165,13 +165,13 @@ export function Ports({ tree, onEndProcess }: PortsProps): React.JSX.Element {
         )}
 
         {state.status === 'loading' && (
-          <p role="status" className="p-6 text-center text-sm text-neutral-500">
+          <p role="status" className="p-6 text-center text-sm text-text-muted">
             Reading the port table…
           </p>
         )}
 
         {state.status === 'ready' && filtered.length === 0 && (
-          <p role="status" className="p-6 text-center text-sm text-neutral-500">
+          <p role="status" className="p-6 text-center text-sm text-text-muted">
             No socket matches this filter.
           </p>
         )}
@@ -194,7 +194,7 @@ export function Ports({ tree, onEndProcess }: PortsProps): React.JSX.Element {
           </div>
         )}
 
-        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-edge px-3 py-1.5 text-[11px] text-neutral-500">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-edge px-3 py-1.5 text-[11px] text-text-muted">
           <span>
             {rows.length} sockets
             {filtered.length !== rows.length && ` · ${filtered.length} matching`}
@@ -227,7 +227,7 @@ function Row({
         listening ? 'bg-accent/10' : ''
       }`}
     >
-      <span className="w-32 uppercase text-neutral-500">
+      <span className="w-32 uppercase text-text-muted">
         {row.protocol}
         {listening && (
           <span className="ml-1.5 rounded-full border border-accent px-1.5 text-[10px] normal-case text-accent">
@@ -238,11 +238,11 @@ function Row({
       <span data-selectable className="w-32 truncate font-mono">
         {row.localAddress}:{row.localPort}
       </span>
-      <span data-selectable className="w-32 truncate font-mono text-neutral-500">
+      <span data-selectable className="w-32 truncate font-mono text-text-muted">
         {row.remoteAddress !== null ? `${row.remoteAddress}:${row.remotePort}` : '—'}
       </span>
-      <span className="w-32 text-neutral-500">{row.state ?? '—'}</span>
-      <span data-selectable className="w-16 text-right font-mono text-neutral-500">
+      <span className="w-32 text-text-muted">{row.state ?? '—'}</span>
+      <span data-selectable className="w-16 text-right font-mono text-text-muted">
         {row.pid ?? '—'}
       </span>
       <span data-selectable className="min-w-0 flex-1 truncate">
@@ -250,7 +250,7 @@ function Row({
       </span>
       <span
         data-selectable
-        className="min-w-0 flex-1 truncate text-neutral-500"
+        className="min-w-0 flex-1 truncate text-text-muted"
         title={row.processPath ?? undefined}
       >
         {row.processPath ?? '—'}
@@ -269,7 +269,7 @@ function Row({
               exe: owner.exe,
             });
           }}
-          className="rounded-md border border-edge px-2 py-0.5 text-[10px] text-neutral-400 hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-md border border-edge px-2 py-0.5 text-[10px] text-text-muted hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-40"
         >
           End
         </button>

@@ -398,7 +398,7 @@ function CodeBlock({ language, body }: { language: string; body: string }): Reac
   return (
     <div className="my-1 overflow-hidden rounded-lg border border-edge bg-black/30">
       <div className="flex items-center justify-between gap-3 border-b border-edge px-2 py-0.5">
-        <span className="font-mono text-[10px] uppercase tracking-wider text-neutral-500">
+        <span className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
           {language === '' ? 'code' : language}
         </span>
         <button
@@ -409,7 +409,7 @@ function CodeBlock({ language, body }: { language: string; body: string }): Reac
               // over a block the user can still select.
             });
           }}
-          className="rounded-md border border-edge px-1.5 text-[10px] text-neutral-400 hover:bg-white/[0.04]"
+          className="rounded-md border border-edge px-1.5 text-[10px] text-text-muted hover:bg-white/[0.04]"
         >
           Copy
         </button>
@@ -918,18 +918,16 @@ function EmptyTranscript({
 }): React.JSX.Element {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-      <p className="text-sm text-neutral-300">
-        {hasModel ? 'Nothing said yet' : 'No model is open'}
-      </p>
+      <p className="text-sm text-text">{hasModel ? 'Nothing said yet' : 'No model is open'}</p>
 
-      <p className="max-w-sm text-xs text-neutral-500">
+      <p className="max-w-sm text-xs text-text-muted">
         {hasModel
           ? 'Type below and press Enter to send. Shift+Enter starts a new line.'
           : 'Open a GGUF model file above. Nothing is downloaded and nothing leaves this machine — the model runs as a local server osstat starts and stops with this page.'}
       </p>
 
       {hasStored && (
-        <p className="text-xs text-neutral-500">
+        <p className="text-xs text-text-muted">
           Or pick one of the saved conversations on the left to read it again.
         </p>
       )}
@@ -960,7 +958,7 @@ function OpenModel({
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <label
             htmlFor="chat-model-path"
-            className="text-[10px] uppercase tracking-wider text-neutral-500"
+            className="text-[10px] uppercase tracking-wider text-text-muted"
           >
             Model file
           </label>
@@ -992,7 +990,7 @@ function OpenModel({
         </p>
       )}
 
-      <p className="mt-2 text-[11px] text-neutral-600">
+      <p className="mt-2 text-[11px] text-text-faint">
         The layer count and context window are chosen from the file&rsquo;s own header and the
         measured VRAM, not from an estimate for a model of its name.
       </p>
@@ -1025,12 +1023,12 @@ function ConversationList({
       aria-label="Conversations"
       className="flex w-56 shrink-0 flex-col overflow-auto rounded-xl border border-edge bg-surface-raised p-2"
     >
-      <h2 className="px-1 pb-1 text-[10px] uppercase tracking-wider text-neutral-500">
+      <h2 className="px-1 pb-1 text-[10px] uppercase tracking-wider text-text-muted">
         Conversations
       </h2>
 
       {conversations.length === 0 ? (
-        <p className="px-1 text-[11px] text-neutral-600">Nothing saved yet.</p>
+        <p className="px-1 text-[11px] text-text-faint">Nothing saved yet.</p>
       ) : (
         <ul className="flex flex-col gap-0.5">
           {conversations.map((conversation) => (
@@ -1045,10 +1043,8 @@ function ConversationList({
                   conversation.id === openId ? 'bg-white/[0.06]' : ''
                 }`}
               >
-                <span className="block truncate text-xs text-neutral-300">
-                  {conversation.title}
-                </span>
-                <span className="block truncate font-mono text-[10px] text-neutral-500">
+                <span className="block truncate text-xs text-text">{conversation.title}</span>
+                <span className="block truncate font-mono text-[10px] text-text-muted">
                   {conversation.modelName === '' ? 'no model recorded' : conversation.modelName}
                 </span>
               </button>
@@ -1058,7 +1054,7 @@ function ConversationList({
                 onClick={() => {
                   onDelete(conversation.id);
                 }}
-                className="shrink-0 rounded-md border border-edge px-1.5 text-[10px] text-neutral-500 hover:bg-white/[0.04] hover:text-red-400"
+                className="shrink-0 rounded-md border border-edge px-1.5 text-[10px] text-text-muted hover:bg-white/[0.04] hover:text-red-400"
               >
                 Delete
               </button>
@@ -1119,18 +1115,18 @@ function ModelBar({
             count carried over from the old one would be a measurement of
             something that is no longer running. */}
         {!switching && (
-          <span className="font-mono text-xs text-neutral-500">
+          <span className="font-mono text-xs text-text-muted">
             {String(session.gpuLayers)} layers on GPU
           </span>
         )}
-        <span className="truncate text-xs text-neutral-500">{title}</span>
+        <span className="truncate text-xs text-text-muted">{title}</span>
 
         <div className="ml-auto flex items-center gap-2">
           {streaming && (
             <button
               type="button"
               onClick={onStop}
-              className="rounded-md border border-edge px-2 py-0.5 text-xs text-neutral-300 hover:bg-white/[0.04]"
+              className="rounded-md border border-edge px-2 py-0.5 text-xs text-text hover:bg-white/[0.04]"
             >
               Stop
             </button>
@@ -1138,7 +1134,7 @@ function ModelBar({
           <button
             type="button"
             onClick={onNew}
-            className="rounded-md border border-edge px-2 py-0.5 text-xs text-neutral-400 hover:bg-white/[0.04]"
+            className="rounded-md border border-edge px-2 py-0.5 text-xs text-text-muted hover:bg-white/[0.04]"
           >
             New conversation
           </button>
@@ -1147,7 +1143,7 @@ function ModelBar({
             disabled={switching}
             onClick={onUnload}
             title="End the server and give back the memory the weights hold"
-            className="rounded-md border border-edge px-2 py-0.5 text-xs text-neutral-400 hover:bg-white/[0.04] disabled:opacity-40"
+            className="rounded-md border border-edge px-2 py-0.5 text-xs text-text-muted hover:bg-white/[0.04] disabled:opacity-40"
           >
             Unload
           </button>
@@ -1172,7 +1168,7 @@ function ModelBar({
              instead — and says it through `status`, because a switch takes
              seconds and a screen reader would otherwise announce nothing at
              all between the choice and the new session. */
-          <p role="status" className="text-xs text-neutral-400">
+          <p role="status" className="text-xs text-text-muted">
             Loading {switchingTo}… a model takes a few seconds to start. The conversation is kept.
           </p>
         ) : (
@@ -1199,7 +1195,7 @@ function ModelBar({
       )}
 
       {session.headDimDerived && (
-        <p className="mt-1 text-[11px] text-neutral-600">
+        <p className="mt-1 text-[11px] text-text-faint">
           This model&rsquo;s header declares no attention key length, so the KV-cache arithmetic
           derived one. That is correct for standard attention and wrong for models that diverge.
         </p>
@@ -1248,7 +1244,7 @@ function ModelChooser({
   // both instead of rendering the control at all.
   if (models.length === 0) {
     return (
-      <p className="text-[11px] text-neutral-500">
+      <p className="text-[11px] text-text-muted">
         No models are downloaded, so there is nothing to switch to. The LLM tab is where models are
         found and fetched.
       </p>
@@ -1264,7 +1260,7 @@ function ModelChooser({
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <label htmlFor="chat-model" className="text-[10px] uppercase tracking-wider text-neutral-500">
+      <label htmlFor="chat-model" className="text-[10px] uppercase tracking-wider text-text-muted">
         Model
       </label>
 
@@ -1296,7 +1292,7 @@ function ModelChooser({
       </select>
 
       {streaming && (
-        <span className="text-[11px] text-neutral-500">
+        <span className="text-[11px] text-text-muted">
           Stop the reply before switching, so the answer keeps the name of the model that wrote it.
         </span>
       )}
@@ -1338,7 +1334,7 @@ function Turn({
       <div className="flex items-baseline gap-2">
         <span
           className={`text-[10px] uppercase tracking-wider ${
-            fromUser ? 'text-neutral-400' : 'text-accent/80'
+            fromUser ? 'text-text-muted' : 'text-accent/80'
           }`}
         >
           {ROLE_LABEL[message.role]}
@@ -1350,23 +1346,24 @@ function Turn({
         {message.sentAt !== null && (
           <time
             dateTime={new Date(message.sentAt).toISOString()}
-            className="font-mono text-[10px] text-neutral-500"
+            className="font-mono text-[10px] text-text-muted"
           >
             {formatTimeOfDay(message.sentAt)}
           </time>
         )}
       </div>
 
-      <div
-        data-selectable
-        className={`text-sm ${fromUser ? 'text-neutral-200' : 'text-neutral-300'}`}
-      >
+      {/* Both roles read at full strength. The old code separated them by one
+          step of grey, which the role label above already says outright and in
+          colour — and a transcript where half the turns are dimmer is just
+          harder to read for no gain. */}
+      <div data-selectable className="text-sm text-text">
         {renderText(message.content)}
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
         {message.usage !== null && (
-          <span data-selectable className="font-mono text-[11px] text-neutral-600">
+          <span data-selectable className="font-mono text-[11px] text-text-faint">
             {`${formatCount(message.usage.promptTokens)} in · ${formatCount(
               message.usage.completionTokens
             )} out`}
@@ -1378,7 +1375,7 @@ function Turn({
             number. `formatDuration` is for uptime and floors to the second,
             which is why this does not use it. */}
         {message.elapsedSeconds !== null && (
-          <span data-selectable className="font-mono text-[11px] text-neutral-600">
+          <span data-selectable className="font-mono text-[11px] text-text-faint">
             {`${message.elapsedSeconds.toFixed(1)} s`}
           </span>
         )}
@@ -1386,13 +1383,13 @@ function Turn({
         {message.stopped && <span className="text-[11px] text-amber-400/80">Stopped</span>}
 
         {speeds !== null && speeds.promptPerSecond !== null && (
-          <span className="font-mono text-[11px] text-neutral-600">
+          <span className="font-mono text-[11px] text-text-faint">
             {`${speeds.promptPerSecond.toFixed(1)} tok/s prompt`}
           </span>
         )}
 
         {speeds !== null && speeds.predictedPerSecond !== null && (
-          <span className="font-mono text-[11px] text-neutral-400">
+          <span className="font-mono text-[11px] text-text-muted">
             {`${speeds.predictedPerSecond.toFixed(1)} tok/s`}
           </span>
         )}
