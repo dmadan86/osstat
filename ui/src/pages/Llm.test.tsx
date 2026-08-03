@@ -9,11 +9,21 @@ const fetchModelRegistry = vi.fn<() => Promise<ModelRegistry>>();
 const fetchLlmAdvice = vi.fn<(contextLength: number) => Promise<LlmAdvice | null>>();
 const onGpusReady = vi.fn();
 
+// The acquisition controls are covered in `Llm.download.test.tsx`; here they
+// only need to exist, and to answer with an empty catalogue so every cell says
+// "not pinned" rather than crashing on a missing mock.
 vi.mock('../lib/ipc', () => ({
   fetchModelRegistry: (): Promise<ModelRegistry> => fetchModelRegistry(),
   fetchLlmAdvice: (contextLength: number): Promise<LlmAdvice | null> =>
     fetchLlmAdvice(contextLength),
   onGpusReady: (handler: () => void): Promise<() => void> => onGpusReady(handler),
+  fetchModelCatalogue: (): Promise<[]> => Promise.resolve([]),
+  downloadModel: (): Promise<void> => Promise.resolve(),
+  cancelModelDownload: (): Promise<void> => Promise.resolve(),
+  chatOpenModel: (): Promise<never> => Promise.reject(new Error('not used here')),
+  onModelProgress: (): Promise<() => void> => Promise.resolve(() => undefined),
+  onModelDone: (): Promise<() => void> => Promise.resolve(() => undefined),
+  onModelFailed: (): Promise<() => void> => Promise.resolve(() => undefined),
 }));
 
 const { Llm } = await import('./Llm');
@@ -39,6 +49,7 @@ function registry(): ModelRegistry {
           maxContextLength: 8192,
         },
         sourceNote: 'the model card',
+        downloads: [],
       },
     ],
   };

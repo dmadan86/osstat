@@ -27,6 +27,11 @@ import type { GpuDevice } from '../bindings/GpuDevice';
 import type { LlmAdvice } from '../bindings/LlmAdvice';
 import type { MetricsSample } from '../bindings/MetricsSample';
 import type { InstalledRuntimeInfo } from '../bindings/InstalledRuntimeInfo';
+import type { LibraryMovePlan } from '../bindings/LibraryMovePlan';
+import type { ModelCatalogueEntry } from '../bindings/ModelCatalogueEntry';
+import type { ModelDone } from '../bindings/ModelDone';
+import type { ModelFailure } from '../bindings/ModelFailure';
+import type { ModelProgress } from '../bindings/ModelProgress';
 import type { ModelRegistry } from '../bindings/ModelRegistry';
 import type { ModelSession } from '../bindings/ModelSession';
 import type { PortRecord } from '../bindings/PortRecord';
@@ -65,6 +70,14 @@ export const COMMANDS = {
   chatList: 'chat_list',
   chatLoad: 'chat_load',
   chatDelete: 'chat_delete',
+  modelsCatalogue: 'models_catalogue',
+  modelsDownload: 'models_download',
+  modelsCancel: 'models_cancel',
+  modelsDelete: 'models_delete',
+  modelsFolder: 'models_folder',
+  modelsSetFolder: 'models_set_folder',
+  modelsPlanMove: 'models_plan_move',
+  modelsMove: 'models_move',
 } as const;
 
 /** Names of every event the Rust side emits. */
@@ -79,6 +92,9 @@ export const EVENTS = {
   chatToken: 'chat:token',
   chatComplete: 'chat:complete',
   chatFailed: 'chat:failed',
+  modelProgress: 'model:progress',
+  modelDone: 'model:done',
+  modelFailed: 'model:failed',
 } as const;
 
 /**
@@ -305,6 +321,124 @@ export function onChatComplete(handler: (complete: ChatComplete) => void): Promi
  */
 export function onChatFailed(handler: (failure: ChatFailure) => void): Promise<UnlistenFn> {
   return listen<ChatFailure>(EVENTS.chatFailed, (event) => {
+    handler(event.payload);
+  });
+}
+
+/**
+ * Every fit-matrix cell that has a pinned file, a downloaded one, or both.
+ *
+ * A cell missing from this list is one nobody has pinned. That absence is what
+ * lets the advisor say "not pinned" rather than offer a control that would
+ * fail, so the caller must not fill a gap with a default entry.
+ */
+export function fetchModelCatalogue(): Promise<ModelCatalogueEntry[]> {
+  return invoke<ModelCatalogueEntry[]>(COMMANDS.modelsCatalogue);
+}
+
+/**
+ * Starts downloading the file pinned for one cell.
+ *
+ * Resolves as soon as the work is spawned, not when the file lands — a model is
+ * gigabytes. Progress and the outcome arrive on {@link onModelProgress},
+ * {@link onModelDone} and {@link onModelFailed}.
+ *
+ * Rejects before any request is made if the cell has no pinned file, another
+ * download is already running, or there is not enough room.
+ *
+ * @param modelId The model's registry id, e.g. `qwen2.5-7b`.
+ * @param quantId The quantization id, e.g. `Q4_K_M`.
+ */
+export async function downloadModel(modelId: string, quantId: string): Promise<void> {
+  await invoke(COMMANDS.modelsDownload, { modelId, quantId });
+}
+
+/**
+ * Stops the download currently running, if there is one.
+ *
+ * The partial file is kept, so asking for the same file again resumes from
+ * where it stopped rather than from zero.
+ */
+export async function cancelModelDownload(): Promise<void> {
+  await invoke(COMMANDS.modelsCancel);
+}
+
+/**
+ * Deletes a downloaded model: the file, and the record naming it.
+ *
+ * @param modelId The model's registry id.
+ * @param quantId The quantization id.
+ */
+export async function deleteModel(modelId: string, quantId: string): Promise<void> {
+  await invoke(COMMANDS.modelsDelete, { modelId, quantId });
+}
+
+/** Where downloaded models are kept. Asking creates nothing. */
+export function fetchModelFolder(): Promise<string> {
+  return invoke<string>(COMMANDS.modelsFolder);
+}
+
+/**
+ * Chooses where downloaded models are kept from now on.
+ *
+ * Changes nothing already on disk — moving what is there is
+ * {@link moveModelLibrary}, a separate action because it can take an hour.
+ *
+ * @param path An absolute path to a folder.
+ */
+export async function setModelFolder(path: string): Promise<void> {
+  await invoke(COMMANDS.modelsSetFolder, { path });
+}
+
+/**
+ * States what moving the library to `path` would cost, without moving it.
+ *
+ * Settings asks this before it asks the user: "move 3 files, 14.2 GB" is a
+ * question somebody can answer, and "change the model folder?" is not.
+ *
+ * @param path An absolute path to the folder the library would move to.
+ */
+export function planModelMove(path: string): Promise<LibraryMovePlan> {
+  return invoke<LibraryMovePlan>(COMMANDS.modelsPlanMove, { path });
+}
+
+/**
+ * Moves every downloaded model into `path`, and points new downloads there.
+ *
+ * Resolves as soon as the work is spawned, for the same reason
+ * {@link downloadModel} does. Progress and the outcome arrive on the same three
+ * subscriptions, with a `null` key because a move is not about one cell.
+ *
+ * @param path An absolute path to the folder to move into.
+ */
+export async function moveModelLibrary(path: string): Promise<void> {
+  await invoke(COMMANDS.modelsMove, { path });
+}
+
+/** Subscribes to download and move progress. */
+export function onModelProgress(handler: (progress: ModelProgress) => void): Promise<UnlistenFn> {
+  return listen<ModelProgress>(EVENTS.modelProgress, (event) => {
+    handler(event.payload);
+  });
+}
+
+/** Subscribes to the one-shot signal that a download or a move finished. */
+export function onModelDone(handler: (done: ModelDone) => void): Promise<UnlistenFn> {
+  return listen<ModelDone>(EVENTS.modelDone, (event) => {
+    handler(event.payload);
+  });
+}
+
+/**
+ * Subscribes to a download or move that could not be finished.
+ *
+ * The payload distinguishes three things a single message could not: a
+ * checksum mismatch (`verificationFailure`, never retried), a transport failure
+ * (`retryable`), and the user stopping it (`cancelled`, which is not a failure
+ * at all and leaves a partial file to resume from).
+ */
+export function onModelFailed(handler: (failure: ModelFailure) => void): Promise<UnlistenFn> {
+  return listen<ModelFailure>(EVENTS.modelFailed, (event) => {
     handler(event.payload);
   });
 }

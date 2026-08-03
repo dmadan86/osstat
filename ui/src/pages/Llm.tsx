@@ -5,6 +5,20 @@
  * what this machine has, a fit matrix of every model at every quantization,
  * and a drawer showing the arithmetic behind whichever cell you pick.
  *
+ * Every cell also carries the one thing a verdict cannot do on its own: a way
+ * to actually get the file. Four states, and the difference between them is the
+ * feature — *not pinned* says so rather than offering a control that would
+ * fail, *downloadable* names the publisher because these are community
+ * re-quantizations rather than the vendors' own uploads, *downloading* counts
+ * against the pinned size, and *downloaded* offers Run, which hands the
+ * record's absolute path to the same `chat_open_model` the file picker uses.
+ *
+ * **A download is offered even where the verdict says the model will not fit.**
+ * The calculator is an estimate — ADR-008 says so in its first paragraph — and
+ * refusing on it would make osstat wrong in a way the user cannot override. The
+ * verdict sits beside the control instead, so the choice is informed rather
+ * than removed.
+ *
  * The drawer is the point of the page rather than a detail of it. ADR-008 is
  * explicit that presenting a heuristic as a measurement is the worst thing
  * this feature could do, so every verdict is one click from the terms that
@@ -20,8 +34,12 @@ import { useEffect, useMemo, useState } from 'react';
 
 import type { FitResult } from '../bindings/FitResult';
 import type { LlmAdvice } from '../bindings/LlmAdvice';
+import type { ModelCatalogueEntry } from '../bindings/ModelCatalogueEntry';
 import type { ModelEntry } from '../bindings/ModelEntry';
+import type { ModelFailure } from '../bindings/ModelFailure';
+import type { ModelKey } from '../bindings/ModelKey';
 import type { ModelRegistry } from '../bindings/ModelRegistry';
+import type { ModelSession } from '../bindings/ModelSession';
 import type { QuantLevel } from '../bindings/QuantLevel';
 import {
   budgetCaveat,
@@ -30,12 +48,24 @@ import {
   countByVerdict,
   exceedsNativeContext,
   formatTokens,
+  indexCatalogue,
   indexResults,
   SPEED_TIERS,
   VERDICTS,
 } from '../lib/advisor';
 import { formatBytes } from '../lib/format';
-import { fetchLlmAdvice, fetchModelRegistry, onGpusReady } from '../lib/ipc';
+import {
+  cancelModelDownload,
+  chatOpenModel,
+  downloadModel,
+  fetchLlmAdvice,
+  fetchModelCatalogue,
+  fetchModelRegistry,
+  onGpusReady,
+  onModelDone,
+  onModelFailed,
+  onModelProgress,
+} from '../lib/ipc';
 
 /** What a load can be doing. */
 type LoadState =
@@ -43,6 +73,23 @@ type LoadState =
   | { status: 'probing' }
   | { status: 'ready'; registry: ModelRegistry; advice: LlmAdvice }
   | { status: 'error'; message: string };
+
+/**
+ * The download under way, as far as it has got.
+ *
+ * Held here rather than read from the catalogue's `state` because the catalogue
+ * is fetched, not streamed: between clicking Download and the first
+ * `model:progress` there would otherwise be a cell still offering Download for
+ * a file already being fetched.
+ */
+interface Transfer {
+  /** Which cell is downloading. */
+  key: ModelKey;
+  /** Bytes that have landed, including anything a resume already had. */
+  downloadedBytes: number;
+  /** Bytes expected, from the pin rather than from any response. */
+  totalBytes: number;
+}
 
 /** Which cell the drawer is open on. */
 interface Selection {
@@ -52,6 +99,18 @@ interface Selection {
   quant: QuantLevel;
   /** The verdict and its arithmetic. */
   result: FitResult;
+}
+
+/** What the advisor needs from the shell. */
+export interface LlmProps {
+  /**
+   * Called with the session the Run control opened, so the shell can show it.
+   *
+   * The advisor opens the model itself rather than handing a path onwards:
+   * `chat_open_model` is the one command that starts a session, and routing the
+   * path through a second caller would be a second way in.
+   */
+  onModelOpened?: (session: ModelSession) => void;
 }
 
 /** Renders an unknown thrown value as a message. */
@@ -77,11 +136,20 @@ async function loadAdvice(tokens: number): Promise<LoadState> {
   return advice === null ? { status: 'probing' } : { status: 'ready', registry, advice };
 }
 
-/** Renders the LLM runnability advisor. */
-export function Llm(): React.JSX.Element {
+/**
+ * Renders the LLM runnability advisor.
+ *
+ * @param props Where an opened session should be sent.
+ */
+export function Llm({ onModelOpened }: LlmProps = {}): React.JSX.Element {
   const [contextLength, setContextLength] = useState(4096);
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   const [selected, setSelected] = useState<Selection | null>(null);
+  const [catalogue, setCatalogue] = useState<ModelCatalogueEntry[]>([]);
+  const [catalogueToken, setCatalogueToken] = useState(0);
+  const [transfer, setTransfer] = useState<Transfer | null>(null);
+  const [failure, setFailure] = useState<ModelFailure | null>(null);
+  const [runProblem, setRunProblem] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -127,6 +195,116 @@ export function Llm(): React.JSX.Element {
     };
   }, [contextLength]);
 
+  // Independent of the context length: what is on disk does not change when the
+  // KV cache is re-priced, so this re-runs only when a download or move ends.
+  useEffect(() => {
+    let cancelled = false;
+
+    fetchModelCatalogue().then(
+      (entries) => {
+        if (!cancelled) setCatalogue(entries);
+      },
+      () => {
+        // A catalogue that cannot be read leaves every cell saying "not
+        // pinned", which is the honest reading of "osstat does not know of a
+        // file here" and is not worth displacing the fit matrix over.
+      }
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, [catalogueToken]);
+
+  useEffect(() => {
+    const subscriptions = [
+      onModelProgress((next) => {
+        // A `null` key is the whole library moving, which is Settings' business.
+        if (next.key !== null) {
+          setTransfer({
+            key: next.key,
+            downloadedBytes: next.downloadedBytes,
+            totalBytes: next.totalBytes,
+          });
+        }
+      }),
+      onModelDone((next) => {
+        if (next.key === null) return;
+        setTransfer(null);
+        setFailure(null);
+        setCatalogueToken((token) => token + 1);
+      }),
+      onModelFailed((next) => {
+        if (next.key === null) return;
+        setTransfer(null);
+        setFailure(next);
+      }),
+    ];
+
+    return () => {
+      for (const subscription of subscriptions) {
+        subscription.then(
+          (off) => {
+            off();
+          },
+          () => {
+            // Nothing to unsubscribe from if the subscription itself failed.
+          }
+        );
+      }
+    };
+  }, []);
+
+  const entries = useMemo(() => indexCatalogue(catalogue), [catalogue]);
+
+  /** Starts fetching one pinned file, counting against its pinned size. */
+  function download(key: ModelKey, totalBytes: number): void {
+    setFailure(null);
+    setRunProblem(null);
+    setTransfer({ key, downloadedBytes: 0, totalBytes });
+
+    downloadModel(key.modelId, key.quantId).catch((error: unknown) => {
+      // A refusal here is a refusal before any request: no pinned file, another
+      // download already running, or not enough room. It never reaches
+      // `model:failed`, so it is turned into the same shape by hand.
+      setTransfer(null);
+      setFailure({
+        key,
+        message: messageOf(error),
+        retryable: false,
+        verificationFailure: false,
+        cancelled: false,
+      });
+    });
+  }
+
+  /** Stops the download running, keeping the partial file to resume from. */
+  function stop(): void {
+    cancelModelDownload().catch(() => {
+      // A download that has already finished has nothing left to stop.
+    });
+  }
+
+  /**
+   * Opens a downloaded model and hands the session to the shell.
+   *
+   * The record's own absolute path, given to the same command the file picker
+   * uses. Nothing here reconstructs a path from the folder and the file name.
+   */
+  function run(entry: ModelCatalogueEntry): void {
+    if (entry.path === null) return;
+
+    setRunProblem(null);
+    chatOpenModel(entry.path).then(
+      (session) => {
+        onModelOpened?.(session);
+      },
+      (error: unknown) => {
+        setRunProblem(messageOf(error));
+      }
+    );
+  }
+
   return (
     <div className="flex h-full flex-col gap-3">
       <ContextControl
@@ -165,14 +343,36 @@ export function Llm(): React.JSX.Element {
         </p>
       )}
 
+      {failure !== null && (
+        <AcquisitionFailure
+          failure={failure}
+          onRetry={() => {
+            const key = failure.key;
+            if (key === null) return;
+            download(key, entries.get(cellKey(key.modelId, key.quantId))?.sizeBytes ?? 0);
+          }}
+        />
+      )}
+
+      {runProblem !== null && (
+        <p role="alert" className="rounded-xl border border-edge p-3 text-xs text-red-400">
+          The model could not be opened: {runProblem}
+        </p>
+      )}
+
       {state.status === 'ready' && (
         <>
           <HardwareCard advice={state.advice} />
           <Matrix
             registry={state.registry}
             advice={state.advice}
+            catalogue={entries}
+            transfer={transfer}
             selected={selected}
             onSelect={setSelected}
+            onDownload={download}
+            onStop={stop}
+            onRun={run}
           />
         </>
       )}
@@ -279,13 +479,23 @@ function Figure({ label, value }: { label: string; value: string }): React.JSX.E
 function Matrix({
   registry,
   advice,
+  catalogue,
+  transfer,
   selected,
   onSelect,
+  onDownload,
+  onStop,
+  onRun,
 }: {
   registry: ModelRegistry;
   advice: LlmAdvice;
+  catalogue: Map<string, ModelCatalogueEntry>;
+  transfer: Transfer | null;
   selected: Selection | null;
   onSelect: (selection: Selection) => void;
+  onDownload: (key: ModelKey, totalBytes: number) => void;
+  onStop: () => void;
+  onRun: (entry: ModelCatalogueEntry) => void;
 }): React.JSX.Element {
   const index = useMemo(() => indexResults(advice.results), [advice.results]);
 
@@ -337,33 +547,52 @@ function Matrix({
                 </th>
 
                 {registry.quantLevels.map((quant) => {
-                  const result = index.get(cellKey(model.id, quant.id));
-                  if (result === undefined) {
-                    return (
-                      <td key={quant.id} className="px-3 py-1.5 text-neutral-700">
-                        —
-                      </td>
-                    );
-                  }
-
-                  const presentation = VERDICTS[result.verdict.kind];
+                  const key = cellKey(model.id, quant.id);
+                  const result = index.get(key);
+                  const entry = catalogue.get(key);
                   const active = selected?.model.id === model.id && selected.quant.id === quant.id;
 
                   return (
-                    <td key={quant.id} className="px-3 py-1.5">
-                      <button
-                        type="button"
-                        title={`${presentation.label}. Click for the arithmetic.`}
-                        aria-label={`${model.name} at ${quant.label}: ${presentation.label}`}
-                        onClick={() => {
-                          onSelect({ model, quant, result });
-                        }}
-                        className={`rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors ${
-                          presentation.tone
-                        } ${active ? 'ring-1 ring-accent' : ''}`}
+                    <td key={quant.id} className="px-3 py-1.5 align-top">
+                      {/* Grouped so the verdict and the way to get the file are
+                          one thing to a screen reader as well as to the eye:
+                          the download decision is only informed if the verdict
+                          travels with it. */}
+                      <div
+                        role="group"
+                        aria-label={`${model.name} at ${quant.label}`}
+                        className="flex flex-col items-start gap-1"
                       >
-                        {presentation.short}
-                      </button>
+                        {result === undefined ? (
+                          <span className="text-neutral-700">—</span>
+                        ) : (
+                          <button
+                            type="button"
+                            title={`${VERDICTS[result.verdict.kind].label}. Click for the arithmetic.`}
+                            aria-label={`${model.name} at ${quant.label}: ${
+                              VERDICTS[result.verdict.kind].label
+                            }`}
+                            onClick={() => {
+                              onSelect({ model, quant, result });
+                            }}
+                            className={`rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors ${
+                              VERDICTS[result.verdict.kind].tone
+                            } ${active ? 'ring-1 ring-accent' : ''}`}
+                          >
+                            {VERDICTS[result.verdict.kind].short}
+                          </button>
+                        )}
+
+                        <Acquisition
+                          model={model}
+                          quant={quant}
+                          entry={entry}
+                          transfer={transfer}
+                          onDownload={onDownload}
+                          onStop={onStop}
+                          onRun={onRun}
+                        />
+                      </div>
                     </td>
                   );
                 })}
@@ -372,6 +601,162 @@ function Matrix({
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/**
+ * The one control a cell offers: nothing, Download, progress, or Run.
+ *
+ * The four branches are the feature. An `entry` of `undefined` is a cell nobody
+ * pinned, and it says so rather than rendering a control whose only outcome is
+ * an error — the catalogue is a join, so a missing entry is a fact about the
+ * manifest rather than a load that has not happened yet.
+ */
+function Acquisition({
+  model,
+  quant,
+  entry,
+  transfer,
+  onDownload,
+  onStop,
+  onRun,
+}: {
+  model: ModelEntry;
+  quant: QuantLevel;
+  entry: ModelCatalogueEntry | undefined;
+  transfer: Transfer | null;
+  onDownload: (key: ModelKey, totalBytes: number) => void;
+  onStop: () => void;
+  onRun: (entry: ModelCatalogueEntry) => void;
+}): React.JSX.Element {
+  if (entry === undefined) {
+    return (
+      <span
+        title="No file is pinned for this cell, so there is nothing osstat could verify what it downloaded against."
+        className="text-[10px] text-neutral-600"
+      >
+        Not pinned
+      </span>
+    );
+  }
+
+  const running =
+    transfer !== null &&
+    transfer.key.modelId === entry.key.modelId &&
+    transfer.key.quantId === entry.key.quantId;
+
+  if (running || entry.state === 'downloading') {
+    // Against the pinned size rather than anything a response claimed, and
+    // counting whatever a resumed download already had — otherwise resuming
+    // looks like starting over.
+    const downloaded = running ? transfer.downloadedBytes : 0;
+    const total = running ? transfer.totalBytes : entry.sizeBytes;
+
+    return (
+      <span className="flex items-center gap-1.5">
+        <span role="status" className="font-mono text-[10px] text-neutral-400">
+          {formatBytes(downloaded)} of {formatBytes(total)}
+        </span>
+        <button
+          type="button"
+          aria-label={`Stop downloading ${model.name} at ${quant.label}`}
+          onClick={onStop}
+          className="rounded-md border border-edge px-1.5 text-[10px] text-neutral-400 hover:bg-white/[0.04]"
+        >
+          Stop
+        </button>
+      </span>
+    );
+  }
+
+  if (entry.state === 'downloaded' && entry.path !== null) {
+    return (
+      <button
+        type="button"
+        aria-label={`Run ${model.name} at ${quant.label}`}
+        title={entry.path}
+        onClick={() => {
+          onRun(entry);
+        }}
+        className="rounded-md border border-accent px-1.5 text-[10px] text-accent hover:bg-accent/10"
+      >
+        Run
+      </button>
+    );
+  }
+
+  // `publisher` is only absent for a cell that was downloaded and has since
+  // been unpinned, which cannot reach this branch — but the fallback says what
+  // is true rather than dropping the provenance the control exists to show.
+  const publisher = entry.publisher ?? 'an unnamed publisher';
+
+  return (
+    <button
+      type="button"
+      aria-label={`Download ${model.name} at ${quant.label}, ${formatBytes(
+        entry.sizeBytes
+      )}, via ${publisher}`}
+      onClick={() => {
+        onDownload(entry.key, entry.sizeBytes);
+      }}
+      className="rounded-md border border-edge px-1.5 text-[10px] text-neutral-400 hover:bg-white/[0.04]"
+    >
+      Download{' '}
+      <span className="font-mono opacity-70">
+        {formatBytes(entry.sizeBytes)} via {publisher}
+      </span>
+    </button>
+  );
+}
+
+/**
+ * What went wrong with a download, in the terms the payload distinguishes.
+ *
+ * A checksum mismatch is a security event rather than a bad day on the network,
+ * and it gets no retry: fetching the same bytes again produces the same
+ * mismatch, and offering the button invites someone to keep trying until a
+ * tampered file slips through. A cancellation is not a failure at all — the
+ * partial file is kept deliberately, so the control resumes rather than
+ * restarts.
+ */
+function AcquisitionFailure({
+  failure,
+  onRetry,
+}: {
+  failure: ModelFailure;
+  onRetry: () => void;
+}): React.JSX.Element {
+  return (
+    <div role="alert" className="rounded-xl border border-edge p-3 text-xs">
+      <p
+        className={
+          failure.verificationFailure
+            ? 'text-red-400'
+            : failure.cancelled
+              ? 'text-neutral-400'
+              : 'text-amber-400/90'
+        }
+      >
+        {failure.verificationFailure
+          ? 'Verification failed. osstat removed what it downloaded and loaded nothing.'
+          : failure.cancelled
+            ? 'The download was stopped.'
+            : 'The download did not finish.'}
+      </p>
+      <p data-selectable className="mt-1 font-mono text-[11px] text-neutral-500">
+        {failure.message}
+      </p>
+
+      {failure.retryable && failure.key !== null && (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="mt-2 rounded-md border border-edge px-2 py-0.5 text-xs text-neutral-300 hover:bg-white/[0.04]"
+        >
+          {failure.cancelled ? 'Resume' : 'Try again'}
+        </button>
+      )}
     </div>
   );
 }

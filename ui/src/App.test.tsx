@@ -104,6 +104,7 @@ function respond(overrides: Record<string, unknown> = {}): void {
       metrics_history: [SAMPLE],
       process_list: PROCESSES,
       gpu_devices: [GPU],
+      models_folder: 'C:\\osstat\\models',
       set_sample_interval: undefined,
       set_sampling_paused: undefined,
       ...overrides,

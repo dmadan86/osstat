@@ -315,15 +315,32 @@ function CodeBlock({ language, body }: { language: string; body: string }): Reac
   );
 }
 
-/** Renders the chat page. */
-export function Chat(): React.JSX.Element {
+/** What the chat page needs from the shell. */
+export interface ChatProps {
+  /**
+   * A session the advisor's Run control already opened, or `null`.
+   *
+   * The model is opened by whoever pressed Run, through the same
+   * `chat_open_model` the file picker calls, so this page receives a session
+   * rather than a second path to open. The shell drops it when the user
+   * navigates away, because leaving this page ends the server.
+   */
+  opened?: ModelSession | null;
+}
+
+/**
+ * Renders the chat page.
+ *
+ * @param props A session opened elsewhere, if there is one.
+ */
+export function Chat({ opened = null }: ChatProps = {}): React.JSX.Element {
   const [state, dispatch] = useReducer(reduce, null, () => ({
     conversation: freshConversation(''),
     pending: null,
     timings: null,
     failure: null,
   }));
-  const [session, setSession] = useState<ModelSession | null>(null);
+  const [session, setSession] = useState<ModelSession | null>(opened);
   const [path, setPath] = useState('');
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
