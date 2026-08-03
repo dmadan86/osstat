@@ -78,6 +78,22 @@ pub enum AcquireError {
         actual: String,
     },
 
+    /// The file being served is not the size the pin says it should be.
+    ///
+    /// Its own variant rather than a kind of checksum failure: a wrong size is
+    /// detectable from the response headers, before a byte is downloaded, and
+    /// it means the upload changed rather than that the transfer was corrupted.
+    /// Those read very differently to the person seeing the message.
+    #[error("{file} is {actual_bytes} bytes but was pinned at {expected_bytes}")]
+    SizeMismatch {
+        /// The file name.
+        file: String,
+        /// The size `models.json` pins.
+        expected_bytes: u64,
+        /// The size actually on offer.
+        actual_bytes: u64,
+    },
+
     /// The archive could not be unpacked, or tried to escape its directory.
     #[error("could not unpack {file}: {message}")]
     Extraction {
@@ -145,6 +161,21 @@ mod tests {
         };
 
         assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn a_size_mismatch_is_never_retryable() {
+        // The upload changed. Fetching it again returns the same wrong file.
+        let error = AcquireError::SizeMismatch {
+            file: "model.gguf".to_owned(),
+            expected_bytes: 4_683_074_240,
+            actual_bytes: 12,
+        };
+
+        assert!(!error.is_retryable());
+        let message = error.to_string();
+        assert!(message.contains("4683074240"), "{message}");
+        assert!(message.contains("12"), "{message}");
     }
 
     #[test]
