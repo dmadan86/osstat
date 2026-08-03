@@ -71,7 +71,7 @@ pub fn sha256_file(path: &Path) -> Result<String, AcquireError> {
 }
 
 /// Names a path for an error message.
-fn file_name_of(path: &Path) -> String {
+pub(crate) fn file_name_of(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),
