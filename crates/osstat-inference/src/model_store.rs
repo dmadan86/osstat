@@ -165,6 +165,26 @@ impl ModelStore {
             .map(|record| record.path)
     }
 
+    /// The projector belonging to a cell, if it has one still on disk.
+    ///
+    /// Deliberately **not** conditional on the weights still being there, which
+    /// is the one way this differs from [`Self::path_of`]. A library where the
+    /// weights were removed and the projector was not is exactly the state that
+    /// leaves an 800 MB file nothing refers to, and a lookup that answered
+    /// `None` for it could never be used to clean it up.
+    ///
+    /// Filtered on the file existing for the same reason [`Self::path_of`] is:
+    /// every caller wants a path with bytes behind it, and a record naming a
+    /// projector the user already deleted by hand is not an error to report.
+    #[must_use]
+    pub fn projector_of(&self, key: &ModelKey) -> Option<PathBuf> {
+        self.records()
+            .into_iter()
+            .find(|record| &record.key == key)?
+            .projector_path
+            .filter(|projector| projector.is_file())
+    }
+
     /// Records a downloaded model, replacing any earlier record of the same cell.
     ///
     /// # Errors
@@ -272,6 +292,110 @@ mod tests {
         store.record(record.clone()).unwrap();
 
         assert_eq!(store.path_of(&record.key), Some(gguf));
+    }
+
+    #[test]
+    fn a_vision_model_reports_the_projector_beside_its_weights() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ModelStore::new(root.path().join("models.json"));
+        let gguf = root.path().join("model.gguf");
+        let mmproj = root.path().join("mmproj-model.gguf");
+        std::fs::write(&mmproj, b"projector").unwrap();
+
+        let record = ModelRecord {
+            projector_path: Some(mmproj.clone()),
+            ..sample_file(gguf, b"weights")
+        };
+        store.record(record.clone()).unwrap();
+
+        assert_eq!(store.projector_of(&record.key), Some(mmproj));
+    }
+
+    #[test]
+    fn a_text_only_model_reports_no_projector() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ModelStore::new(root.path().join("models.json"));
+        let record = sample_file(root.path().join("model.gguf"), b"weights");
+
+        store.record(record.clone()).unwrap();
+
+        assert_eq!(store.projector_of(&record.key), None);
+    }
+
+    #[test]
+    fn a_projector_is_still_reported_once_its_weights_are_gone() {
+        // The whole reason this is not `path_of` with a different field. A
+        // library where the weights were removed and the projector was not is
+        // exactly the state that strands hundreds of megabytes, and a lookup
+        // that answered `None` here could never be used to clean it up.
+        let root = tempfile::tempdir().unwrap();
+        let store = ModelStore::new(root.path().join("models.json"));
+        let gguf = root.path().join("model.gguf");
+        let mmproj = root.path().join("mmproj-model.gguf");
+        std::fs::write(&mmproj, b"projector").unwrap();
+
+        let record = ModelRecord {
+            projector_path: Some(mmproj.clone()),
+            ..sample_file(gguf.clone(), b"weights")
+        };
+        store.record(record.clone()).unwrap();
+
+        std::fs::remove_file(&gguf).unwrap();
+
+        assert_eq!(
+            store.path_of(&record.key),
+            None,
+            "the weights were deleted and still reported"
+        );
+        assert_eq!(
+            store.projector_of(&record.key),
+            Some(mmproj),
+            "the orphaned projector became unreachable, which is how it leaks"
+        );
+    }
+
+    #[test]
+    fn a_projector_the_user_already_deleted_is_not_reported() {
+        // Same rule `path_of` follows: every caller wants a path with bytes
+        // behind it, and a record naming a file that is already gone is not an
+        // error to hand back.
+        let root = tempfile::tempdir().unwrap();
+        let store = ModelStore::new(root.path().join("models.json"));
+        let record = ModelRecord {
+            projector_path: Some(root.path().join("mmproj-never-written.gguf")),
+            ..sample_file(root.path().join("model.gguf"), b"weights")
+        };
+        store.record(record.clone()).unwrap();
+
+        assert_eq!(store.projector_of(&record.key), None);
+    }
+
+    #[test]
+    fn one_model_s_projector_is_not_reported_for_another_cell() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ModelStore::new(root.path().join("models.json"));
+        let mmproj = root.path().join("mmproj-vision.gguf");
+        std::fs::write(&mmproj, b"projector").unwrap();
+
+        let vision = ModelRecord {
+            key: ModelKey {
+                model_id: "qwen2.5-vl-3b".to_owned(),
+                quant_id: "Q4_K_M".to_owned(),
+            },
+            projector_path: Some(mmproj),
+            ..sample_file(root.path().join("vision.gguf"), b"weights")
+        };
+        let text = ModelRecord {
+            key: ModelKey {
+                model_id: "llama-3.2-1b".to_owned(),
+                quant_id: "Q4_K_M".to_owned(),
+            },
+            ..sample_file(root.path().join("text.gguf"), b"weights")
+        };
+        store.record(vision).unwrap();
+        store.record(text.clone()).unwrap();
+
+        assert_eq!(store.projector_of(&text.key), None);
     }
 
     #[test]

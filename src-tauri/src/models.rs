@@ -1333,11 +1333,17 @@ pub fn models_cancel(state: State<'_, ModelState>) {
     state.ask_to_stop(Stop::Cancel);
 }
 
-/// Deletes a downloaded model: the file, and the record naming it.
+/// Deletes a downloaded model: every file it owns, and the record naming them.
 ///
-/// Both, because osstat is a disk cleaner. A record left behind would offer a
-/// Run control for bytes that are gone, and a file left behind would be
+/// All of them, because osstat is a disk cleaner. A record left behind would
+/// offer a Run control for bytes that are gone, and a file left behind would be
 /// gigabytes nothing in the app admits to.
+///
+/// A vision model owns two: the weights, and the multimodal projector that was
+/// fetched with them. The projector is the one a user cannot clean up by hand
+/// with any confidence — they never chose to download it, its name is not the
+/// model's, and nothing in the interface ever showed it to them as a file. So
+/// it is this command's job or nobody's.
 ///
 /// # A model that is currently running is refused rather than deleted
 ///
@@ -1379,6 +1385,30 @@ pub fn models_delete(
         }
     }
 
+    // A vision model is two files, and only one of them is the model. Removing
+    // the weights alone left the projector behind as several hundred megabytes
+    // no record pointed at any more -- the precise thing this command's
+    // "gigabytes nothing in the app admits to" exists to prevent, reintroduced
+    // by the file the user never chose to download separately.
+    //
+    // Not guarded by `has_open` a second time. A running server holds its
+    // weights open, so the check above refuses before reaching here for as long
+    // as the weights are on disk -- which is every state osstat's own controls
+    // can produce, since this command is the only thing that unlinks them and
+    // it will not run while a session is live.
+    if let Some(projector) = store.projector_of(&key)
+        && let Err(error) = std::fs::remove_file(&projector)
+    {
+        return Err(format!(
+            "{} could not be deleted: {error}",
+            projector.display()
+        ));
+    }
+
+    // Last, and only if both files are gone. A record forgotten while a file
+    // remains is the orphan again, by a different route -- and leaving the
+    // record on a failure is what makes a retry able to finish the job, because
+    // the paths it needs are still written down.
     store.forget(&key).map_err(|error| error.to_string())
 }
 
