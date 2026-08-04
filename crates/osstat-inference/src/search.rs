@@ -36,6 +36,11 @@
 //! - One shard of a split model (`-00001-of-00002.gguf`) fails its own hash
 //!   check as a whole model, for a reason nobody could diagnose. Multi-part
 //!   files are out of scope, so they are excluded rather than half-supported.
+//! - A multimodal projector (`mmproj-*.gguf`) is a GGUF with a hash and a size
+//!   and so passes every test above, but it is not a model: downloading one
+//!   yields several hundred megabytes no chat can load. It is excluded as a
+//!   result and attached to the models it belongs to instead — see
+//!   [`SearchResult::projector`].
 //!
 //! A response that will not parse yields no results rather than an error.
 //! Search is a convenience beside the curated matrix; a bad body should read as
@@ -93,6 +98,77 @@ pub struct SearchResult {
     ///
     /// A label, never an input to any calculation.
     pub quant_hint: Option<String>,
+    /// The multimodal projector this repository ships, on a vision model.
+    ///
+    /// Not a verdict and not an estimate — the same three facts every other
+    /// downloadable file here carries, read off the same tree listing. A
+    /// vision GGUF holds the language model only; the weights that turn an
+    /// image into tokens it can attend to live in a second file passed as
+    /// `--mmproj`, so a result downloaded without this one produces a model
+    /// that loads, answers text, and silently ignores every image.
+    ///
+    /// `None` is a text-only repository and is what nearly every result is.
+    pub projector: Option<SearchProjector>,
+}
+
+/// The multimodal projector a searched repository ships beside its weights.
+///
+/// Deliberately not a second [`SearchResult`]: a projector is never offered as
+/// a model of its own, carries no quantization cell, and has no publisher
+/// distinct from the repository it came from. Reusing the richer type would
+/// invite exactly the mistake this module now excludes — listing a projector
+/// among the models, where downloading it yields a file no chat can load.
+///
+/// It carries no `repo` either. The repository is by construction the parent
+/// result's, and a second one would be a second place a download URL could be
+/// assembled from — the thing ADR-012 rests on there not being.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct SearchProjector {
+    /// The path of the projector within the repository.
+    pub file: String,
+    /// The LFS oid, checked exactly as the weights' is. Same origin as the
+    /// file, so it detects a corrupted transfer and not a replaced upload.
+    pub sha256: String,
+    /// What the projector weighs, as the API reports it.
+    #[cfg_attr(feature = "ts-bindings", ts(type = "number"))]
+    pub size_bytes: u64,
+}
+
+impl SearchProjector {
+    /// Whether this is a projector [`search`] could have produced.
+    ///
+    /// Asked for the same reason [`SearchResult::is_well_formed`] is, and it is
+    /// not a lesser reason: this file name is interpolated into a download URL
+    /// too, so a compromised webview handing back a projector of its choosing
+    /// would be the URL-taking command ADR-012 rests on there not being.
+    ///
+    /// Includes [`is_projector`] rather than only the download predicates, so
+    /// the check accepts exactly what the search emits and not a superset.
+    #[must_use]
+    fn is_well_formed(&self) -> bool {
+        is_safe_relative_path(&self.file)
+            && is_gguf(&self.file)
+            && !is_multi_part(&self.file)
+            && is_projector(&self.file)
+            && is_sha256(&self.sha256)
+            && self.size_bytes > 0
+    }
+
+    /// The name the projector would be saved under, without any folders above
+    /// it.
+    ///
+    /// The same flattening [`SearchResult::file_name`] does, for the same
+    /// reason: a repository may hold `Q8_0/mmproj-model.gguf`, and the local
+    /// library is one directory. It cannot collide with the weights it
+    /// accompanies, because a name that is a projector's is by definition not a
+    /// model's.
+    #[must_use]
+    pub fn file_name(&self) -> &str {
+        self.file.rsplit('/').next().unwrap_or(&self.file)
+    }
 }
 
 impl SearchResult {
@@ -113,8 +189,13 @@ impl SearchResult {
             && is_safe_relative_path(&self.file)
             && is_gguf(&self.file)
             && !is_multi_part(&self.file)
+            && !is_projector(&self.file)
             && is_sha256(&self.sha256)
             && self.size_bytes > 0
+            && self
+                .projector
+                .as_ref()
+                .is_none_or(SearchProjector::is_well_formed)
     }
 
     /// The name the file would be saved under, without any folders above it.
@@ -234,31 +315,79 @@ async fn files_in(client: &reqwest::Client, origin: &str, repo: &str) -> Vec<Sea
 
     let publisher = repo.split('/').next().unwrap_or(repo).to_owned();
 
+    // Two passes over one listing, because a projector belongs to the whole
+    // repository rather than to any single file in it: one tree holds a dozen
+    // quantizations of the same model and, on a vision model, the one
+    // projector every one of them needs. The tree is already in hand, so
+    // finding it costs no further request — which is what makes attaching it
+    // cheaper than the alternative of leaving this tier text-only.
+    let projector = entries
+        .iter()
+        .filter_map(downloadable)
+        .filter(|(file, _, _)| is_projector(file))
+        .map(|(file, sha256, size_bytes)| SearchProjector {
+            file: file.to_owned(),
+            sha256: sha256.to_owned(),
+            size_bytes,
+        })
+        // Several is ordinary: a repository often ships the projector at both
+        // F16 and Q8_0. The smallest is taken because a projector's precision
+        // moves image quality far less than its size moves the download and
+        // the VRAM, and because "smallest" is a rule that can be stated. The
+        // name is the tie-break so two of equal size cannot make the choice
+        // depend on the order the API happened to list them in.
+        .min_by(|left, right| {
+            left.size_bytes
+                .cmp(&right.size_bytes)
+                .then_with(|| left.file.cmp(&right.file))
+        });
+
     entries
-        .into_iter()
-        .filter_map(|entry| {
-            let file = entry.path?;
-            if !is_gguf(&file) || is_multi_part(&file) {
-                return None;
-            }
-
-            // Both or nothing. A result without a hash could only be downloaded
-            // unverified, and one without a size cannot have its free-space
-            // check made before the request — so offering either would be
-            // offering a button that fails.
-            let sha256 = entry.lfs?.oid.filter(|oid| is_sha256(oid))?;
-            let size_bytes = entry.size.filter(|size| *size > 0)?;
-
-            Some(SearchResult {
-                repo: repo.to_owned(),
-                publisher: publisher.clone(),
-                quant_hint: quant_hint(&file),
-                file,
-                size_bytes,
-                sha256,
-            })
+        .iter()
+        .filter_map(downloadable)
+        // A projector is a GGUF with a hash and a size, so every predicate
+        // above admits it. Offering one as a model would be offering a
+        // download that no chat can load — and it is what this module did
+        // until the projector had somewhere to go.
+        .filter(|(file, _, _)| !is_projector(file))
+        .map(|(file, sha256, size_bytes)| SearchResult {
+            repo: repo.to_owned(),
+            publisher: publisher.clone(),
+            quant_hint: quant_hint(file),
+            file: file.to_owned(),
+            size_bytes,
+            sha256: sha256.to_owned(),
+            projector: projector.clone(),
         })
         .collect()
+}
+
+/// The path, hash and size of `entry`, if it is a whole GGUF carrying all three.
+///
+/// One place rather than two so the projector pass and the model pass cannot
+/// drift apart into a gap only one of them can reach — the same argument
+/// [`SearchResult::is_well_formed`] makes for re-asking the search's own
+/// predicates at download time.
+///
+/// Hash and size are both or nothing. A file without a hash could only be
+/// downloaded unverified, and one without a size cannot have its free-space
+/// check made before the request, so offering either would be offering a button
+/// that fails.
+fn downloadable(entry: &TreeEntry) -> Option<(&str, &str, u64)> {
+    let file = entry.path.as_deref()?;
+    if !is_gguf(file) || is_multi_part(file) {
+        return None;
+    }
+
+    let sha256 = entry
+        .lfs
+        .as_ref()?
+        .oid
+        .as_deref()
+        .filter(|oid| is_sha256(oid))?;
+    let size_bytes = entry.size.filter(|size| *size > 0)?;
+
+    Some((file, sha256, size_bytes))
 }
 
 /// Sends `request` and reads its body, mapping both failures onto the shared
@@ -348,6 +477,27 @@ fn is_gguf(file: &str) -> bool {
     file.rsplit('.')
         .next()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("gguf"))
+}
+
+/// Whether a path names a multimodal projector rather than a model.
+///
+/// Matched on the file name's **prefix**, not as a substring anywhere in the
+/// path, for the same reason [`quant_hint`] reads whole tokens: a repository
+/// called `someone/mmproj-experiments` would otherwise have every model in it
+/// classified as a projector and vanish from the results.
+///
+/// Conservative on purpose, and the two errors are not symmetric. A projector
+/// this misses is offered as a model — a bad download the user can see and
+/// delete. A model this wrongly claims is a projector is handed to
+/// `llama-server` as `--mmproj`, which loads it and produces answers about
+/// nothing, with no way to tell from the outside. So the rule matches the one
+/// naming convention the ecosystem actually uses and declines to guess further.
+fn is_projector(file: &str) -> bool {
+    file.rsplit('/')
+        .next()
+        .unwrap_or(file)
+        .to_ascii_lowercase()
+        .starts_with("mmproj")
 }
 
 /// Whether a name is one shard of a split model, such as
@@ -629,6 +779,7 @@ mod tests {
             fields,
             vec![
                 "file",
+                "projector",
                 "publisher",
                 "quantHint",
                 "repo",
@@ -637,6 +788,223 @@ mod tests {
             ],
             "a field was added that the advisor cannot honestly fill: {fields:?}"
         );
+    }
+
+    /// A result with no projector, for the tests that vary one thing about it.
+    fn text_only_result() -> SearchResult {
+        SearchResult {
+            repo: "bartowski/Test-GGUF".to_owned(),
+            publisher: "bartowski".to_owned(),
+            file: "Test-Q4_K_M.gguf".to_owned(),
+            size_bytes: 4200,
+            sha256: oid('a'),
+            quant_hint: Some("Q4_K_M".to_owned()),
+            projector: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_vision_repository_attaches_its_projector_to_every_quantization() {
+        // The projector belongs to the repository, not to one file in it: a
+        // tree holds many quantizations of the same model and the single
+        // projector all of them need. Attaching it to only one would make the
+        // rest silently blind for no reason a user could see.
+        let tree = format!(
+            r#"[{{"path":"Test-Q4_K_M.gguf","size":4200,"lfs":{{"oid":"{oid}"}}}},
+                {{"path":"Test-Q8_0.gguf","size":8400,"lfs":{{"oid":"{oid}"}}}},
+                {{"path":"mmproj-Test-F16.gguf","size":900,"lfs":{{"oid":"{oid}"}}}}]"#,
+            oid = oid('a')
+        );
+        let origin = serve(vec![(LISTING, ONE_REPO.to_owned()), (TREE, tree)]);
+
+        let results = search_at(&reqwest::Client::new(), &origin, "test", 5)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 2, "{results:?}");
+        for result in &results {
+            let projector = result
+                .projector
+                .as_ref()
+                .expect("a vision result was left with no projector");
+            assert_eq!(projector.file, "mmproj-Test-F16.gguf");
+            assert_eq!(projector.size_bytes, 900);
+            assert_eq!(projector.sha256, oid('a'));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_projector_is_never_offered_as_a_model_of_its_own() {
+        // It is a GGUF with a hash and a size, so every other predicate in this
+        // module admits it. Downloading one produces several hundred megabytes
+        // that no chat can load.
+        let tree = format!(
+            r#"[{{"path":"Test-Q4_K_M.gguf","size":4200,"lfs":{{"oid":"{oid}"}}}},
+                {{"path":"mmproj-Test-F16.gguf","size":900,"lfs":{{"oid":"{oid}"}}}}]"#,
+            oid = oid('b')
+        );
+        let origin = serve(vec![(LISTING, ONE_REPO.to_owned()), (TREE, tree)]);
+
+        let results = search_at(&reqwest::Client::new(), &origin, "test", 5)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0].file, "Test-Q4_K_M.gguf");
+        assert!(
+            !results.iter().any(|result| is_projector(&result.file)),
+            "a projector was offered as a downloadable model: {results:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_smallest_projector_is_taken_when_a_repository_ships_several() {
+        // F16 and Q8_0 side by side is the ordinary case. Precision moves image
+        // quality far less than size moves the download and the VRAM.
+        let tree = format!(
+            r#"[{{"path":"Test-Q4_K_M.gguf","size":4200,"lfs":{{"oid":"{oid}"}}}},
+                {{"path":"mmproj-Test-F16.gguf","size":1600,"lfs":{{"oid":"{oid}"}}}},
+                {{"path":"mmproj-Test-Q8_0.gguf","size":800,"lfs":{{"oid":"{oid}"}}}}]"#,
+            oid = oid('c')
+        );
+        let origin = serve(vec![(LISTING, ONE_REPO.to_owned()), (TREE, tree)]);
+
+        let results = search_at(&reqwest::Client::new(), &origin, "test", 5)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(
+            results[0].projector.as_ref().unwrap().file,
+            "mmproj-Test-Q8_0.gguf"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_projector_with_no_hash_is_not_attached_rather_than_attached_unverified() {
+        // Same rule the weights get. A projector osstat cannot verify must not
+        // ride along on a result whose weights it can.
+        let tree = format!(
+            r#"[{{"path":"Test-Q4_K_M.gguf","size":4200,"lfs":{{"oid":"{}"}}}},
+                {{"path":"mmproj-Test-F16.gguf","size":900}}]"#,
+            oid('d')
+        );
+        let origin = serve(vec![(LISTING, ONE_REPO.to_owned()), (TREE, tree)]);
+
+        let results = search_at(&reqwest::Client::new(), &origin, "test", 5)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(
+            results[0].projector, None,
+            "an unverifiable projector was attached anyway"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_text_only_repository_attaches_nothing() {
+        // What nearly every result is. `None` has to stay the ordinary answer.
+        let tree = format!(
+            r#"[{{"path":"Test-Q4_K_M.gguf","size":4200,"lfs":{{"oid":"{}"}}}}]"#,
+            oid('e')
+        );
+        let origin = serve(vec![(LISTING, ONE_REPO.to_owned()), (TREE, tree)]);
+
+        let results = search_at(&reqwest::Client::new(), &origin, "test", 5)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0].projector, None);
+    }
+
+    #[test]
+    fn a_projector_the_search_would_not_have_produced_is_refused_at_download_time() {
+        // The projector's file name reaches a download URL exactly as the
+        // weights' does, so it gets the same gauntlet. A webview that could
+        // name this file could name a path of its choosing.
+        let good = SearchProjector {
+            file: "mmproj-Test-F16.gguf".to_owned(),
+            sha256: oid('a'),
+            size_bytes: 900,
+        };
+        assert!(good.is_well_formed());
+        assert!(
+            SearchResult {
+                projector: Some(good.clone()),
+                ..text_only_result()
+            }
+            .is_well_formed()
+        );
+
+        for bad in [
+            SearchProjector {
+                file: "../../../etc/passwd.gguf".to_owned(),
+                ..good.clone()
+            },
+            SearchProjector {
+                file: "..\\..\\Windows\\System32\\mmproj.gguf".to_owned(),
+                ..good.clone()
+            },
+            // Not a projector name at all: accepting it would let a caller
+            // point `--mmproj` at the weights themselves.
+            SearchProjector {
+                file: "Test-Q4_K_M.gguf".to_owned(),
+                ..good.clone()
+            },
+            SearchProjector {
+                file: "mmproj-Test.safetensors".to_owned(),
+                ..good.clone()
+            },
+            SearchProjector {
+                sha256: "deadbeef".to_owned(),
+                ..good.clone()
+            },
+            SearchProjector {
+                size_bytes: 0,
+                ..good.clone()
+            },
+        ] {
+            assert!(
+                !bad.is_well_formed(),
+                "a projector the search would never produce was accepted: {bad:?}"
+            );
+            assert!(
+                !SearchResult {
+                    projector: Some(bad.clone()),
+                    ..text_only_result()
+                }
+                .is_well_formed(),
+                "a bad projector rode in on a well-formed result: {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_result_whose_own_file_is_a_projector_is_refused() {
+        // The download-time half of the exclusion above. The search no longer
+        // emits one, so nothing that arrives claiming to be one is genuine.
+        assert!(
+            !SearchResult {
+                file: "mmproj-Test-F16.gguf".to_owned(),
+                ..text_only_result()
+            }
+            .is_well_formed()
+        );
+    }
+
+    #[test]
+    fn a_projector_is_recognised_by_its_file_name_prefix_only() {
+        assert!(is_projector("mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf"));
+        assert!(is_projector("mmproj-model-f16.gguf"));
+        assert!(is_projector("MMPROJ-F16.gguf"));
+        assert!(is_projector("Q8_0/mmproj-model.gguf"));
+
+        assert!(!is_projector("Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf"));
+        // The repository is named for projectors; its models are still models.
+        assert!(!is_projector("mmproj-experiments/Llama-3-8B-Q4_K_M.gguf"));
+        assert!(!is_projector("Test-with-mmproj-baked-in.gguf"));
     }
 
     #[test]
@@ -667,12 +1035,8 @@ mod tests {
         let part = destination.with_extension("part");
 
         let result = SearchResult {
-            repo: "bartowski/Test-GGUF".to_owned(),
-            publisher: "bartowski".to_owned(),
-            file: "Test-Q4_K_M.gguf".to_owned(),
             size_bytes: 3,
-            sha256: oid('a'),
-            quant_hint: Some("Q4_K_M".to_owned()),
+            ..text_only_result()
         };
 
         // Three bytes that are not what the oid claims.
@@ -704,14 +1068,7 @@ mod tests {
         // By the time this is asked the value has been through the webview.
         // ADR-012 rests on there being no command that takes a URL, and a
         // `repo` and `file` interpolated into one are a URL unless checked.
-        let good = SearchResult {
-            repo: "bartowski/Test-GGUF".to_owned(),
-            publisher: "bartowski".to_owned(),
-            file: "Test-Q4_K_M.gguf".to_owned(),
-            size_bytes: 4200,
-            sha256: oid('a'),
-            quant_hint: Some("Q4_K_M".to_owned()),
-        };
+        let good = text_only_result();
         assert!(good.is_well_formed());
 
         for bad in [
@@ -755,12 +1112,8 @@ mod tests {
     fn a_file_in_a_subdirectory_is_saved_under_its_own_name() {
         // The local library is flat. Nothing rebuilds a remote directory tree.
         let result = SearchResult {
-            repo: "bartowski/Test-GGUF".to_owned(),
-            publisher: "bartowski".to_owned(),
             file: "Q4_K_M/model.gguf".to_owned(),
-            size_bytes: 4200,
-            sha256: oid('a'),
-            quant_hint: Some("Q4_K_M".to_owned()),
+            ..text_only_result()
         };
 
         assert!(result.is_well_formed());

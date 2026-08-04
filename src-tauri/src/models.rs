@@ -38,8 +38,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use osstat_inference::{
-    AcquireError, ModelKey, ModelRecord, ModelStore, MovePlan, Progress, Provenance, SearchResult,
-    download_resumable_retrying, download_url, move_library, plan_move, require_space, search,
+    AcquireError, ModelKey, ModelRecord, ModelStore, MovePlan, Progress, Provenance,
+    SearchProjector, SearchResult, download_resumable_retrying, download_url, move_library,
+    plan_move, require_space, search,
 };
 use osstat_llm::registry::{ModelDownload, ProjectorDownload, seeded_registry};
 use serde::Serialize;
@@ -491,6 +492,58 @@ impl ModelState {
     }
 }
 
+/// One projector to fetch: where it lives upstream and what it must hash to.
+///
+/// The two tiers name a projector differently — a pinned one carries its own
+/// repository, a searched one takes its parent result's — and this is the shape
+/// they meet in, so [`fetch_projector`] is one function rather than two that
+/// could drift apart on the ordering or the cancel channel.
+struct RemoteProjector<'a> {
+    /// The Hugging Face repository, as `owner/name`.
+    repo: &'a str,
+    /// The path of the projector within that repository.
+    file: &'a str,
+    /// What the transfer is checked against. Which tier the hash came from is
+    /// [`Provenance`]'s business, not this function's.
+    sha256: &'a str,
+    /// Its size, for the progress figures the transfer reports.
+    size_bytes: u64,
+}
+
+impl<'a> RemoteProjector<'a> {
+    /// The projector a registry pin names, which carries its own repository.
+    fn pinned(projector: &'a ProjectorDownload) -> Self {
+        Self {
+            repo: &projector.repo,
+            file: &projector.file,
+            sha256: &projector.sha256,
+            size_bytes: projector.size_bytes,
+        }
+    }
+
+    /// The projector a search found, which takes its parent result's
+    /// repository — a searched projector never names one of its own, and that
+    /// is what keeps this tier's single origin single.
+    fn searched(repo: &'a str, projector: &'a SearchProjector) -> Self {
+        Self {
+            repo,
+            file: &projector.file,
+            sha256: &projector.sha256,
+            size_bytes: projector.size_bytes,
+        }
+    }
+}
+
+/// How many of `size_bytes` are still to fetch, given what `part` already holds.
+///
+/// Only the missing bytes have to fit: a resumed download's part file is
+/// already occupying its share of the disk, and demanding the whole size again
+/// would refuse a download that would in fact complete.
+fn outstanding_bytes(part: &Path, size_bytes: u64) -> u64 {
+    let already = std::fs::metadata(part).map_or(0, |data| data.len());
+    size_bytes.saturating_sub(already)
+}
+
 /// Fetches the projector beside weights that have already landed and verified.
 ///
 /// A function of its own rather than a block inside [`models_download`]: the
@@ -499,7 +552,7 @@ impl ModelState {
 /// first, always — the least visible thing in a very long function.
 async fn fetch_projector(
     app: &AppHandle,
-    projector: &ProjectorDownload,
+    projector: &RemoteProjector<'_>,
     destination: &Path,
     part: &Path,
     key: &ModelKey,
@@ -513,11 +566,11 @@ async fn fetch_projector(
 
     fetch(
         app,
-        &download_url(&projector.repo, &projector.file),
+        &download_url(projector.repo, projector.file),
         part,
         destination,
         Expected {
-            sha256: &projector.sha256,
+            sha256: projector.sha256,
             size_bytes: projector.size_bytes,
         },
         key,
@@ -681,17 +734,13 @@ pub fn models_download(
         (projector, destination, part)
     });
 
-    // Only the bytes that are still missing have to fit: a resumed download's
-    // part file is already occupying its share of the disk, and demanding the
-    // whole size again would refuse a download that would in fact complete.
-    let already = std::fs::metadata(&part).map_or(0, |data| data.len());
-    let outstanding = download.size_bytes.saturating_sub(already);
-    let outstanding = projector
-        .as_ref()
-        .map_or(outstanding, |(projector, _, part)| {
-            let already = std::fs::metadata(part).map_or(0, |data| data.len());
-            outstanding.saturating_add(projector.size_bytes.saturating_sub(already))
-        });
+    // Both files or neither: a vision model whose projector will not fit is
+    // not a model that fits.
+    let outstanding = outstanding_bytes(&part, download.size_bytes).saturating_add(
+        projector.as_ref().map_or(0, |(projector, _, part)| {
+            outstanding_bytes(part, projector.size_bytes)
+        }),
+    );
 
     // Before any request, as `acquire.rs` does. A refusal that arrives after
     // 20 GB have been fetched is not a refusal, it is a waste.
@@ -741,7 +790,8 @@ pub fn models_download(
         // the one that is not.
         let outcome = match (outcome, projector.as_ref()) {
             (Ok(()), Some((projector, destination, part))) => {
-                fetch_projector(&app, projector, destination, part, &key).await
+                let remote = RemoteProjector::pinned(projector);
+                fetch_projector(&app, &remote, destination, part, &key).await
             }
             (outcome, _) => outcome,
         };
@@ -996,8 +1046,21 @@ pub fn models_download_searched(
     let destination = folder.join(result.file_name());
     let part = destination.with_extension(PART_SUFFIX);
 
-    let already = std::fs::metadata(&part).map_or(0, |data| data.len());
-    let outstanding = result.size_bytes.saturating_sub(already);
+    // A searched vision repository ships its projector in the same tree, so it
+    // arrives on the result rather than costing a second search. Resolved here,
+    // before the space check, because both files have to fit or neither should
+    // start — the same ordering [`models_download`] uses for the pinned tier.
+    let projector = result.projector.clone().map(|projector| {
+        let destination = folder.join(projector.file_name());
+        let part = destination.with_extension(PART_SUFFIX);
+        (projector, destination, part)
+    });
+
+    let outstanding = outstanding_bytes(&part, result.size_bytes).saturating_add(
+        projector.as_ref().map_or(0, |(projector, _, part)| {
+            outstanding_bytes(part, projector.size_bytes)
+        }),
+    );
 
     require_space(&folder, outstanding).map_err(|error| {
         crate::log::download_failed(error.kind());
@@ -1035,9 +1098,25 @@ pub fn models_download_searched(
         )
         .await;
 
+        // Weights first, always — the same ordering and the same reason as the
+        // pinned tier: a cancel between the two must leave no projector on disk
+        // belonging to no model.
+        let outcome = match (outcome, projector.as_ref()) {
+            (Ok(()), Some((projector, destination, part))) => {
+                let remote = RemoteProjector::searched(&result.repo, projector);
+                fetch_projector(&app, &remote, destination, part, &key).await
+            }
+            (outcome, _) => outcome,
+        };
+
         match outcome {
             Ok(()) => {
-                crate::log::download_finished(result.size_bytes, started.elapsed().as_secs());
+                let fetched = projector
+                    .as_ref()
+                    .map_or(result.size_bytes, |(projector, _, _)| {
+                        result.size_bytes.saturating_add(projector.size_bytes)
+                    });
+                crate::log::download_finished(fetched, started.elapsed().as_secs());
 
                 let recorded = store.record(ModelRecord {
                     key: key.clone(),
@@ -1050,12 +1129,14 @@ pub fn models_download_searched(
                     // pinned would be indistinguishable in the model list from
                     // one whose hash a person reviewed.
                     provenance: Provenance::Searched,
-                    // Search returns one file. A vision model found this way
-                    // would need its projector named too, and nothing in the
-                    // search result says which of a repository's files that
-                    // is — so this tier stays text-only rather than guessing
-                    // by file name.
-                    projector_path: None,
+                    // A searched vision model gets its projector recorded on
+                    // exactly the same terms as a pinned one. The hash it was
+                    // checked against is the weaker tier's — that is what
+                    // `provenance` above says, and it says it once for both
+                    // files rather than differently for each.
+                    projector_path: projector
+                        .as_ref()
+                        .map(|(_, destination, _)| destination.clone()),
                 });
 
                 let _ = match recorded {
@@ -1859,6 +1940,7 @@ mod tests {
             size_bytes: 4_683_074_240,
             sha256: "a".repeat(64),
             quant_hint: Some("Q4_K_M".to_owned()),
+            projector: None,
         }
     }
 
