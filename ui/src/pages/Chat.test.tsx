@@ -194,6 +194,7 @@ function session(overrides: Partial<ModelSession> = {}): ModelSession {
     contextLength: 8192,
     fits: true,
     headDimDerived: false,
+    vision: false,
     ...overrides,
   };
 }
@@ -921,5 +922,113 @@ describe('where the cursor is after a reply', () => {
     await renderChat();
 
     expect(await screen.findByLabelText('Message')).not.toHaveFocus();
+  });
+});
+
+describe('an image attached to a question', () => {
+  /** A one-pixel PNG, as a real File the browser's FileReader can read. */
+  function pixel(): File {
+    // The bytes are a valid PNG rather than arbitrary data, so the preview is
+    // rendering an image rather than a broken one.
+    const png = Uint8Array.from(
+      atob(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+      ),
+      (character) => character.charCodeAt(0)
+    );
+    return new File([png], 'holiday-photo.png', { type: 'image/png' });
+  }
+
+  /** Attaches `file` and waits for the preview it produces. */
+  async function attach(file: File): Promise<HTMLImageElement> {
+    fireEvent.change(screen.getByLabelText(/attach image/i), { target: { files: [file] } });
+
+    // FileReader resolves on a task of its own, so the preview arrives a tick
+    // after the change event rather than with it.
+    return (await screen.findByAltText(/attached image/i)) as HTMLImageElement;
+  }
+
+  it('offers an attach control on a model the server says can see', async () => {
+    await renderChat({ vision: true });
+
+    expect(screen.getByLabelText(/attach image/i)).toBeInTheDocument();
+  });
+
+  it('offers no attach control at all on a text-only model', async () => {
+    // Not a disabled one. A disabled button is an invitation with no way to
+    // accept it -- it says the feature is here and withheld, when the truth is
+    // that this model cannot see and clicking will never change that.
+    await renderChat({ vision: false });
+
+    expect(screen.queryByLabelText(/attach image/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/attach image/i)).not.toBeInTheDocument();
+  });
+
+  it('sends the attached image with the question', async () => {
+    // The whole point of the feature, asserted on the payload rather than on
+    // the preview: a picture on screen that never reaches the request is the
+    // failure this is here to catch.
+    await renderChat({ vision: true });
+    await attach(pixel());
+
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'what is this?' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => {
+      expect(chatSend).toHaveBeenCalled();
+    });
+    const [, text, image] = chatSend.mock.calls[0] as [string, string, string | null];
+    expect(text).toBe('what is this?');
+    expect(image).toMatch(/^data:image\/png;base64,/);
+  });
+
+  it('sends nothing but text once the attachment is removed', async () => {
+    await renderChat({ vision: true });
+    const preview = await attach(pixel());
+
+    fireEvent.click(screen.getByRole('button', { name: /remove image/i }));
+    await waitFor(() => {
+      expect(preview).not.toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'never mind' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => {
+      expect(chatSend).toHaveBeenCalled();
+    });
+    const [, , image] = chatSend.mock.calls[0] as [string, string, string | null];
+    expect(image).toBeNull();
+  });
+
+  it('does not keep the image for the next question', async () => {
+    // An image that survived its own send would ride along with the following
+    // question too, and the user would not find out until an answer came back
+    // about the wrong picture.
+    await renderChat({ vision: true });
+    await attach(pixel());
+
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'first' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => {
+      expect(chatSend).toHaveBeenCalledTimes(1);
+    });
+
+    await emit(complete, {
+      conversationId: 'c1',
+      usage: null,
+      timings: null,
+      stopped: false,
+      elapsedSeconds: 1,
+    });
+
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'second' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => {
+      expect(chatSend).toHaveBeenCalledTimes(2);
+    });
+    const [, , image] = chatSend.mock.calls[1] as [string, string, string | null];
+    expect(image).toBeNull();
   });
 });

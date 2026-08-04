@@ -105,6 +105,46 @@ pub struct ModelDownload {
     /// depends on this being real rather than an estimate.
     #[cfg_attr(feature = "ts-bindings", ts(type = "number"))]
     pub size_bytes: u64,
+    /// The multimodal projector this build needs, on a vision model.
+    ///
+    /// A vision GGUF carries the language model only; the weights that turn an
+    /// image into tokens the model can attend to live in a second file passed
+    /// as `--mmproj`. Fetching the first without the second produces a model
+    /// that loads, answers text, and silently cannot see — the worst of the
+    /// three outcomes, because nothing about it looks broken.
+    ///
+    /// `#[serde(default)]` so every text-only pin in the registry stays exactly
+    /// as it is: absent means "no projector", which is the truth for all seven
+    /// entries that predate this field.
+    #[serde(default)]
+    pub projector: Option<ProjectorDownload>,
+}
+
+/// The multimodal projector beside a vision model's weights.
+///
+/// Deliberately not a [`ModelDownload`]: a projector has no quantization cell
+/// of its own to occupy, is never offered as a download on its own, and its
+/// publisher is by construction whoever published the model it accompanies.
+/// Reusing the richer type would invite exactly the mistake of listing one in
+/// the fit matrix.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectorDownload {
+    /// Hugging Face repository. Held separately from the model's `repo`
+    /// because nothing guarantees a re-quantiser ships both in one place,
+    /// though for the pin that introduced this field they do coincide.
+    pub repo: String,
+    /// File name within the repository.
+    pub file: String,
+    /// SHA256 of the file, lowercase hex, on the same terms as the model's:
+    /// pinned here, and a mismatch aborts with no override.
+    pub sha256: String,
+    /// Exact size in bytes, from the Hugging Face API. Counted into the
+    /// free-space check alongside the model, since both must land.
+    #[cfg_attr(feature = "ts-bindings", ts(type = "number"))]
+    pub size_bytes: u64,
 }
 
 /// One model in the registry.
@@ -214,6 +254,57 @@ mod tests {
         // count should never make this test the thing standing in the way.
         assert!(registry.models.len() >= 12);
         assert_eq!(registry.quant_levels.len(), 4);
+    }
+
+    #[test]
+    fn the_vision_pin_carries_the_projector_it_cannot_see_without() {
+        // A vision GGUF pinned without its projector produces a model that
+        // loads, answers text and silently ignores every image. That failure
+        // is invisible from the outside, so it is pinned against here.
+        let registry = seeded_registry();
+        let model = registry
+            .models
+            .iter()
+            .find(|model| model.id == "qwen2.5-vl-3b")
+            .expect("the vision model is pinned");
+
+        let download = model
+            .downloads
+            .iter()
+            .find(|download| download.quant_id == "Q4_K_M")
+            .expect("Q4_K_M is the pinned build");
+
+        let projector = download
+            .projector
+            .as_ref()
+            .expect("a vision model without a projector cannot see");
+
+        assert_ne!(
+            projector.file, download.file,
+            "the projector and the weights must be two distinct files"
+        );
+        assert!(projector.size_bytes > 0);
+        assert_eq!(projector.sha256.len(), 64);
+    }
+
+    #[test]
+    fn the_text_only_pins_name_no_projector() {
+        // The other half of the claim above: `projector` is absent from every
+        // entry that predates it, and `#[serde(default)]` reads that absence
+        // rather than failing the whole registry.
+        let registry = seeded_registry();
+        for model in &registry.models {
+            if model.id == "qwen2.5-vl-3b" {
+                continue;
+            }
+            for download in &model.downloads {
+                assert!(
+                    download.projector.is_none(),
+                    "{} pins a projector for a text-only model",
+                    model.id
+                );
+            }
+        }
     }
 
     #[test]

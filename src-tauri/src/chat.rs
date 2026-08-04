@@ -102,7 +102,7 @@ pub struct ChatState {
 
 /// What opening a model produced.
 ///
-/// Deliberately five fields. The base URL, the port and the API key are all
+/// Deliberately six fields. The base URL, the port and the API key are all
 /// absent: the webview has no use for any of them and no way to be trusted
 /// with them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -124,6 +124,17 @@ pub struct ModelSession {
     /// attention and wrong for models that diverge, and a mis-sized cache is
     /// otherwise a mystery rather than a diagnosis.
     pub head_dim_derived: bool,
+    /// Whether the running server will accept images.
+    ///
+    /// Read off `/props` at session start, never inferred from the model's
+    /// name. The server is the only authority: a name is not evidence, and even
+    /// a correctly named vision model says nothing about whether the projector
+    /// this launch passed actually loaded.
+    ///
+    /// This is what decides whether the chat page shows an attach control at
+    /// all. `false` shows none — not a disabled one, which would invite a click
+    /// that can never work.
+    pub vision: bool,
 }
 
 /// More of a reply.
@@ -373,14 +384,14 @@ fn title_of(text: &str) -> String {
 
 /// A stored turn, in the shape the endpoint expects.
 fn wire_message(message: &StoredMessage) -> Message {
-    Message {
-        role: match message.role {
-            Role::System => "system".to_owned(),
-            Role::User => "user".to_owned(),
-            Role::Assistant => "assistant".to_owned(),
+    Message::text(
+        match message.role {
+            Role::System => "system",
+            Role::User => "user",
+            Role::Assistant => "assistant",
         },
-        content: message.content.clone(),
-    }
+        message.content.clone(),
+    )
 }
 
 /// The app-data directory, or a sentence saying it could not be found.
@@ -440,9 +451,14 @@ pub async fn chat_open_model(
         let _ = previous.stop().await;
     }
 
+    // A vision model needs its projector on the command line or it loads,
+    // answers text, and ignores every image without saying so.
+    let projector = crate::models::projector_for(&root, &path);
+
     let session = osstat_chat::start(Launch {
         server: runtime.server_path,
         model: path.clone(),
+        projector,
         plan,
         record: Some(root.join(SESSION_RECORD)),
     })
@@ -458,7 +474,14 @@ pub async fn chat_open_model(
     // A server that will not answer is not a reason to refuse the session, so
     // the planned figure stands in.
     let client = ChatClient::new(session.base.clone(), session.api_key.clone());
-    let context_length = client.context_length().await.unwrap_or(plan.context_length);
+    let props = client.props().await.ok();
+    let context_length = props.map_or(plan.context_length, |props| props.context_length);
+
+    // The one field with no fallback. A server that would not answer, or that
+    // is too old to have the field, means no vision — never "assume yes",
+    // because the attach control this drives would otherwise take an image the
+    // server silently drops.
+    let vision = props.is_some_and(|props| props.vision);
 
     let opened = ModelSession {
         model_name: model_name_of(&path),
@@ -466,6 +489,7 @@ pub async fn chat_open_model(
         context_length,
         fits: plan.fits,
         head_dim_derived: model.head_dim_derived,
+        vision,
     };
     if let Ok(mut held) = state.session.lock() {
         *held = Some(session);
@@ -524,6 +548,7 @@ pub fn chat_send(
     state: State<'_, ChatState>,
     conversation_id: String,
     text: String,
+    image: Option<String>,
 ) -> Result<(), String> {
     let (client, model_name) = state
         .client()
@@ -553,7 +578,22 @@ pub fn chat_send(
         error.to_string()
     })?;
 
-    let history: Vec<Message> = conversation.messages.iter().map(wire_message).collect();
+    let mut history: Vec<Message> = conversation.messages.iter().map(wire_message).collect();
+
+    // Attached to the turn just pushed, and to nothing else. An image belongs
+    // to the question it was asked about, and re-sending every image in the
+    // conversation on every turn would fill the context window with pictures
+    // the user has moved on from.
+    //
+    // Deliberately not stored with the conversation either. A data URL is
+    // roughly a third larger than the file it encodes, and writing one into
+    // the transcript on every send would turn a few kilobytes of JSON into
+    // megabytes that reload on every open.
+    if let Some(data_url) = image
+        && let Some(last) = history.pop()
+    {
+        history.push(last.with_image(data_url));
+    }
 
     let (sender, receiver) = tokio::sync::oneshot::channel();
     if let Ok(mut held) = state.cancel.lock() {
@@ -1106,7 +1146,13 @@ mod tests {
             });
 
             assert_eq!(wire.role, expected);
-            assert_eq!(wire.content, "hello");
+            // Compared through JSON because `Content` is a wire shape, not a
+            // value type: what matters is that a stored turn still serialises
+            // to a bare string rather than to an array of parts.
+            assert_eq!(
+                serde_json::to_value(&wire).unwrap()["content"],
+                serde_json::json!("hello")
+            );
         }
     }
 
@@ -1122,6 +1168,7 @@ mod tests {
             context_length: 8192,
             fits: true,
             head_dim_derived: false,
+            vision: false,
         })
         .unwrap();
         let object = json.as_object().unwrap();
@@ -1135,7 +1182,8 @@ mod tests {
                 "fits",
                 "gpuLayers",
                 "headDimDerived",
-                "modelName"
+                "modelName",
+                "vision"
             ]
         );
     }
@@ -1216,6 +1264,7 @@ mod tests {
             context_length: 8192,
             fits: true,
             head_dim_derived: false,
+            vision: false,
         };
 
         if let Ok(mut held) = state.open.lock() {

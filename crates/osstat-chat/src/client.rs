@@ -16,8 +16,91 @@ use futures_util::StreamExt as _;
 pub struct Message {
     /// `system`, `user` or `assistant`.
     pub role: String,
-    /// The turn's text.
-    pub content: String,
+    /// The turn itself: bare text, or text with an image beside it.
+    pub content: Content,
+}
+
+/// What one turn carries.
+///
+/// The OpenAI-compatible endpoint accepts a string or an array of typed parts,
+/// and `llama-server` implements both. A text turn stays a string rather than
+/// becoming a one-element array: that is the shape every server has always
+/// accepted, and every stored conversation replayed as history goes through
+/// here.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(untagged)]
+pub enum Content {
+    /// A turn that is only words.
+    Text(String),
+    /// A turn with an image in it.
+    Parts(Vec<Part>),
+}
+
+/// One piece of a multi-part turn.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "type")]
+pub enum Part {
+    /// Words.
+    #[serde(rename = "text")]
+    Text {
+        /// The words.
+        text: String,
+    },
+    /// An image, as a `data:` URL.
+    ///
+    /// The field is named `image_url` and holds a `data:` URL, which reads
+    /// oddly and is what the endpoint specifies: llama.cpp's server documents
+    /// `image_url.url` as accepting a remote URL, a base64 payload, or a local
+    /// path. osstat only ever sends the middle one — a URL would have the
+    /// *server* fetch something, and a path would have it read the disk.
+    #[serde(rename = "image_url")]
+    Image {
+        /// The `{ "url": "data:image/png;base64,…" }` object.
+        image_url: ImageUrl,
+    },
+}
+
+/// The object wrapping one image's data URL.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ImageUrl {
+    /// `data:image/png;base64,…`
+    pub url: String,
+}
+
+impl Message {
+    /// A turn of plain text.
+    #[must_use]
+    pub fn text(role: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: Content::Text(text.into()),
+        }
+    }
+
+    /// The same turn with an image attached.
+    ///
+    /// The image goes first. Both orders work, and models trained on
+    /// image-then-question handle it more reliably than the reverse.
+    #[must_use]
+    pub fn with_image(self, data_url: String) -> Self {
+        let text = match self.content {
+            Content::Text(text) => text,
+            // Already multi-part. Nothing in this crate produces that today;
+            // returning it unchanged is better than dropping either the parts
+            // it has or the image it was just handed.
+            Content::Parts(_) => return self,
+        };
+
+        Self {
+            role: self.role,
+            content: Content::Parts(vec![
+                Part::Image {
+                    image_url: ImageUrl { url: data_url },
+                },
+                Part::Text { text },
+            ]),
+        }
+    }
 }
 
 /// Token counts for one exchange.
@@ -111,10 +194,38 @@ struct ServerError {
     message: String,
 }
 
-/// `/props`, narrowed to the one field the context meter needs.
+/// What the running server says about itself.
+///
+/// Both figures come from the server rather than from anything osstat decided.
+/// The context window because the server may round or clamp what it was asked
+/// for, and vision because the server is the only thing that knows whether a
+/// projector actually loaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServerProps {
+    /// The context window the server actually allocated.
+    pub context_length: u32,
+    /// Whether the server will accept images.
+    pub vision: bool,
+}
+
+/// `/props`, narrowed to the fields this crate reads.
 #[derive(serde::Deserialize)]
 struct Props {
     default_generation_settings: GenerationSettings,
+    /// Absent on an older `llama-server` build that predates the field.
+    ///
+    /// Defaulting to "no modalities" is the only safe reading. Absent must
+    /// never mean "assume yes": an attach control offered against a server that
+    /// cannot see would take the image, send it, and get back an answer about
+    /// nothing — the user would have no way to tell it had been ignored.
+    #[serde(default)]
+    modalities: Modalities,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct Modalities {
+    #[serde(default)]
+    vision: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -133,18 +244,23 @@ impl ChatClient {
         }
     }
 
-    /// The context window the server actually allocated.
+    /// What the server reports about itself.
     ///
-    /// Read from the server rather than assumed from the launch plan: the
+    /// Read from the server rather than assumed. The context window because the
     /// server may round or clamp what it was asked for, and a context meter
     /// whose denominator is a request rather than a fact would mislead
     /// precisely when the window is nearly full.
     ///
+    /// Vision for a stronger reason: it is the only authority there is. A
+    /// model's name is not evidence — plenty of vision models are not named
+    /// after it and plenty of text models are — and even a correct name says
+    /// nothing about whether the projector this launch passed actually loaded.
+    ///
     /// # Errors
     ///
-    /// [`ChatError::Io`] if the request fails, [`ChatError::BadChunk`] if the
-    /// response does not contain the field.
-    pub async fn context_length(&self) -> Result<u32, ChatError> {
+    /// [`ChatError::BadChunk`] if the request fails or the response does not
+    /// contain the context length.
+    pub async fn props(&self) -> Result<ServerProps, ChatError> {
         let response = self
             .http
             .get(format!("{}/props", self.base))
@@ -158,7 +274,10 @@ impl ChatClient {
             .await
             .map_err(|error| ChatError::BadChunk(error.to_string()))?;
 
-        Ok(props.default_generation_settings.n_ctx)
+        Ok(ServerProps {
+            context_length: props.default_generation_settings.n_ctx,
+            vision: props.modalities.vision,
+        })
     }
 
     /// Streams one reply, calling `on_event` as each piece arrives.
@@ -306,6 +425,52 @@ mod tests {
         format!("http://127.0.0.1:{port}")
     }
 
+    /// Serves one GET with `body` as its whole JSON response.
+    ///
+    /// Separate from [`serve_sse`] because `/props` is a plain request with a
+    /// plain answer: no chunking, no streaming, and no request body to drain.
+    fn serve_props(body: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                // Drained before replying for the same reason `serve_sse`
+                // drains: closing a socket that still holds unread bytes sends
+                // RST, which discards the response.
+                let mut request = Vec::new();
+                let mut byte = [0_u8; 1];
+                while let Ok(1) = stream.read(&mut byte) {
+                    request.push(byte[0]);
+                    if request.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+            }
+        });
+
+        format!("http://127.0.0.1:{port}")
+    }
+
+    /// Asks a stub server for its properties.
+    fn properties(base: String) -> Result<ServerProps, ChatError> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async { ChatClient::new(base, "test-key".to_owned()).props().await })
+    }
+
     fn delta(text: &str) -> String {
         format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"{text}\"}}}}]}}\n\n")
     }
@@ -320,13 +485,9 @@ mod tests {
         let outcome = runtime.block_on(async {
             let client = ChatClient::new(base, "test-key".to_owned());
             client
-                .stream(
-                    vec![Message {
-                        role: "user".to_owned(),
-                        content: "hello".to_owned(),
-                    }],
-                    |event| events.push(event),
-                )
+                .stream(vec![Message::text("user", "hello")], |event| {
+                    events.push(event);
+                })
                 .await
         });
 
@@ -464,6 +625,85 @@ mod tests {
             reported.is_some_and(|message| message.contains("context is full")),
             "the server's own words were lost: {outcome:?}"
         );
+    }
+
+    #[test]
+    fn a_text_turn_stays_a_bare_string_on_the_wire() {
+        // Not a one-element array. Every stored conversation replayed as
+        // history goes through here, and a string is the shape every
+        // OpenAI-compatible server has always accepted.
+        let json = serde_json::to_value(Message::text("user", "hello")).unwrap();
+
+        assert_eq!(json["content"], serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn an_image_turn_is_the_shape_the_endpoint_documents() {
+        // Asserted against llama.cpp's server README rather than a summary of
+        // it: content becomes an array of typed parts, and the image part is
+        // `image_url` wrapping an object with a `url`. Getting the nesting
+        // wrong produces a 400 the user reads as "the model refused".
+        let message = Message::text("user", "what is this?")
+            .with_image("data:image/png;base64,AAAA".to_owned());
+
+        let json = serde_json::to_value(message).unwrap();
+        let parts = json["content"].as_array().expect("content is not an array");
+
+        assert!(
+            parts.iter().any(|part| {
+                part["type"] == "image_url"
+                    && part["image_url"]["url"] == "data:image/png;base64,AAAA"
+            }),
+            "the image never reached the payload: {json}"
+        );
+        assert!(
+            parts
+                .iter()
+                .any(|part| part["type"] == "text" && part["text"] == "what is this?"),
+            "the question was lost when the image was attached: {json}"
+        );
+    }
+
+    #[test]
+    fn a_server_reporting_vision_is_taken_at_its_word() {
+        let base = serve_props(
+            r#"{"default_generation_settings":{"n_ctx":8192},
+                "modalities":{"vision":true,"audio":false}}"#,
+        );
+
+        let props = properties(base).unwrap();
+
+        assert!(props.vision, "the server said it can see and was not heard");
+        assert_eq!(props.context_length, 8192);
+    }
+
+    #[test]
+    fn a_server_reporting_no_vision_reports_no_vision() {
+        let base = serve_props(
+            r#"{"default_generation_settings":{"n_ctx":4096},
+                "modalities":{"vision":false,"audio":false}}"#,
+        );
+
+        let props = properties(base).unwrap();
+
+        assert!(!props.vision);
+        assert_eq!(props.context_length, 4096);
+    }
+
+    #[test]
+    fn a_props_with_no_modalities_at_all_means_no_vision() {
+        // An older llama-server build predates the field entirely. Absent has
+        // to mean "no", never "assume yes": an attach control offered against a
+        // server that cannot see would take the image, send it, and return an
+        // answer about nothing at all -- with no way for the user to tell it
+        // had been ignored. The context length still has to come through, or a
+        // conservative reading of one field would break the other.
+        let base = serve_props(r#"{"default_generation_settings":{"n_ctx":2048}}"#);
+
+        let props = properties(base).unwrap();
+
+        assert!(!props.vision, "a missing field was read as support");
+        assert_eq!(props.context_length, 2048);
     }
 
     #[test]

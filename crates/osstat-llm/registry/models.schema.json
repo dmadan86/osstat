@@ -112,6 +112,35 @@
           "type": "integer",
           "exclusiveMinimum": 0,
           "description": "Exact size in bytes as reported by the Hugging Face API, not an estimate — the free-space check depends on it."
+        },
+        "projector": { "$ref": "#/$defs/projector" }
+      }
+    },
+    "projector": {
+      "type": "object",
+      "required": ["repo", "file", "sha256", "sizeBytes"],
+      "additionalProperties": false,
+      "description": "The multimodal projector a vision model needs, passed to llama-server as --mmproj. Absent means the model is text-only. A vision GGUF without its projector loads and answers text while silently ignoring every image, so the two are pinned together.",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$",
+          "description": "Hugging Face repository the projector is fetched from. Held separately from the model's repo because nothing guarantees one publisher ships both in one place."
+        },
+        "file": {
+          "type": "string",
+          "pattern": "\\.gguf$",
+          "description": "File name within the repository."
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA256 of the file, lowercase hex, taken from the Hugging Face API's Git-LFS oid. A mismatch aborts the download with no override."
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "Exact size in bytes as reported by the Hugging Face API. Counted into the free-space check alongside the model, since both must land."
         }
       }
     },

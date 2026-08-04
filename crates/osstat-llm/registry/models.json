@@ -329,6 +329,37 @@
           "sizeBytes": 2393232672
         }
       ]
+    },
+    {
+      "id": "qwen2.5-vl-3b",
+      "name": "Qwen2.5-VL 3B",
+      "family": "Qwen",
+      "parametersBillion": 3.75,
+      "architecture": {
+        "numLayers": 36,
+        "hiddenSize": 2048,
+        "numAttentionHeads": 16,
+        "numKvHeads": 2,
+        "headDim": 128,
+        "maxContextLength": 128000
+      },
+      "sourceNote": "Qwen2.5-VL-3B-Instruct safetensors index (3,754,622,976 parameters, vision tower included); architecture from the published config.json (num_hidden_layers, hidden_size, num_attention_heads, num_key_value_heads, max_position_embeddings). config.json states no head_dim, so headDim is hiddenSize / numAttentionHeads = 128. The parameter count covers the vision encoder, so the calculator's weight estimate is the whole model rather than the language tower alone.",
+      "downloads": [
+        {
+          "quantId": "Q4_K_M",
+          "repo": "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF",
+          "publisher": "ggml-org",
+          "file": "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
+          "sha256": "d02fe9b69ad8cadbbd228e387667af66612c44bed29ffc8eb1e7caf9ac486c12",
+          "sizeBytes": 1929901056,
+          "projector": {
+            "repo": "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF",
+            "file": "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf",
+            "sha256": "980c9b2f78c04e6cff93d277ada09e768394f112d75db3b4e9dea8a69f9fb904",
+            "sizeBytes": 844757728
+          }
+        }
+      ]
     }
   ]
 }

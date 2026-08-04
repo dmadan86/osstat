@@ -41,7 +41,7 @@ use osstat_inference::{
     AcquireError, ModelKey, ModelRecord, ModelStore, MovePlan, Progress, Provenance, SearchResult,
     download_resumable_retrying, download_url, move_library, plan_move, require_space, search,
 };
-use osstat_llm::registry::{ModelDownload, seeded_registry};
+use osstat_llm::registry::{ModelDownload, ProjectorDownload, seeded_registry};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -491,6 +491,41 @@ impl ModelState {
     }
 }
 
+/// Fetches the projector beside weights that have already landed and verified.
+///
+/// A function of its own rather than a block inside [`models_download`]: the
+/// projector is a second transfer needing a second cancel channel, and inlining
+/// that made the ordering the comment at the call site promises — weights
+/// first, always — the least visible thing in a very long function.
+async fn fetch_projector(
+    app: &AppHandle,
+    projector: &ProjectorDownload,
+    destination: &Path,
+    part: &Path,
+    key: &ModelKey,
+) -> Result<(), ModelFailure> {
+    // A second channel: the first was consumed by the download of the weights,
+    // and a Pause the user presses during the projector has to reach something.
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    if let Ok(mut held) = app.state::<ModelState>().cancel.lock() {
+        *held = Some(sender);
+    }
+
+    fetch(
+        app,
+        &download_url(&projector.repo, &projector.file),
+        part,
+        destination,
+        Expected {
+            sha256: &projector.sha256,
+            size_bytes: projector.size_bytes,
+        },
+        key,
+        receiver,
+    )
+    .await
+}
+
 /// The pinned file for one cell, if there is one.
 fn pinned(key: &ModelKey) -> Option<ModelDownload> {
     seeded_registry()
@@ -500,6 +535,26 @@ fn pinned(key: &ModelKey) -> Option<ModelDownload> {
         .downloads
         .into_iter()
         .find(|download| download.quant_id == key.quant_id)
+}
+
+/// The multimodal projector downloaded alongside `model`, if there is one.
+///
+/// Read from the index rather than from the registry: a pin can be withdrawn or
+/// re-quantized after the download, and a file already on disk has to keep
+/// working. Nothing here consults the model's *name* — "vl" in a filename is a
+/// guess, and the record is a fact.
+///
+/// A record naming a projector that is no longer on disk answers `None`. The
+/// user deleted it, or a move left it behind; either way `--mmproj` pointing at
+/// nothing stops the server from starting at all, and a model that runs
+/// text-only is strictly better than a model that will not run.
+pub(crate) fn projector_for(root: &Path, model: &Path) -> Option<PathBuf> {
+    ModelStore::new(root.join(INDEX_FILE))
+        .records()
+        .into_iter()
+        .find(|record| record.path == model)?
+        .projector_path
+        .filter(|projector| projector.is_file())
 }
 
 /// Creates `folder` if it is not there yet.
@@ -617,11 +672,26 @@ pub fn models_download(
     let destination = folder.join(&download.file);
     let part = destination.with_extension(PART_SUFFIX);
 
+    // A vision model's projector lands beside its weights and is verified on
+    // the same terms. Resolved here, before the space check, because both
+    // files have to fit or neither should start.
+    let projector = download.projector.clone().map(|projector| {
+        let destination = folder.join(&projector.file);
+        let part = destination.with_extension(PART_SUFFIX);
+        (projector, destination, part)
+    });
+
     // Only the bytes that are still missing have to fit: a resumed download's
     // part file is already occupying its share of the disk, and demanding the
     // whole size again would refuse a download that would in fact complete.
     let already = std::fs::metadata(&part).map_or(0, |data| data.len());
     let outstanding = download.size_bytes.saturating_sub(already);
+    let outstanding = projector
+        .as_ref()
+        .map_or(outstanding, |(projector, _, part)| {
+            let already = std::fs::metadata(part).map_or(0, |data| data.len());
+            outstanding.saturating_add(projector.size_bytes.saturating_sub(already))
+        });
 
     // Before any request, as `acquire.rs` does. A refusal that arrives after
     // 20 GB have been fetched is not a refusal, it is a waste.
@@ -664,9 +734,26 @@ pub fn models_download(
         )
         .await;
 
+        // The projector is fetched only once the weights have landed and
+        // verified. The other order would leave, on a cancel between the two,
+        // a projector on disk belonging to no model — and a half-downloaded
+        // vision model is better described by the file that is missing than by
+        // the one that is not.
+        let outcome = match (outcome, projector.as_ref()) {
+            (Ok(()), Some((projector, destination, part))) => {
+                fetch_projector(&app, projector, destination, part, &key).await
+            }
+            (outcome, _) => outcome,
+        };
+
         match outcome {
             Ok(()) => {
-                crate::log::download_finished(download.size_bytes, started.elapsed().as_secs());
+                let fetched = projector
+                    .as_ref()
+                    .map_or(download.size_bytes, |(projector, _, _)| {
+                        download.size_bytes.saturating_add(projector.size_bytes)
+                    });
+                crate::log::download_finished(fetched, started.elapsed().as_secs());
 
                 let recorded = store.record(ModelRecord {
                     key: key.clone(),
@@ -678,6 +765,9 @@ pub fn models_download(
                     // Everything the seed registry pins was reviewed in a pull
                     // request against this repository.
                     provenance: Provenance::Pinned,
+                    projector_path: projector
+                        .as_ref()
+                        .map(|(_, destination, _)| destination.clone()),
                 });
 
                 // A verified file the index does not know about is a file the
@@ -960,6 +1050,12 @@ pub fn models_download_searched(
                     // pinned would be indistinguishable in the model list from
                     // one whose hash a person reviewed.
                     provenance: Provenance::Searched,
+                    // Search returns one file. A vision model found this way
+                    // would need its projector named too, and nothing in the
+                    // search result says which of a repository's files that
+                    // is — so this tier stays text-only rather than guessing
+                    // by file name.
+                    projector_path: None,
                 });
 
                 let _ = match recorded {

@@ -88,6 +88,7 @@ function session(): ModelSession {
     contextLength: 8192,
     fits: true,
     headDimDerived: false,
+    vision: false,
   };
 }
 
@@ -186,7 +187,7 @@ describe('the chat session across the page mounting', () => {
     await sendAMessage();
 
     await waitFor(() => {
-      expect(chatSend).toHaveBeenCalledWith(STORED.id, 'hello');
+      expect(chatSend).toHaveBeenCalledWith(STORED.id, 'hello', null);
     });
     expect(screen.queryByText(new RegExp(NO_MODEL, 'i'))).not.toBeInTheDocument();
     expect(held).not.toBeNull();
@@ -213,7 +214,7 @@ describe('the chat session across the page mounting', () => {
     // state and would look identical over a session Rust had already dropped.
     await sendAMessage();
     await waitFor(() => {
-      expect(chatSend).toHaveBeenCalledWith(STORED.id, 'hello');
+      expect(chatSend).toHaveBeenCalledWith(STORED.id, 'hello', null);
     });
     expect(screen.queryByText(new RegExp(NO_MODEL, 'i'))).not.toBeInTheDocument();
   });
@@ -247,7 +248,7 @@ describe('the chat session across the page mounting', () => {
     expect(await screen.findAllByText(STORED.title)).not.toHaveLength(0);
     await sendAMessage();
     await waitFor(() => {
-      expect(chatSend).toHaveBeenCalledWith(STORED.id, 'hello');
+      expect(chatSend).toHaveBeenCalledWith(STORED.id, 'hello', null);
     });
     expect(screen.queryByText(new RegExp(NO_MODEL, 'i'))).not.toBeInTheDocument();
   });
