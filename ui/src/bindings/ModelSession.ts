@@ -3,7 +3,7 @@
 /**
  * What opening a model produced.
  *
- * Deliberately five fields. The base URL, the port and the API key are all
+ * Deliberately six fields. The base URL, the port and the API key are all
  * absent: the webview has no use for any of them and no way to be trusted
  * with them.
  */
@@ -31,4 +31,17 @@ fits: boolean,
  * attention and wrong for models that diverge, and a mis-sized cache is
  * otherwise a mystery rather than a diagnosis.
  */
-headDimDerived: boolean, };
+headDimDerived: boolean, 
+/**
+ * Whether the running server will accept images.
+ *
+ * Read off `/props` at session start, never inferred from the model's
+ * name. The server is the only authority: a name is not evidence, and even
+ * a correctly named vision model says nothing about whether the projector
+ * this launch passed actually loaded.
+ *
+ * This is what decides whether the chat page shows an attach control at
+ * all. `false` shows none — not a disabled one, which would invite a click
+ * that can never work.
+ */
+vision: boolean, };

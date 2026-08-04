@@ -102,7 +102,7 @@ pub struct ChatState {
 
 /// What opening a model produced.
 ///
-/// Deliberately five fields. The base URL, the port and the API key are all
+/// Deliberately six fields. The base URL, the port and the API key are all
 /// absent: the webview has no use for any of them and no way to be trusted
 /// with them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -124,6 +124,17 @@ pub struct ModelSession {
     /// attention and wrong for models that diverge, and a mis-sized cache is
     /// otherwise a mystery rather than a diagnosis.
     pub head_dim_derived: bool,
+    /// Whether the running server will accept images.
+    ///
+    /// Read off `/props` at session start, never inferred from the model's
+    /// name. The server is the only authority: a name is not evidence, and even
+    /// a correctly named vision model says nothing about whether the projector
+    /// this launch passed actually loaded.
+    ///
+    /// This is what decides whether the chat page shows an attach control at
+    /// all. `false` shows none — not a disabled one, which would invite a click
+    /// that can never work.
+    pub vision: bool,
 }
 
 /// More of a reply.
@@ -463,7 +474,14 @@ pub async fn chat_open_model(
     // A server that will not answer is not a reason to refuse the session, so
     // the planned figure stands in.
     let client = ChatClient::new(session.base.clone(), session.api_key.clone());
-    let context_length = client.context_length().await.unwrap_or(plan.context_length);
+    let props = client.props().await.ok();
+    let context_length = props.map_or(plan.context_length, |props| props.context_length);
+
+    // The one field with no fallback. A server that would not answer, or that
+    // is too old to have the field, means no vision — never "assume yes",
+    // because the attach control this drives would otherwise take an image the
+    // server silently drops.
+    let vision = props.is_some_and(|props| props.vision);
 
     let opened = ModelSession {
         model_name: model_name_of(&path),
@@ -471,6 +489,7 @@ pub async fn chat_open_model(
         context_length,
         fits: plan.fits,
         head_dim_derived: model.head_dim_derived,
+        vision,
     };
     if let Ok(mut held) = state.session.lock() {
         *held = Some(session);
@@ -1127,6 +1146,7 @@ mod tests {
             context_length: 8192,
             fits: true,
             head_dim_derived: false,
+            vision: false,
         })
         .unwrap();
         let object = json.as_object().unwrap();
@@ -1140,7 +1160,8 @@ mod tests {
                 "fits",
                 "gpuLayers",
                 "headDimDerived",
-                "modelName"
+                "modelName",
+                "vision"
             ]
         );
     }
@@ -1221,6 +1242,7 @@ mod tests {
             context_length: 8192,
             fits: true,
             head_dim_derived: false,
+            vision: false,
         };
 
         if let Ok(mut held) = state.open.lock() {

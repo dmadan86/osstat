@@ -88,6 +88,7 @@ function session(): ModelSession {
     contextLength: 8192,
     fits: true,
     headDimDerived: false,
+    vision: false,
   };
 }
 
