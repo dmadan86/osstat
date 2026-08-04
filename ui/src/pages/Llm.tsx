@@ -439,7 +439,12 @@ export function Llm({
     setTransfer({
       key: { modelId: result.repo, quantId: result.file },
       downloadedBytes: 0,
-      totalBytes: result.sizeBytes,
+      // Both files, because both are about to be fetched. The first progress
+      // event replaces this with the figure for whichever file is moving, so
+      // this is only the denominator the bar opens with — but opening it at the
+      // weights alone would show a vision download starting out already
+      // further along than it is.
+      totalBytes: result.sizeBytes + (result.projector?.sizeBytes ?? 0),
       bytesPerSecond: null,
       secondsRemaining: null,
       paused: false,
@@ -920,6 +925,17 @@ function Matrix({
 const UNREVIEWED_DETAIL =
   'osstat checks this against the hash Hugging Face reports beside the file. That catches a corrupted transfer. It cannot show that the upload is the one anybody reviewed, which is what the pinned models above are checked against.';
 
+/**
+ * What the vision badge says when pointed at.
+ *
+ * The badge exists because the row's size would otherwise describe one of the
+ * two files a vision download fetches, and the second is not small. Saying
+ * "vision" alone would be a capability claim; saying it with the arithmetic is
+ * the same bargain the explanation drawer makes for the fit matrix.
+ */
+const VISION_DETAIL =
+  'This repository ships a multimodal projector — the second file a vision model needs to see images at all. osstat fetches it with the weights and the size beside this row is both together, because both have to land before the model can answer a question about a picture.';
+
 /** How a small control in a cell is styled. Repeated on six buttons otherwise. */
 const CONTROL =
   'rounded-md border border-edge px-1.5 text-[10px] text-text-muted hover:bg-white/[0.04]';
@@ -1329,6 +1345,7 @@ function SearchPanel({
                 cell={cellKey(result.repo, result.file)}
                 publisher={result.publisher}
                 sizeBytes={result.sizeBytes}
+                projectorBytes={result.projector?.sizeBytes ?? null}
                 quantHint={result.quantHint}
                 entry={catalogue.get(cellKey(result.repo, result.file))}
                 transfer={transfer}
@@ -1359,6 +1376,10 @@ function SearchPanel({
                 cell={cellKey(entry.key.modelId, entry.key.quantId)}
                 publisher={entry.publisher ?? 'an unnamed publisher'}
                 sizeBytes={entry.sizeBytes}
+                // The catalogue records what the weights weigh. A projector
+                // already on disk costs nothing further to fetch, so a row for
+                // a downloaded model has no second figure to add.
+                projectorBytes={null}
                 quantHint={null}
                 entry={entry}
                 transfer={transfer}
@@ -1397,6 +1418,7 @@ function FoundRow({
   cell,
   publisher,
   sizeBytes,
+  projectorBytes,
   quantHint,
   entry,
   transfer,
@@ -1413,6 +1435,15 @@ function FoundRow({
   cell: string;
   publisher: string;
   sizeBytes: number;
+  /**
+   * What the projector weighs, or `null` on a text-only row.
+   *
+   * Separate from `sizeBytes` rather than folded into it by the caller, because
+   * the row has to show the total *and* be able to break it down — a single
+   * summed number would say what will be downloaded while making it impossible
+   * to say why it is larger than the file the row is named after.
+   */
+  projectorBytes: number | null;
   quantHint: string | null;
   entry: ModelCatalogueEntry | undefined;
   transfer: Transfer | null;
@@ -1429,6 +1460,10 @@ function FoundRow({
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
 
+  // What the download will actually take, which is the only figure that can
+  // honestly sit beside a button that starts it.
+  const totalBytes = sizeBytes + (projectorBytes ?? 0);
+
   return (
     <div
       role="group"
@@ -1438,11 +1473,26 @@ function FoundRow({
       <span data-selectable className="font-mono text-[11px] text-text">
         {name}
       </span>
-      <span className="font-mono text-[11px] text-text-muted">{formatBytes(sizeBytes)}</span>
+      <span
+        className="font-mono text-[11px] text-text-muted"
+        {...(projectorBytes !== null && {
+          title: `${formatBytes(sizeBytes)} of weights and ${formatBytes(projectorBytes)} of projector`,
+        })}
+      >
+        {formatBytes(totalBytes)}
+      </span>
       <span className="text-[11px] text-text-muted">via {publisher}</span>
       {quantHint !== null && (
         <span className="rounded-full border border-edge px-1.5 font-mono text-[10px] text-text-muted">
           {quantHint}
+        </span>
+      )}
+      {projectorBytes !== null && (
+        <span
+          title={VISION_DETAIL}
+          className="rounded-full border border-accent/40 px-1.5 text-[10px] text-accent"
+        >
+          Vision
         </span>
       )}
       <span

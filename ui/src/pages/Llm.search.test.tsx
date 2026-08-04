@@ -192,6 +192,8 @@ function result(overrides: Partial<SearchResult> = {}): SearchResult {
     sizeBytes: 8_727_493_120,
     sha256: 'c'.repeat(64),
     quantHint: 'Q5_K_M',
+    // What nearly every result is. A vision repository overrides it.
+    projector: null,
     ...overrides,
   };
 }
@@ -427,6 +429,49 @@ describe('Llm › searching Hugging Face', () => {
     // not carry the same label, or the two tiers read identically.
     expect(within(matrix).queryByText(/not reviewed/i)).toBeNull();
     expect(matrix).toHaveTextContent(/bartowski/);
+  });
+
+  it('shows a vision result weighing both of the files it will fetch', async () => {
+    // The size beside a download button has to be what the download takes. A
+    // vision repository fetches a second file that is not small, and a row
+    // showing only the weights would understate it by hundreds of megabytes —
+    // which is the one number a user reads before deciding to wait.
+    searchModels.mockResolvedValue([
+      result({
+        file: 'Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf',
+        sizeBytes: 1_929_901_056,
+        projector: {
+          file: 'mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf',
+          sha256: 'd'.repeat(64),
+          sizeBytes: 844_757_728,
+        },
+      }),
+    ]);
+    render(<Llm />);
+    await screen.findByRole('table');
+
+    await search('qwen vl');
+
+    const row = await within(resultsSection()).findByRole('group', { name: /Qwen2\.5-VL-3B/ });
+    // Both files together. The weights alone would read 1.80 GB, which is the
+    // figure this row showed before the projector had anywhere to be counted.
+    expect(row).toHaveTextContent('2.58 GB');
+    expect(row).not.toHaveTextContent('1.80 GB');
+    expect(row).toHaveTextContent(/vision/i);
+  });
+
+  it('leaves a text-only result unmarked and weighing only its own file', async () => {
+    // The other half: `Vision` is a claim about the repository, and putting it
+    // on a row that cannot see would be worse than omitting it everywhere.
+    searchModels.mockResolvedValue([result()]);
+    render(<Llm />);
+    await screen.findByRole('table');
+
+    await search();
+
+    const row = await within(resultsSection()).findByRole('group', { name: /Mistral-Nemo/ });
+    expect(row).toHaveTextContent('8.13 GB');
+    expect(row).not.toHaveTextContent(/vision/i);
   });
 
   it('says when a search returns nothing, rather than showing an empty area', async () => {
