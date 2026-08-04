@@ -75,6 +75,19 @@ pub struct ModelRecord {
     /// [`Provenance::Pinned`] is not merely a safe default — it is the true one.
     #[serde(default)]
     pub provenance: Provenance,
+    /// Absolute path to the multimodal projector, on a vision model.
+    ///
+    /// `None` means the model is text-only, which is what every record written
+    /// before this field existed is — so `#[serde(default)]` for the same
+    /// reason as `provenance` above: an index the app refuses to read strands
+    /// gigabytes the user already downloaded.
+    ///
+    /// Recorded as a path rather than re-derived from the registry at launch:
+    /// a pin can be withdrawn or re-quantized, and a file already on disk must
+    /// keep working. It is also what lets `session::start` decide whether to
+    /// pass `--mmproj` from the record alone.
+    #[serde(default)]
+    pub projector_path: Option<PathBuf>,
 }
 
 /// The on-disk shape of the index.
@@ -235,6 +248,7 @@ mod tests {
             publisher: "bartowski".to_owned(),
             repo: "bartowski/Qwen2.5-0.5B-Instruct-GGUF".to_owned(),
             provenance: Provenance::Pinned,
+            projector_path: None,
         }
     }
 
@@ -427,6 +441,67 @@ mod tests {
             "a model from the pinned registry was relabelled as searched"
         );
         assert_eq!(records[0].path, gguf);
+        assert_eq!(
+            records[0].projector_path, None,
+            "a text-only model was given a projector it never downloaded"
+        );
+    }
+
+    #[test]
+    fn a_record_written_before_the_projector_existed_still_loads() {
+        // Same argument as the test above, for the field this feature added:
+        // every record on disk today names one file, and reading `None` from
+        // its absence is the truth rather than a fallback.
+        let root = tempfile::tempdir().unwrap();
+        let index = root.path().join("models.json");
+        let gguf = root.path().join("model.gguf");
+        std::fs::write(&gguf, b"weights").unwrap();
+
+        std::fs::write(
+            &index,
+            serde_json::json!({
+                "version": 1,
+                "records": [{
+                    "key": { "modelId": "qwen2.5-0.5b", "quantId": "Q4_K_M" },
+                    "path": gguf,
+                    "sizeBytes": 7,
+                    "sha256": "a".repeat(64),
+                    "publisher": "bartowski",
+                    "repo": "bartowski/Qwen2.5-0.5B-Instruct-GGUF",
+                    "provenance": "pinned"
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let records = ModelStore::new(index).records();
+
+        assert_eq!(records.len(), 1, "an older index was read as empty");
+        assert_eq!(records[0].projector_path, None);
+    }
+
+    #[test]
+    fn a_projector_path_survives_a_round_trip_through_the_index() {
+        // The path is what `session::start` reads to decide on `--mmproj`, so
+        // an index that dropped it would produce a vision model that loads and
+        // cannot see -- the failure this whole feature exists to avoid.
+        let root = tempfile::tempdir().unwrap();
+        let index = root.path().join("models.json");
+        let gguf = root.path().join("model.gguf");
+        let mmproj = root.path().join("mmproj.gguf");
+        std::fs::write(&gguf, b"weights").unwrap();
+        std::fs::write(&mmproj, b"projector").unwrap();
+
+        let store = ModelStore::new(index);
+        let record = ModelRecord {
+            path: gguf,
+            projector_path: Some(mmproj.clone()),
+            ..sample()
+        };
+        store.record(record).unwrap();
+
+        assert_eq!(store.records()[0].projector_path, Some(mmproj));
     }
 
     #[test]

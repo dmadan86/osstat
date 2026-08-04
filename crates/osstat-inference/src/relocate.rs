@@ -384,6 +384,7 @@ mod tests {
             publisher: "bartowski".to_owned(),
             repo: format!("bartowski/{model_id}-GGUF"),
             provenance: crate::model_store::Provenance::Pinned,
+            projector_path: None,
         }
     }
 
