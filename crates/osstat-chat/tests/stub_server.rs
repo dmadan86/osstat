@@ -31,6 +31,7 @@ fn launch() -> Launch {
     Launch {
         server: stub(),
         model: PathBuf::from("unused-by-the-stub.gguf"),
+        projector: None,
         plan: LaunchPlan {
             gpu_layers: 0,
             context_length: 4096,

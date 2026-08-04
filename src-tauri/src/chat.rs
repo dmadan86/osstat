@@ -440,9 +440,14 @@ pub async fn chat_open_model(
         let _ = previous.stop().await;
     }
 
+    // A vision model needs its projector on the command line or it loads,
+    // answers text, and ignores every image without saying so.
+    let projector = crate::models::projector_for(&root, &path);
+
     let session = osstat_chat::start(Launch {
         server: runtime.server_path,
         model: path.clone(),
+        projector,
         plan,
         record: Some(root.join(SESSION_RECORD)),
     })

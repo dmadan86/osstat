@@ -537,6 +537,26 @@ fn pinned(key: &ModelKey) -> Option<ModelDownload> {
         .find(|download| download.quant_id == key.quant_id)
 }
 
+/// The multimodal projector downloaded alongside `model`, if there is one.
+///
+/// Read from the index rather than from the registry: a pin can be withdrawn or
+/// re-quantized after the download, and a file already on disk has to keep
+/// working. Nothing here consults the model's *name* — "vl" in a filename is a
+/// guess, and the record is a fact.
+///
+/// A record naming a projector that is no longer on disk answers `None`. The
+/// user deleted it, or a move left it behind; either way `--mmproj` pointing at
+/// nothing stops the server from starting at all, and a model that runs
+/// text-only is strictly better than a model that will not run.
+pub(crate) fn projector_for(root: &Path, model: &Path) -> Option<PathBuf> {
+    ModelStore::new(root.join(INDEX_FILE))
+        .records()
+        .into_iter()
+        .find(|record| record.path == model)?
+        .projector_path
+        .filter(|projector| projector.is_file())
+}
+
 /// Creates `folder` if it is not there yet.
 fn ensure_folder(folder: &Path) -> Result<(), String> {
     std::fs::create_dir_all(folder)

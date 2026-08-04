@@ -19,6 +19,15 @@ pub struct Launch {
     pub server: PathBuf,
     /// The model file to load.
     pub model: PathBuf,
+    /// The multimodal projector, on a vision model.
+    ///
+    /// `None` is a text-only model and passes no flag at all. A projector is a
+    /// second file — the GGUF holds the language model, and the weights that
+    /// turn an image into tokens it can attend to live here — so a vision model
+    /// launched without it loads, answers text, and silently ignores every
+    /// image. Taken from the model store's record rather than derived from the
+    /// model's name: a name is a guess, and a file on disk is a fact.
+    pub projector: Option<PathBuf>,
     /// What the arithmetic in [`crate::plan`] chose.
     pub plan: LaunchPlan,
     /// Where to record the child's [`ProcessKey`] so a later run can reap it.
@@ -98,26 +107,7 @@ pub async fn start(launch: Launch) -> Result<Session, ChatError> {
 
     let mut command = tokio::process::Command::new(&launch.server);
     command
-        // The model path is passed straight through as an argument. The test
-        // stub keys its behaviour off sentinel paths (`--slow-start`,
-        // `--die-after`, `--fail-to-start`) that arrive here; they mean
-        // nothing to a real `llama-server` and exist only for the stub.
-        .arg("-m")
-        .arg(&launch.model)
-        .arg("--host")
-        .arg("127.0.0.1")
-        .arg("--port")
-        .arg(port.to_string())
-        .arg("--api-key")
-        .arg(&api_key)
-        // llama-server serves its own web UI by default. osstat spawns a
-        // server for its own use; it does not put an unrequested web app on a
-        // local port.
-        .arg("--no-webui")
-        .arg("-ngl")
-        .arg(launch.plan.gpu_layers.to_string())
-        .arg("-c")
-        .arg(launch.plan.context_length.to_string())
+        .args(arguments(&launch, port, &api_key))
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         // A dropped session must not leave a server holding VRAM, and on
@@ -200,6 +190,50 @@ pub async fn start(launch: Launch) -> Result<Session, ChatError> {
         key,
         record: launch.record,
     })
+}
+
+/// The whole argument vector one launch is spawned with.
+///
+/// Built here rather than inline on the `Command` so a test can read what a
+/// launch would pass without starting a process. The lockdown this module
+/// exists for lives in this function: loopback, an OS-allocated port, a
+/// per-session key, no web UI, and — by their absence — no `--tools` and no
+/// `--agent`.
+fn arguments(launch: &Launch, port: u16, api_key: &str) -> Vec<std::ffi::OsString> {
+    use std::ffi::OsString;
+
+    // The model path is passed straight through as an argument. The test stub
+    // keys its behaviour off sentinel paths (`--slow-start`, `--die-after`,
+    // `--fail-to-start`) that arrive here; they mean nothing to a real
+    // `llama-server` and exist only for the stub.
+    let mut arguments = vec![
+        OsString::from("-m"),
+        launch.model.clone().into_os_string(),
+        OsString::from("--host"),
+        OsString::from("127.0.0.1"),
+        OsString::from("--port"),
+        OsString::from(port.to_string()),
+        OsString::from("--api-key"),
+        OsString::from(api_key),
+        // llama-server serves its own web UI by default. osstat spawns a
+        // server for its own use; it does not put an unrequested web app on a
+        // local port.
+        OsString::from("--no-webui"),
+        OsString::from("-ngl"),
+        OsString::from(launch.plan.gpu_layers.to_string()),
+        OsString::from("-c"),
+        OsString::from(launch.plan.context_length.to_string()),
+    ];
+
+    // Only when there is a projector to point at. Passing `--mmproj` with
+    // nothing after it, or with a path to a file that was never downloaded,
+    // makes a server that would have run as a text model refuse to start.
+    if let Some(projector) = &launch.projector {
+        arguments.push(OsString::from("--mmproj"));
+        arguments.push(projector.clone().into_os_string());
+    }
+
+    arguments
 }
 
 /// Writes the child's identity where a later run will look for it.
@@ -344,5 +378,106 @@ pub fn reap(key: ProcessKey) -> Result<(), ChatError> {
         // than two because `clippy::match_same_arms` is denied.
         Ok(_) | Err(osstat_core::Error::IdentityMismatch { .. }) => Ok(()),
         Err(error) => Err(ChatError::SpawnFailed(error.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    fn launch(projector: Option<PathBuf>) -> Launch {
+        Launch {
+            server: PathBuf::from("llama-server"),
+            model: PathBuf::from("model.gguf"),
+            projector,
+            plan: LaunchPlan {
+                gpu_layers: 33,
+                context_length: 8192,
+                fits: true,
+            },
+            record: None,
+        }
+    }
+
+    /// The argument vector as plain strings, for reading in an assertion.
+    fn spelled(launch: &Launch) -> Vec<String> {
+        arguments(launch, 52_413, "test-key")
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// The value following `flag`, or `None` when the flag is absent.
+    fn value_after(arguments: &[String], flag: &str) -> Option<String> {
+        arguments
+            .iter()
+            .position(|argument| argument == flag)
+            .and_then(|at| arguments.get(at + 1))
+            .cloned()
+    }
+
+    #[test]
+    fn a_model_with_a_projector_is_launched_with_mmproj() {
+        let arguments = spelled(&launch(Some(PathBuf::from("mmproj-qwen.gguf"))));
+
+        assert_eq!(
+            value_after(&arguments, "--mmproj"),
+            Some("mmproj-qwen.gguf".to_owned()),
+            "the projector never reached the command line: {arguments:?}"
+        );
+    }
+
+    #[test]
+    fn a_text_only_model_is_launched_with_no_projector_flag_at_all() {
+        // Not "with an empty value" and not "with a path to nothing": a
+        // `--mmproj` whose file does not exist stops a server that would
+        // otherwise have run perfectly well as a text model.
+        let arguments = spelled(&launch(None));
+
+        assert!(
+            !arguments.iter().any(|argument| argument == "--mmproj"),
+            "a text-only launch passed a projector flag: {arguments:?}"
+        );
+        assert!(
+            !arguments.iter().any(|argument| argument == "-mm"),
+            "a text-only launch passed a projector flag: {arguments:?}"
+        );
+    }
+
+    #[test]
+    fn the_lockdown_survives_a_projector_being_added() {
+        // The reason to assert on the whole vector rather than only the new
+        // flag. `--tools` and `--agent` enable `exec_shell_command` and
+        // `write_file`; this crate's entire premise is that neither is ever
+        // passed, and a rewrite of the argument building is exactly when one
+        // would come back.
+        for projector in [None, Some(PathBuf::from("mmproj.gguf"))] {
+            let arguments = spelled(&launch(projector));
+
+            assert_eq!(value_after(&arguments, "--host"), Some("127.0.0.1".into()));
+            assert_eq!(value_after(&arguments, "--port"), Some("52413".into()));
+            assert_eq!(
+                value_after(&arguments, "--api-key"),
+                Some("test-key".into())
+            );
+            assert!(arguments.iter().any(|argument| argument == "--no-webui"));
+            assert!(
+                !arguments
+                    .iter()
+                    .any(|argument| argument == "--tools" || argument == "--agent"),
+                "the server was handed a tool-calling flag: {arguments:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_plan_reaches_the_command_line() {
+        let arguments = spelled(&launch(None));
+
+        assert_eq!(value_after(&arguments, "-ngl"), Some("33".to_owned()));
+        assert_eq!(value_after(&arguments, "-c"), Some("8192".to_owned()));
+        assert_eq!(value_after(&arguments, "-m"), Some("model.gguf".to_owned()));
     }
 }
