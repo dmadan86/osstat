@@ -135,10 +135,20 @@ export function PanelGrid({ sections, layout, onLayoutChange }: PanelGridProps):
                 defaultOpen
                 controls={controls}
                 grip={
+                  // `text-text-muted` rather than `text-text-faint`: the faintest
+                  // step in the ramp is for text you are not meant to read, and a
+                  // control nobody can see is a control nobody uses. This one was
+                  // reported as a missing feature while it was sitting on screen.
+                  //
+                  // `aria-label` rather than `title` alone: a tooltip is invisible
+                  // to a screen reader and to anyone not hovering. The Move up and
+                  // Move down controls remain the keyboard path.
                   <span
                     {...drag.gripProps(panel.id)}
+                    role="button"
+                    aria-label={`Drag to reorder ${section.title}`}
                     title={`Drag to reorder ${section.title}`}
-                    className="cursor-grab select-none px-1.5 py-2 text-text-faint hover:text-text"
+                    className="cursor-grab select-none px-1.5 py-2 text-text-muted hover:text-text"
                   >
                     ⠿
                   </span>
