@@ -286,9 +286,17 @@ export function chatStatus(): Promise<ModelSession | null> {
  *
  * @param conversationId Which conversation the message belongs to.
  * @param text What the user typed.
+ * @param image An attached image as a `data:` URL, on a vision model.
+ *   Rust puts it into the request; the webview issues no HTTP call of its own
+ *   (ADR-012). Sent with this turn only and never stored, so a conversation
+ *   file stays kilobytes rather than growing by every picture ever attached.
  */
-export async function chatSend(conversationId: string, text: string): Promise<void> {
-  await invoke(COMMANDS.chatSend, { conversationId, text });
+export async function chatSend(
+  conversationId: string,
+  text: string,
+  image: string | null = null
+): Promise<void> {
+  await invoke(COMMANDS.chatSend, { conversationId, text, image });
 }
 
 /** Stops the reply currently streaming. The partial text is kept. */

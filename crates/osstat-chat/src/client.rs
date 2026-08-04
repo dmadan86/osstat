@@ -16,8 +16,91 @@ use futures_util::StreamExt as _;
 pub struct Message {
     /// `system`, `user` or `assistant`.
     pub role: String,
-    /// The turn's text.
-    pub content: String,
+    /// The turn itself: bare text, or text with an image beside it.
+    pub content: Content,
+}
+
+/// What one turn carries.
+///
+/// The OpenAI-compatible endpoint accepts a string or an array of typed parts,
+/// and `llama-server` implements both. A text turn stays a string rather than
+/// becoming a one-element array: that is the shape every server has always
+/// accepted, and every stored conversation replayed as history goes through
+/// here.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(untagged)]
+pub enum Content {
+    /// A turn that is only words.
+    Text(String),
+    /// A turn with an image in it.
+    Parts(Vec<Part>),
+}
+
+/// One piece of a multi-part turn.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "type")]
+pub enum Part {
+    /// Words.
+    #[serde(rename = "text")]
+    Text {
+        /// The words.
+        text: String,
+    },
+    /// An image, as a `data:` URL.
+    ///
+    /// The field is named `image_url` and holds a `data:` URL, which reads
+    /// oddly and is what the endpoint specifies: llama.cpp's server documents
+    /// `image_url.url` as accepting a remote URL, a base64 payload, or a local
+    /// path. osstat only ever sends the middle one — a URL would have the
+    /// *server* fetch something, and a path would have it read the disk.
+    #[serde(rename = "image_url")]
+    Image {
+        /// The `{ "url": "data:image/png;base64,…" }` object.
+        image_url: ImageUrl,
+    },
+}
+
+/// The object wrapping one image's data URL.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ImageUrl {
+    /// `data:image/png;base64,…`
+    pub url: String,
+}
+
+impl Message {
+    /// A turn of plain text.
+    #[must_use]
+    pub fn text(role: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: Content::Text(text.into()),
+        }
+    }
+
+    /// The same turn with an image attached.
+    ///
+    /// The image goes first. Both orders work, and models trained on
+    /// image-then-question handle it more reliably than the reverse.
+    #[must_use]
+    pub fn with_image(self, data_url: String) -> Self {
+        let text = match self.content {
+            Content::Text(text) => text,
+            // Already multi-part. Nothing in this crate produces that today;
+            // returning it unchanged is better than dropping either the parts
+            // it has or the image it was just handed.
+            Content::Parts(_) => return self,
+        };
+
+        Self {
+            role: self.role,
+            content: Content::Parts(vec![
+                Part::Image {
+                    image_url: ImageUrl { url: data_url },
+                },
+                Part::Text { text },
+            ]),
+        }
+    }
 }
 
 /// Token counts for one exchange.
@@ -402,13 +485,9 @@ mod tests {
         let outcome = runtime.block_on(async {
             let client = ChatClient::new(base, "test-key".to_owned());
             client
-                .stream(
-                    vec![Message {
-                        role: "user".to_owned(),
-                        content: "hello".to_owned(),
-                    }],
-                    |event| events.push(event),
-                )
+                .stream(vec![Message::text("user", "hello")], |event| {
+                    events.push(event);
+                })
                 .await
         });
 
@@ -545,6 +624,43 @@ mod tests {
         assert!(
             reported.is_some_and(|message| message.contains("context is full")),
             "the server's own words were lost: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn a_text_turn_stays_a_bare_string_on_the_wire() {
+        // Not a one-element array. Every stored conversation replayed as
+        // history goes through here, and a string is the shape every
+        // OpenAI-compatible server has always accepted.
+        let json = serde_json::to_value(Message::text("user", "hello")).unwrap();
+
+        assert_eq!(json["content"], serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn an_image_turn_is_the_shape_the_endpoint_documents() {
+        // Asserted against llama.cpp's server README rather than a summary of
+        // it: content becomes an array of typed parts, and the image part is
+        // `image_url` wrapping an object with a `url`. Getting the nesting
+        // wrong produces a 400 the user reads as "the model refused".
+        let message = Message::text("user", "what is this?")
+            .with_image("data:image/png;base64,AAAA".to_owned());
+
+        let json = serde_json::to_value(message).unwrap();
+        let parts = json["content"].as_array().expect("content is not an array");
+
+        assert!(
+            parts.iter().any(|part| {
+                part["type"] == "image_url"
+                    && part["image_url"]["url"] == "data:image/png;base64,AAAA"
+            }),
+            "the image never reached the payload: {json}"
+        );
+        assert!(
+            parts
+                .iter()
+                .any(|part| part["type"] == "text" && part["text"] == "what is this?"),
+            "the question was lost when the image was attached: {json}"
         );
     }
 

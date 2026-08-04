@@ -516,6 +516,22 @@ export function Chat({ opened = null, onSessionChange }: ChatProps = {}): React.
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  /**
+   * The image waiting to go with the next message, as a `data:` URL.
+   *
+   * Encoded in the webview rather than in Rust, which is the one place this
+   * page does work it could have delegated. The reason is that the alternative
+   * costs more than it saves: a native file dialog would mean the dialog and
+   * filesystem plugins, and osstat would gain permission to read arbitrary
+   * files where today it has none — and Rust would have to hand the base64
+   * straight back anyway, because the preview below needs exactly the string
+   * the endpoint wants. `<input type="file">` reads one file the user picked,
+   * in the browser's own sandbox, and produces that string directly.
+   *
+   * No network egress moves: the URL crosses to Rust over IPC and Rust makes
+   * the request (ADR-012). The webview still issues no HTTP call.
+   */
+  const [attachment, setAttachment] = useState<string | null>(null);
   const [conversations, setConversations] = useState<readonly Conversation[]>([]);
   const [models, setModels] = useState<readonly Downloaded[]>([]);
   /** The model a switch is loading, or `null` when none is. */
@@ -708,6 +724,15 @@ export function Chat({ opened = null, onSessionChange }: ChatProps = {}): React.
     onSessionChange?.(session);
   }, [session, onSessionChange]);
 
+  // An attachment belongs to the model that could see it, so a switch to a
+  // text-only model drops it -- otherwise the preview would outlive the control
+  // that made it, and the next send would carry an image the server discards
+  // without a word. Derived rather than cleared from an effect: the value is a
+  // function of the session, and an effect would render once with the stale
+  // pairing before correcting itself.
+  const seeing = session?.vision ?? false;
+  const attached = seeing ? attachment : null;
+
   // The cursor goes back in the message box when a reply finishes, so the next
   // question can be typed without reaching for the mouse. **On completion only.**
   // Doing it per token would be the opposite of a courtesy: tokens arrive
@@ -807,9 +832,14 @@ export function Chat({ opened = null, onSessionChange }: ChatProps = {}): React.
     if (text === '' || session === null || streaming || switching) return;
 
     const id = state.conversation.id;
+    const image = attached;
     setDraft('');
+    // Cleared with the draft. An image that survived its own send would ride
+    // along with the next question too, and the user would have no way to tell
+    // until the answer came back about the wrong picture.
+    setAttachment(null);
     dispatch({ kind: 'ask', text });
-    chatSend(id, text).then(
+    chatSend(id, text, image).then(
       // The question is saved before the reply is asked for, so by the time
       // this resolves a conversation new to the store is on disk with its
       // title. Reading the list here is what puts it on screen.
@@ -959,8 +989,11 @@ export function Chat({ opened = null, onSessionChange }: ChatProps = {}): React.
           draft={draft}
           streaming={streaming}
           switching={switching}
+          vision={seeing}
+          attachment={attached}
           inputRef={composerRef}
           onDraftChange={setDraft}
+          onAttach={setAttachment}
           onSend={send}
         />
       )}
@@ -1471,17 +1504,32 @@ function Composer({
   draft,
   streaming,
   switching,
+  vision,
+  attachment,
   inputRef,
   onDraftChange,
+  onAttach,
   onSend,
 }: {
   draft: string;
   streaming: boolean;
   /** Whether a model switch is loading, which is also nothing to talk to. */
   switching: boolean;
+  /**
+   * Whether the running server said it accepts images.
+   *
+   * `false` renders no attach control at all — not a disabled one. A disabled
+   * button is an invitation with no way to accept it: it says the feature is
+   * here and withheld, when the truth is that this model cannot see and no
+   * amount of clicking will change that.
+   */
+  vision: boolean;
+  /** The image waiting to be sent, as a `data:` URL. */
+  attachment: string | null;
   /** The page's handle on the box, for putting the cursor back in it. */
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   onDraftChange: (value: string) => void;
+  onAttach: (image: string | null) => void;
   onSend: () => void;
 }): React.JSX.Element {
   // Two reasons the composer is closed and two sentences for them. "Waiting for
@@ -1495,42 +1543,103 @@ function Composer({
 
   return (
     <form
-      className="flex shrink-0 items-end gap-2"
+      className="flex shrink-0 flex-col gap-2"
       onSubmit={(event) => {
         event.preventDefault();
         onSend();
       }}
     >
-      <label htmlFor="chat-message" className="sr-only">
-        Message
-      </label>
-      <textarea
-        id="chat-message"
-        ref={inputRef}
-        rows={2}
-        value={draft}
-        disabled={busy}
-        placeholder={placeholder}
-        onChange={(event) => {
-          onDraftChange(event.target.value);
-        }}
-        onKeyDown={(event) => {
-          // Enter sends, Shift+Enter adds a line. The composer is two rows
-          // tall, so the multi-line case has to stay reachable.
-          if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault();
-            onSend();
-          }
-        }}
-        className="min-w-0 flex-1 resize-none rounded-md border border-edge bg-transparent px-2 py-1 text-sm disabled:opacity-50"
-      />
-      <button
-        type="submit"
-        disabled={busy || draft.trim() === ''}
-        className="rounded-md border border-accent px-3 py-1.5 text-xs text-accent transition-colors hover:bg-accent/10 disabled:opacity-40"
-      >
-        Send
-      </button>
+      {attachment !== null && (
+        <div className="flex items-center gap-2">
+          <img
+            src={attachment}
+            // The image is the preview. Describing it would mean naming the
+            // file, and the filename is the user's data -- it is not sent to
+            // Rust and it is not put on screen, so there is nothing here for a
+            // log line or a screenshot to leak.
+            alt="Attached image, ready to send"
+            className="h-16 w-16 rounded-md border border-edge object-cover"
+          />
+          <button
+            type="button"
+            onClick={() => {
+              onAttach(null);
+            }}
+            className="rounded-md border border-edge px-2 py-1 text-xs text-muted transition-colors hover:text-fg"
+          >
+            Remove image
+          </button>
+        </div>
+      )}
+
+      <div className="flex items-end gap-2">
+        <label htmlFor="chat-message" className="sr-only">
+          Message
+        </label>
+        <textarea
+          id="chat-message"
+          ref={inputRef}
+          rows={2}
+          value={draft}
+          disabled={busy}
+          placeholder={placeholder}
+          onChange={(event) => {
+            onDraftChange(event.target.value);
+          }}
+          onKeyDown={(event) => {
+            // Enter sends, Shift+Enter adds a line. The composer is two rows
+            // tall, so the multi-line case has to stay reachable.
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault();
+              onSend();
+            }
+          }}
+          className="min-w-0 flex-1 resize-none rounded-md border border-edge bg-transparent px-2 py-1 text-sm disabled:opacity-50"
+        />
+        {/* Only for a model the server said can see. A text-only model gets
+            nothing here at all. */}
+        {vision && (
+          <>
+            <label
+              htmlFor="chat-image"
+              className="cursor-pointer rounded-md border border-edge px-3 py-1.5 text-xs text-muted transition-colors hover:text-fg"
+            >
+              Attach image
+            </label>
+            <input
+              id="chat-image"
+              type="file"
+              accept="image/*"
+              disabled={busy}
+              className="sr-only"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                // The input is reset either way, so picking the same file twice
+                // in a row still fires a change event the second time.
+                event.target.value = '';
+                if (file === undefined) return;
+
+                const reader = new FileReader();
+                reader.onload = () => {
+                  const { result } = reader;
+                  if (typeof result === 'string') onAttach(result);
+                };
+                // readAsDataURL produces exactly what the endpoint wants:
+                // `data:image/png;base64,…`. No conversion, no re-encoding,
+                // and nothing about the file but its bytes and its type.
+                reader.readAsDataURL(file);
+              }}
+            />
+          </>
+        )}
+        <button
+          type="submit"
+          disabled={busy || draft.trim() === ''}
+          className="rounded-md border border-accent px-3 py-1.5 text-xs text-accent transition-colors hover:bg-accent/10 disabled:opacity-40"
+        >
+          Send
+        </button>
+      </div>
     </form>
   );
 }

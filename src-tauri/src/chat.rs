@@ -384,14 +384,14 @@ fn title_of(text: &str) -> String {
 
 /// A stored turn, in the shape the endpoint expects.
 fn wire_message(message: &StoredMessage) -> Message {
-    Message {
-        role: match message.role {
-            Role::System => "system".to_owned(),
-            Role::User => "user".to_owned(),
-            Role::Assistant => "assistant".to_owned(),
+    Message::text(
+        match message.role {
+            Role::System => "system",
+            Role::User => "user",
+            Role::Assistant => "assistant",
         },
-        content: message.content.clone(),
-    }
+        message.content.clone(),
+    )
 }
 
 /// The app-data directory, or a sentence saying it could not be found.
@@ -548,6 +548,7 @@ pub fn chat_send(
     state: State<'_, ChatState>,
     conversation_id: String,
     text: String,
+    image: Option<String>,
 ) -> Result<(), String> {
     let (client, model_name) = state
         .client()
@@ -577,7 +578,22 @@ pub fn chat_send(
         error.to_string()
     })?;
 
-    let history: Vec<Message> = conversation.messages.iter().map(wire_message).collect();
+    let mut history: Vec<Message> = conversation.messages.iter().map(wire_message).collect();
+
+    // Attached to the turn just pushed, and to nothing else. An image belongs
+    // to the question it was asked about, and re-sending every image in the
+    // conversation on every turn would fill the context window with pictures
+    // the user has moved on from.
+    //
+    // Deliberately not stored with the conversation either. A data URL is
+    // roughly a third larger than the file it encodes, and writing one into
+    // the transcript on every send would turn a few kilobytes of JSON into
+    // megabytes that reload on every open.
+    if let Some(data_url) = image
+        && let Some(last) = history.pop()
+    {
+        history.push(last.with_image(data_url));
+    }
 
     let (sender, receiver) = tokio::sync::oneshot::channel();
     if let Ok(mut held) = state.cancel.lock() {
@@ -1130,7 +1146,13 @@ mod tests {
             });
 
             assert_eq!(wire.role, expected);
-            assert_eq!(wire.content, "hello");
+            // Compared through JSON because `Content` is a wire shape, not a
+            // value type: what matters is that a stored turn still serialises
+            // to a bare string rather than to an array of parts.
+            assert_eq!(
+                serde_json::to_value(&wire).unwrap()["content"],
+                serde_json::json!("hello")
+            );
         }
     }
 

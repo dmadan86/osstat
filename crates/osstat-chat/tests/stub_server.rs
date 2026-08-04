@@ -222,13 +222,7 @@ fn a_child_that_dies_mid_stream_does_not_take_the_process_with_it() {
     let client = ChatClient::new(session.base.clone(), session.api_key.clone());
     let outcome = runtime.block_on(async {
         client
-            .stream(
-                vec![Message {
-                    role: "user".to_owned(),
-                    content: "hello".to_owned(),
-                }],
-                |_| {},
-            )
+            .stream(vec![Message::text("user", "hello")], |_| {})
             .await
     });
 

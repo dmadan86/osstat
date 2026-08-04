@@ -18,7 +18,9 @@ pub mod remote;
 pub mod session;
 pub mod store;
 
-pub use client::{ChatClient, Message, ServerProps, StreamEvent, Timings, Usage};
+pub use client::{
+    ChatClient, Content, ImageUrl, Message, Part, ServerProps, StreamEvent, Timings, Usage,
+};
 pub use error::ChatError;
 pub use gguf::{GgufNeed, ModelFile, parse, parse_prefix};
 pub use plan::{DEFAULT_CONTEXT_CEILING, LaunchPlan, plan_launch};
