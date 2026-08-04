@@ -21,7 +21,7 @@ sysinfo = { version = "0.39.6", default-features = false, features = ["system", 
 ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
-criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 serde_json = { workspace = true }
 tempfile = "3"
 
