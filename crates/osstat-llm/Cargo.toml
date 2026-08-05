@@ -41,7 +41,7 @@ wgpu = { version = "27.0.1", default-features = false, features = [
 # an NVIDIA driver since macOS 10.13, so linking it there would add weight for a
 # code path that can never run.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-nvml-wrapper = "0.11.0"
+nvml-wrapper = "0.12.1"
 
 [dev-dependencies]
 # Validates the seed registry against its own JSON Schema in a test, rather
