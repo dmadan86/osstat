@@ -413,6 +413,36 @@ describe('Chat', () => {
     });
   });
 
+  it('draws the throughput history only once there is a shape to draw', async () => {
+    // One reading is a dot pretending to be a trend. The figure is the honest
+    // rendering of a single sample; the line only earns its place when there
+    // is a second reading for it to be going somewhere from.
+    await renderChat();
+    const transcript = (): HTMLElement => screen.getByRole('log', { name: /transcript/i });
+
+    await emit(token, {
+      conversationId: 'c1',
+      delta: 'one',
+      timings: { promptPerSecond: 100, predictedPerSecond: 40 },
+    });
+
+    expect(await screen.findByText(/40\.0 tok\/s/)).toBeInTheDocument();
+    expect(transcript().querySelector('svg')).toBeNull();
+
+    await emit(token, {
+      conversationId: 'c1',
+      delta: ' two',
+      timings: { promptPerSecond: 100, predictedPerSecond: 48 },
+    });
+
+    await waitFor(() => {
+      expect(transcript().querySelector('svg polyline')).not.toBeNull();
+    });
+    // The number never goes away when the line arrives: a reader who cannot
+    // see the line must lose nothing they could otherwise have read.
+    expect(screen.getByText(/48\.0 tok\/s/)).toBeInTheDocument();
+  });
+
   it('labels each exchange with its own token counts', async () => {
     await renderChat();
 
@@ -638,9 +668,17 @@ describe('Chat', () => {
     expect(question).not.toBe(answer);
     expect(within(question as HTMLElement).getByText('You')).toBeInTheDocument();
     expect(within(answer as HTMLElement).getByText('Model')).toBeInTheDocument();
-    // Different backgrounds, from the theme tokens rather than from literals.
+    // Different surfaces and opposite indents, both from theme tokens rather
+    // than from literals. Asserted as the two properties that carry the
+    // distinction rather than as one exact class: the previous version pinned
+    // `border-l-accent/50`, which meant a change of treatment failed the test
+    // even when the roles stayed just as easy to tell apart. What must hold is
+    // that they are distinguishable without reading the label, not that they
+    // are distinguished by any particular decoration.
     expect(question?.className).toContain('bg-surface');
-    expect(answer?.className).toContain('border-l-accent/50');
+    expect(answer?.className).toContain('bg-surface-raised');
+    expect(question?.className).toContain('ml-');
+    expect(answer?.className).toContain('mr-');
     expect(question?.className).not.toBe(answer?.className);
   });
 
