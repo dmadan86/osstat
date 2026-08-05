@@ -35,7 +35,7 @@ sha2 = "0.10"
 osstat-platform = { workspace = true }
 # Upstream ships .zip on Windows and .tar.gz elsewhere, so both readers are
 # needed. `deflate` only: no other compression method appears in the release.
-zip = { version = "6", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1"
 # `time` for the backoff between download attempts; see `RETRY_BACKOFF`.
