@@ -28,11 +28,10 @@ import {
 import { Chat } from './pages/Chat';
 import { Llm } from './pages/Llm';
 import { Overview } from './pages/Overview';
-import { Planned } from './pages/Planned';
 import { Ports } from './pages/Ports';
 import { Processes } from './pages/Processes';
 import { Settings } from './pages/Settings';
-import { NAV_ITEMS, type Route } from './routes';
+import type { Route } from './routes';
 
 /** Renders the whole application. */
 export function App(): React.JSX.Element {
@@ -293,10 +292,5 @@ function Page({
 
     case 'settings':
       return <Settings preferences={preferences} onChange={onPreferenceChange} />;
-
-    default: {
-      const item = NAV_ITEMS.find((candidate) => candidate.route === route);
-      return item === undefined ? <p role="alert">Unknown page.</p> : <Planned item={item} />;
-    }
   }
 }
