@@ -30,6 +30,7 @@ import type { RuntimeOption } from '../bindings/RuntimeOption';
 import type { RuntimeProgress } from '../bindings/RuntimeProgress';
 import type { RuntimeStatus } from '../bindings/RuntimeStatus';
 import { formatBytes } from '../lib/format';
+import { ROW_CLASS, SettingHeader } from './SettingRow';
 import {
   acquireRuntime,
   deleteRuntime,
@@ -169,13 +170,12 @@ export function InferenceRuntime(): React.JSX.Element {
   const busy = progress !== null;
 
   return (
-    <section aria-label="Inference runtime" className="border-t border-edge p-3">
-      <p className="text-sm">Inference runtime</p>
-      <p className="mt-0.5 text-xs text-text-muted">
+    <section aria-label="Inference runtime" className={ROW_CLASS}>
+      <SettingHeader icon="chip" label="Inference runtime">
         The llama.cpp server osstat runs models with. It is downloaded when you ask for it, never
         before, and osstat refuses to run a build whose checksum does not match the one pinned in
         its source.
-      </p>
+      </SettingHeader>
 
       {state.status === 'loading' && (
         <p className="mt-3 text-xs text-text-muted">Checking what is installed…</p>

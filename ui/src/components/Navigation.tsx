@@ -6,6 +6,7 @@
  * difference in what the app can reach.
  */
 
+import { Icon } from './Icon';
 import type { NavigationStyle } from '../lib/preferences';
 import { NAV_ITEMS, SETTINGS_ITEM, type NavItem, type Route } from '../routes';
 
@@ -67,40 +68,25 @@ function LoadedMark(): React.JSX.Element {
   );
 }
 
-/**
- * Renders one navigation entry.
- *
- * Unbuilt pages are dimmed but remain reachable. Disabling them would hide what
- * the app is going to be, and their placeholder pages say something useful.
- */
+/** Renders one navigation entry. */
 function Item({ item, active, showLabel, loaded, onSelect }: ItemProps): React.JSX.Element {
-  const unbuilt = item.milestone !== undefined;
-
   return (
     <button
       type="button"
       onClick={onSelect}
       aria-current={active ? 'page' : undefined}
-      title={unbuilt ? `${item.label} — arrives in ${item.milestone}` : item.label}
+      title={item.label}
       className={[
         'flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors',
         showLabel ? 'w-full' : 'justify-center',
         active
           ? 'bg-white/[0.07] text-text shadow-[inset_2px_0_0_var(--color-accent)]'
           : 'text-text-muted hover:bg-white/[0.04] hover:text-text',
-        unbuilt && !active ? 'opacity-45' : '',
       ].join(' ')}
     >
-      <span aria-hidden="true" className="w-3.5 text-center">
-        {item.icon}
-      </span>
+      <Icon name={item.icon} />
       {showLabel && <span className="truncate">{item.label}</span>}
       {loaded && <LoadedMark />}
-      {showLabel && unbuilt && (
-        <span className="ml-auto rounded-full border border-edge px-1.5 font-mono text-[10px] text-text-muted">
-          {item.milestone}
-        </span>
-      )}
     </button>
   );
 }
@@ -161,7 +147,6 @@ function Tabs({ current, onNavigate, modelLoaded }: NavigationProps): React.JSX.
     <nav aria-label="Main" className="flex gap-1 border-b border-edge bg-black/15 px-3">
       {items.map((item) => {
         const active = item.route === current;
-        const unbuilt = item.milestone !== undefined;
 
         return (
           <button
@@ -171,16 +156,15 @@ function Tabs({ current, onNavigate, modelLoaded }: NavigationProps): React.JSX.
               onNavigate(item.route);
             }}
             aria-current={active ? 'page' : undefined}
-            title={unbuilt ? `${item.label} — arrives in ${item.milestone}` : item.label}
+            title={item.label}
             className={[
-              '-mb-px border-b-2 px-3 py-2 text-sm transition-colors',
+              '-mb-px flex items-center gap-2 border-b-2 px-3 py-2 text-sm transition-colors',
               active
                 ? 'border-accent text-text'
                 : 'border-transparent text-text-muted hover:text-text',
-              'flex items-center gap-2',
-              unbuilt && !active ? 'opacity-45' : '',
             ].join(' ')}
           >
+            <Icon name={item.icon} />
             {item.label}
             {modelLoaded && item.route === 'chat' && <LoadedMark />}
           </button>

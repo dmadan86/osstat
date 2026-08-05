@@ -29,6 +29,7 @@ import { useEffect, useState } from 'react';
 import type { LibraryMovePlan } from '../bindings/LibraryMovePlan';
 import type { ModelProgress } from '../bindings/ModelProgress';
 import { formatBytes } from '../lib/format';
+import { ROW_CLASS, SettingHeader } from './SettingRow';
 import {
   fetchModelFolder,
   moveModelLibrary,
@@ -197,12 +198,11 @@ export function ModelFolder(): React.JSX.Element {
   const current = state.status === 'ready' ? state.folder : null;
 
   return (
-    <section aria-label="Where models are kept" className="border-t border-edge p-3">
-      <p className="text-sm">Model folder</p>
-      <p className="mt-0.5 text-xs text-text-muted">
+    <section aria-label="Where models are kept" className={ROW_CLASS}>
+      <SettingHeader icon="folder" label="Model folder">
         Where downloaded models are kept. A single model is gigabytes, so this can be pointed at
         whichever disk has room. Nothing is created until the first download.
-      </p>
+      </SettingHeader>
 
       {state.status === 'loading' && (
         <p className="mt-3 text-xs text-text-muted">Reading where models are kept…</p>

@@ -49,26 +49,22 @@ describe('Navigation', () => {
     expect(onNavigate).toHaveBeenCalledWith('processes');
   });
 
-  it('keeps unbuilt pages reachable rather than disabling them', async () => {
-    // Their placeholder says what is coming; a disabled button says nothing.
-    const onNavigate = vi.fn();
-    render(
-      <Navigation current="overview" onNavigate={onNavigate} style="sidebar" modelLoaded={false} />
-    );
-
-    const cleaner = screen.getByTitle(/Cleaner/);
-    expect(cleaner).not.toBeDisabled();
-
-    await userEvent.click(cleaner);
-    expect(onNavigate).toHaveBeenCalledWith('cleaner');
-  });
-
-  it('names the milestone of an unbuilt page', () => {
+  it('offers nothing that does not lead to a page', () => {
+    // The navigation once carried Cleaner as a dimmed entry leading to a
+    // placeholder. Every entry now reaches something real, and this is what
+    // says so: a route in the model with no page behind it fails here.
     render(
       <Navigation current="overview" onNavigate={() => {}} style="sidebar" modelLoaded={false} />
     );
 
-    expect(screen.getByTitle('Cleaner — arrives in M3')).toBeInTheDocument();
+    expect(screen.queryByTitle(/Cleaner/)).not.toBeInTheDocument();
+    expect(NAV_ITEMS.map((item) => item.route)).toEqual([
+      'overview',
+      'processes',
+      'ports',
+      'llm',
+      'chat',
+    ]);
   });
 
   it('hides labels in the icon rail but keeps them accessible', () => {

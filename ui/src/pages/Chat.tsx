@@ -378,6 +378,120 @@ function renderText(text: string): React.JSX.Element[] {
     );
 }
 
+/** How many throughput samples the sparkline keeps. */
+const RATE_SAMPLES = 48;
+
+/**
+ * The throughput history behind the live sparkline.
+ *
+ * Kept here rather than in the reducer because it is not conversation state:
+ * it belongs to one reply in flight, it is never stored, and it should vanish
+ * the moment the reply lands. Mounting the component that owns it only while
+ * streaming is what makes "reset between replies" free rather than another
+ * action to dispatch.
+ */
+function useRateHistory(rate: number | null): number[] {
+  const [samples, setSamples] = useState<number[]>([]);
+  const [seen, setSeen] = useState<number | null>(null);
+
+  // React's own "adjust state when a prop changes" pattern, not an effect. An
+  // effect would append one render late and cost a second pass per token; this
+  // re-renders before anything commits, so the line and the text it sits
+  // beside are always describing the same reading. The guard is what makes it
+  // terminate, and what makes StrictMode's double invocation add one sample
+  // rather than two.
+  if (rate !== null && rate !== seen) {
+    setSeen(rate);
+    setSamples((previous) => [...previous, rate].slice(-RATE_SAMPLES));
+  }
+
+  return samples;
+}
+
+/**
+ * What the machine is doing, while it is doing it.
+ *
+ * The one thing a local chat can show that a hosted one cannot: this is the
+ * user's own hardware, and the rate it sustains is a real measurement of it
+ * rather than a spinner standing in for one. So it is drawn from samples the
+ * stream already carries — nothing here is synthesised, and an absent figure
+ * draws nothing rather than a flat line at zero, which would read as "stalled"
+ * when the truth is "not measured yet".
+ *
+ * A sparkline is content here, not decoration: it is the shape of a number
+ * that changes, which is the only reason to draw one at all.
+ */
+function LiveRate({ rate }: { rate: number | null }): React.JSX.Element | null {
+  const samples = useRateHistory(rate);
+
+  if (rate === null || samples.length < 2) {
+    // Below two points there is no shape to draw, only a dot pretending to be
+    // a trend. The figure alone is the honest rendering of one sample.
+    return rate === null ? null : (
+      <span className="font-mono text-[11px] text-accent">{`${rate.toFixed(1)} tok/s`}</span>
+    );
+  }
+
+  // Normalised against this reply's own peak rather than a fixed ceiling: the
+  // question the shape answers is "is it holding steady or falling off", and a
+  // scale that depends on hardware nobody here knows about would flatten every
+  // small machine into a line along the bottom.
+  const peak = Math.max(...samples);
+  const floor = Math.min(...samples);
+  const span = Math.max(peak - floor, 0.001);
+  const points = samples
+    .map((sample, index) => {
+      const x = (index / (samples.length - 1)) * 100;
+      const y = 16 - ((sample - floor) / span) * 14 - 1;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(' ');
+
+  return (
+    <span className="flex items-center gap-2">
+      <svg
+        viewBox="0 0 100 16"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+        className="h-4 w-16 shrink-0 text-accent"
+      >
+        <polyline
+          points={points}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.25"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+      {/* The figure stays. The line says how it is moving; only the number
+          says what it is, and a reader who cannot see the line loses nothing
+          they could not already read here. */}
+      <span data-selectable className="font-mono text-[11px] text-accent">
+        {`${rate.toFixed(1)} tok/s`}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * The caret at the end of a reply still being written.
+ *
+ * Drawn rather than typed: a Unicode block would inherit the text font's own
+ * idea of how tall a block is and change size with the theme. This is a box
+ * whose height is tied to the line it sits on.
+ */
+function StreamingCaret(): React.JSX.Element {
+  return (
+    <span
+      aria-hidden="true"
+      className="ml-0.5 inline-block h-[1em] w-[0.5ch] translate-y-[0.15em] rounded-[1px] bg-accent align-baseline"
+      style={{ animation: 'osstat-caret 1.1s ease-in-out infinite' }}
+    />
+  );
+}
+
 /** One fenced block, with the language it declared and a copy control. */
 function CodeBlock({ language, body }: { language: string; body: string }): React.JSX.Element {
   return (
@@ -978,6 +1092,9 @@ export function Chat({ opened = null, onSessionChange }: ChatProps = {}): React.
                   sentAt: null,
                 }}
                 timings={state.pending.stopped ? null : state.timings}
+                // A stopped reply is finished, not arriving: no caret, and no
+                // live rate for a stream that is no longer producing one.
+                streaming={!state.pending.stopped}
               />
             )}
           </ol>
@@ -1417,25 +1534,33 @@ function ModelChooser({
 function Turn({
   message,
   timings = null,
+  streaming = false,
 }: {
   message: Message;
   timings?: Timings | null;
+  /** Whether this turn is the reply currently arriving. */
+  streaming?: boolean;
 }): React.JSX.Element {
   const speeds = timings;
   const fromUser = message.role === 'user';
 
   return (
     <li
-      className={`flex flex-col gap-1 rounded-lg px-2.5 py-2 ${
-        fromUser
-          ? 'ml-6 border border-edge bg-surface'
-          : 'mr-6 border-l-2 border-l-accent/50 bg-surface-raised'
+      // The assistant's old 2px accent rail is gone. A coloured border down the
+      // side of a list item is the cheapest possible way to say "this one is
+      // different", and it was saying something the role label already says in
+      // the same colour one line above it. What separates the two roles now is
+      // what actually separates them in a transcript: which side of the column
+      // they sit on, and whether they sit on the raised surface or the base.
+      className={`flex flex-col gap-1.5 rounded-lg border border-edge px-3 py-2 ${
+        fromUser ? 'ml-8 bg-surface' : 'mr-8 bg-surface-raised'
       }`}
+      style={{ animation: 'osstat-turn-in 240ms cubic-bezier(0.16, 1, 0.3, 1) both' }}
     >
       <div className="flex items-baseline gap-2">
         <span
           className={`text-[10px] uppercase tracking-wider ${
-            fromUser ? 'text-text-muted' : 'text-accent/80'
+            fromUser ? 'text-text-muted' : 'text-accent'
           }`}
         >
           {ROLE_LABEL[message.role]}
@@ -1458,11 +1583,21 @@ function Turn({
           step of grey, which the role label above already says outright and in
           colour — and a transcript where half the turns are dimmer is just
           harder to read for no gain. */}
-      <div data-selectable className="text-sm text-text">
+      <div data-selectable className="text-sm leading-relaxed text-text">
         {renderText(message.content)}
+        {/* Sits inside the prose so it lands after the last character rather
+            than on a line of its own, which is the difference between "still
+            writing" and "finished, with a decoration underneath". */}
+        {streaming && <StreamingCaret />}
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
+      {/* The live figure leads while the reply is arriving, and the settled
+          counts lead once it has landed. Two different questions -- "is it
+          moving" and "what did it cost" -- and only one of them is worth the
+          reader's eye at any given moment. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        {streaming && speeds !== null && <LiveRate rate={speeds.predictedPerSecond} />}
+
         {message.usage !== null && (
           <span data-selectable className="font-mono text-[11px] text-text-faint">
             {`${formatCount(message.usage.promptTokens)} in · ${formatCount(
@@ -1489,7 +1624,11 @@ function Turn({
           </span>
         )}
 
-        {speeds !== null && speeds.predictedPerSecond !== null && (
+        {/* Only once the reply has landed. While it is still arriving the same
+            number is the leading figure above, beside its own history, and
+            printing it twice in one row would make the reader check whether
+            the two were saying different things. */}
+        {!streaming && speeds !== null && speeds.predictedPerSecond !== null && (
           <span className="font-mono text-[11px] text-text-muted">
             {`${speeds.predictedPerSecond.toFixed(1)} tok/s`}
           </span>
@@ -1565,7 +1704,7 @@ function Composer({
             onClick={() => {
               onAttach(null);
             }}
-            className="rounded-md border border-edge px-2 py-1 text-xs text-muted transition-colors hover:text-fg"
+            className="rounded-md border border-edge px-2 py-1 text-xs text-text-muted transition-colors hover:bg-white/[0.04] hover:text-text"
           >
             Remove image
           </button>
@@ -1594,7 +1733,11 @@ function Composer({
               onSend();
             }
           }}
-          className="min-w-0 flex-1 resize-none rounded-md border border-edge bg-transparent px-2 py-1 text-sm disabled:opacity-50"
+          // The box you spend the whole session looking at, and it had no
+          // focused state of its own -- only the platform's default ring,
+          // which the dark themes swallow. The accent border says where the
+          // cursor is without adding a second box around the first.
+          className="min-w-0 flex-1 resize-none rounded-md border border-edge bg-transparent px-2 py-1.5 text-sm leading-relaxed transition-colors placeholder:text-text-faint focus:border-accent focus:outline-none disabled:opacity-50"
         />
         {/* Only for a model the server said can see. A text-only model gets
             nothing here at all. */}
@@ -1602,7 +1745,7 @@ function Composer({
           <>
             <label
               htmlFor="chat-image"
-              className="cursor-pointer rounded-md border border-edge px-3 py-1.5 text-xs text-muted transition-colors hover:text-fg"
+              className="cursor-pointer rounded-md border border-edge px-3 py-1.5 text-xs text-text-muted transition-colors hover:bg-white/[0.04] hover:text-text"
             >
               Attach image
             </label>
@@ -1632,10 +1775,16 @@ function Composer({
             />
           </>
         )}
+        {/* Filled rather than outlined once it can actually be pressed. The
+            outline version read as one more secondary control in a row of
+            them, when it is the only thing on this bar the user came here to
+            do -- and the disabled state stays outlined, so the difference
+            between "ready" and "nothing to send" is visible without reading
+            the label. */}
         <button
           type="submit"
           disabled={busy || draft.trim() === ''}
-          className="rounded-md border border-accent px-3 py-1.5 text-xs text-accent transition-colors hover:bg-accent/10 disabled:opacity-40"
+          className="rounded-md border border-accent px-3 py-1.5 text-xs transition-colors enabled:bg-accent enabled:text-surface enabled:hover:bg-accent/85 disabled:text-accent disabled:opacity-40"
         >
           Send
         </button>

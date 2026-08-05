@@ -143,3 +143,54 @@ textarea,
   user-select: text;
   cursor: auto;
 }
+
+/* Motion.
+ *
+ * The app is otherwise still, and it should stay that way: this is a system
+ * utility read at a glance, and a page that moves while you are trying to read
+ * a number is worse at its job. So there is exactly one authored moment — a
+ * reply arriving — and these are the only keyframes it needs.
+ */
+
+/* The caret at the end of a reply still being written. A soft pulse rather
+   than a hard blink: a terminal cursor snaps because a terminal has no other
+   way to say "here", and this sits at the end of prose someone is reading. */
+@keyframes osstat-caret {
+  0%,
+  40% {
+    opacity: 1;
+  }
+  60%,
+  100% {
+    opacity: 0.2;
+  }
+}
+
+/* A turn settling into the transcript. Four pixels and a fade, from an
+   already-visible default, so a reply that arrives while you are reading the
+   one above it does not throw the column around. */
+@keyframes osstat-turn-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Taken at its word. Someone who has asked the OS for less motion has usually
+   asked because motion costs them something, so the answer is none of it —
+   not a shorter version of the same movement. Every rule above is decoration
+   over a state the interface also states in words. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

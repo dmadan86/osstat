@@ -31,6 +31,7 @@ import { useEffect, useState } from 'react';
 import type { LogLevel } from '../bindings/LogLevel';
 import { fetchLogDirectory, logUiEvent, saveLogs, setLogLevel } from '../lib/ipc';
 import { CHOICES } from '../lib/preferences';
+import { ROW_CLASS, SettingHeader } from './SettingRow';
 
 /** What the section knows about where the logs are. */
 type FolderState =
@@ -137,15 +138,14 @@ export function Logging({ level, onChangeLevel }: LoggingProps): React.JSX.Eleme
   const current = folder.status === 'ready' ? folder.folder : null;
 
   return (
-    <section aria-label="Logs" className="border-t border-edge p-3">
-      <p className="text-sm">Logs</p>
-      <p className="mt-0.5 text-xs text-text-muted">
+    <section aria-label="Logs" className={ROW_CLASS}>
+      <SettingHeader icon="file" label="Logs">
         osstat keeps a week of daily log files, deleting the oldest as new ones arrive.{' '}
         <strong className="font-medium text-text">
           They contain no personal data — no file names, paths, process names, addresses, or
           anything you typed — so they are safe to attach to a bug report.
         </strong>
-      </p>
+      </SettingHeader>
 
       <div role="radiogroup" aria-label="Log detail" className="mt-3 flex flex-col gap-1.5">
         {CHOICES.logLevel.map((choice) => (

@@ -197,18 +197,6 @@ describe('App', () => {
     expect(await screen.findByText('renderer')).toBeInTheDocument();
   });
 
-  it('shows what an unbuilt page will do rather than an empty screen', async () => {
-    render(<App />);
-    await screen.findByText('TESTBOX');
-
-    await userEvent.click(screen.getByTitle(/Cleaner/));
-
-    expect(await screen.findByText('System cleaner')).toBeInTheDocument();
-    expect(screen.getByText(/previewed|preview/i)).toBeInTheDocument();
-    // "M3" appears on the nav badge as well as the placeholder.
-    expect(screen.getAllByText('M3').length).toBeGreaterThan(0);
-  });
-
   it('switches navigation style from settings and keeps every page reachable', async () => {
     render(<App />);
     await screen.findByText('TESTBOX');
@@ -237,6 +225,7 @@ describe('App', () => {
     await screen.findByText('TESTBOX');
 
     await userEvent.click(screen.getByTitle('Settings'));
+    await userEvent.click(await screen.findByRole('tab', { name: 'Monitoring' }));
     await userEvent.click(await screen.findByRole('radio', { name: '1 second' }));
 
     await waitFor(() => {
@@ -249,6 +238,7 @@ describe('App', () => {
     await screen.findByText('TESTBOX');
 
     await userEvent.click(screen.getByTitle('Settings'));
+    await userEvent.click(await screen.findByRole('tab', { name: 'Monitoring' }));
     await userEvent.click(await screen.findByRole('radio', { name: 'Paused' }));
 
     await waitFor(() => {
