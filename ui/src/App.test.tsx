@@ -237,6 +237,7 @@ describe('App', () => {
     await screen.findByText('TESTBOX');
 
     await userEvent.click(screen.getByTitle('Settings'));
+    await userEvent.click(await screen.findByRole('tab', { name: 'Monitoring' }));
     await userEvent.click(await screen.findByRole('radio', { name: '1 second' }));
 
     await waitFor(() => {
@@ -249,6 +250,7 @@ describe('App', () => {
     await screen.findByText('TESTBOX');
 
     await userEvent.click(screen.getByTitle('Settings'));
+    await userEvent.click(await screen.findByRole('tab', { name: 'Monitoring' }));
     await userEvent.click(await screen.findByRole('radio', { name: 'Paused' }));
 
     await waitFor(() => {
