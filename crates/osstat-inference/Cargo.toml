@@ -31,7 +31,7 @@ reqwest = { version = "0.13", default-features = false, features = [
   "stream",
   "http2",
 ] }
-sha2 = "0.10"
+sha2 = "0.11"
 osstat-platform = { workspace = true }
 # Upstream ships .zip on Windows and .tar.gz elsewhere, so both readers are
 # needed. `deflate` only: no other compression method appears in the release.
