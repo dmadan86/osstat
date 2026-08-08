@@ -297,6 +297,10 @@ impl ChatClient {
             // Without this, timings arrive only on the final chunk and the
             // tokens/sec readout could not update while generating.
             "timings_per_token": true,
+            // A streamed OpenAI response carries no token counts unless they
+            // are asked for. Without this the context meter reads zero for a
+            // whole conversation and no message ever shows what it cost.
+            "stream_options": { "include_usage": true },
         });
 
         let response = self
@@ -379,6 +383,16 @@ mod tests {
     /// even if the parser only ever handled a complete body, which is the
     /// failure this whole module has to survive.
     fn serve_sse(chunks: Vec<String>) -> String {
+        serve_sse_reporting(chunks).0
+    }
+
+    /// [`serve_sse`], plus the request body it was sent.
+    ///
+    /// The body is the only place the options this client asks the server for
+    /// are visible, and asking for the wrong ones fails silently -- the reply
+    /// still streams, it just arrives without the figures.
+    fn serve_sse_reporting(chunks: Vec<String>) -> (String, std::sync::mpsc::Receiver<String>) {
+        let (sender, receiver) = std::sync::mpsc::channel();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
 
@@ -407,6 +421,7 @@ mod tests {
                     .unwrap_or(0);
                 let mut body = vec![0_u8; length];
                 let _ = stream.read_exact(&mut body);
+                let _ = sender.send(String::from_utf8_lossy(&body).into_owned());
 
                 let _ = stream.write_all(
                     b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
@@ -422,7 +437,7 @@ mod tests {
             }
         });
 
-        format!("http://127.0.0.1:{port}")
+        (format!("http://127.0.0.1:{port}"), receiver)
     }
 
     /// Serves one GET with `body` as its whole JSON response.
@@ -625,6 +640,26 @@ mod tests {
             reported.is_some_and(|message| message.contains("context is full")),
             "the server's own words were lost: {outcome:?}"
         );
+    }
+
+    #[test]
+    fn the_request_asks_for_the_token_counts_the_context_meter_needs() {
+        // A streamed OpenAI response omits `usage` unless the request opts in.
+        // Without the opt-in nothing breaks loudly: replies still stream, but
+        // every message is stored with no token count, so the context meter
+        // reads 0% for a whole conversation and the per-message figures the
+        // README promises never appear.
+        let (base, sent) = serve_sse_reporting(vec!["data: [DONE]\n\n".to_owned()]);
+
+        let _ = ask(base);
+
+        let body: serde_json::Value = serde_json::from_str(&sent.recv().unwrap()).unwrap();
+
+        assert_eq!(
+            body["stream_options"]["include_usage"],
+            serde_json::json!(true)
+        );
+        assert_eq!(body["timings_per_token"], serde_json::json!(true));
     }
 
     #[test]
