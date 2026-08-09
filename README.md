@@ -14,26 +14,26 @@ which local LLMs your hardware can actually run.
 
 ## Screenshots
 
-Not captured yet. See [docs/images/README.md](docs/images/README.md) for what
-the two shots should show and what to check is not in frame before committing
-one.
-
 <!--
-  Restore the table below once docs/images/llm-advisor.png and
-  docs/images/chat.png exist. It is commented out rather than deleted because
-  the files are named here exactly as the walkthrough describes them, and a
-  README that renders two broken images says less than one that says nothing.
+  Images live in docs/images/ and are referenced by the exact names below, which
+  are the names docs/images/README.md describes. Screenshots of the Overview,
+  Processes and Ports tabs show real process names, PIDs and open ports -- check
+  what is in frame before committing one, because git history keeps it even if
+  the file is later replaced. These two screens show neither.
 
-  Images live in docs/images/ and are referenced by the exact names below.
-  Screenshots of the Overview, Processes and Ports tabs show real process
-  names, PIDs and open ports -- check what is in frame before committing one,
-  because git history keeps it even if the file is later replaced.
-
-|                                                                                               |                                                                                                  |
-| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| ![The LLM advisor, showing which models fit this machine](docs/images/llm-advisor.png)        | ![A conversation with a local model](docs/images/chat.png)                                       |
-| **LLM advisor** — every model priced against your actual hardware, with the arithmetic shown. | **Chat** — a model running locally, with context fill, tokens per second and per-message counts. |
+  Stacked rather than a two-column table: the fit matrix is five columns of
+  small type, and half a README's width renders it unreadable.
 -->
+
+![The LLM advisor, showing which models fit this machine](docs/images/llm-advisor.png)
+
+**LLM advisor** — every model priced against your actual hardware, with the
+arithmetic shown.
+
+![A conversation with a local model](docs/images/chat.png)
+
+**Chat** — a model running locally, with context fill, tokens per second and
+per-message counts.
 
 ## A walkthrough
 
