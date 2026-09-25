@@ -31,7 +31,7 @@ ts-rs = { workspace = true, optional = true }
 # Adapter enumeration only — osstat never renders anything. ADR-008 calls wgpu
 # "a heavy dependency for what is ultimately adapter enumeration" and asks for
 # its installer cost to be measured; see docs/measurements.md.
-wgpu = { version = "27.0.1", default-features = false, features = [
+wgpu = { version = "30.0.0", default-features = false, features = [
   "dx12",
   "metal",
   "vulkan",
